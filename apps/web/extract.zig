@@ -251,22 +251,27 @@ const Walker = struct {
 
     const Error = Builder.Error;
 
-    fn beginContainer(self: *Walker, node: *const Node, display: page_mod.BoxStyle.Display) Error!void {
+    fn beginContainer(self: *Walker, node: *Node, display: page_mod.BoxStyle.Display) Error!void {
         const index = std.math.cast(u32, self.builder.page.containers.items.len) orelse return;
-        try self.builder.page.containers.append(self.builder.gpa, .{ .style = css.boxStyle(node, display) });
+        // What the page itself is painted on is the page's, not a box's;
+        // the root the walk starts from may be the document, which has none.
+        const tag = lexbor.tagOf(node);
+        const own = if (node.type == .element and tag != .body and tag != .html) css.ground(node) else null;
+        try self.builder.page.containers.append(self.builder.gpa, .{
+            .style = css.boxStyle(node, display),
+            .parent = self.containers.getLastOrNull(),
+            .ground = if (own) |given| try self.swatchOf(given, .none) else .none,
+        });
         try self.containers.append(self.builder.gpa, index);
         // What is read inside it, until it closes, is its to be set in.
         self.builder.owner = index;
     }
 
-    fn endContainer(self: *Walker) Error!void {
+    /// Close the innermost box: every box kept since it was opened is its.
+    fn endContainer(self: *Walker) void {
         const child = self.containers.pop() orelse return;
-        const parent = self.containers.getLastOrNull() orelse return;
-        self.builder.owner = parent;
-        const box = &self.builder.page.containers.items[parent];
-        if (box.children.count == 0) box.children.first = @intCast(self.builder.page.container_children.items.len);
-        try self.builder.page.container_children.append(self.builder.gpa, child);
-        box.children.count +|= 1;
+        self.builder.page.containers.items[child].end = @intCast(self.builder.page.containers.items.len);
+        if (self.containers.getLastOrNull()) |parent| self.builder.owner = parent;
     }
 
     /// Whether the innermost table the walk is inside is set as a grid.
@@ -431,7 +436,7 @@ const Walker = struct {
             .textarea => try self.textarea(node),
         }
         if (!t.walks) {
-            if (role != .hidden) try self.endContainer();
+            if (role != .hidden) self.endContainer();
             return false;
         }
         self.restyle();
@@ -462,7 +467,7 @@ const Walker = struct {
             else => {},
         }
         self.untake(node);
-        if (role != .hidden) try self.endContainer();
+        if (role != .hidden) self.endContainer();
         // A cell that is a stretch of its row's line does not end that line:
         // the words of the cell after it belong on it too.
         const ends = t.bounds and !css.flows(node) and
@@ -893,5 +898,5 @@ pub fn extract(gpa: std.mem.Allocator, document: *lexbor.Document, base: url.Url
     // The last block is closed before the box holding it is, so that the
     // page's boxes hold the whole of it between them.
     try builder.finish();
-    try walker.endContainer();
+    walker.endContainer();
 }

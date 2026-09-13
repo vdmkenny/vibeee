@@ -559,6 +559,48 @@ test "what a stylesheet says of an element follows the classes a script gives an
     try testing.expect(std.mem.findScalar(rgb.Colour, after.palette.items, .hex(0xabcdef)) != null);
 }
 
+test "a box with room and a ground of its own is kept as a block with both, for the layout to set" {
+    const it = try opened(
+        "<!DOCTYPE html><html><body><p>plain</p><div class=\"card\"><p>inside</p></div>" ++
+            "<div class=\"panel\"><p>dark</p></div><p class=\"three\">three</p></body></html>",
+        false,
+    );
+    defer it.end();
+    css.apply(heap, it.tree,
+        \\.card { background: #eef; padding: 16px; margin: 20px 0; margin-left: 4px; }
+        \\.panel { background: #2b2d42 url(none.png) no-repeat; color: #edf2f4; }
+        \\.three { padding: 1px 2px 3px; }
+    , null, &rules);
+    var page = try it.page();
+    defer page.deinit(heap);
+    var grounded: usize = 0;
+    var card: ?page_mod.Container = null;
+    var three: ?page_mod.Container = null;
+    for (page.containers.items) |box| {
+        if (box.ground != .none) grounded += 1;
+        if (box.ground != .none and card == null) card = box;
+        switch (box.style.padding.bottom) {
+            .px => |px| if (px == 3) {
+                three = box;
+            },
+            else => {},
+        }
+    }
+    // The card and the panel: a ground from a colour alone, and one from
+    // the shorthand that also names a picture.
+    try testing.expectEqual(@as(usize, 2), grounded);
+    const kept = card orelse return error.NoCard;
+    try testing.expectEqual(page_mod.BoxStyle.Display.block, kept.style.display);
+    // One value is every side's; two are the top and bottom and the right
+    // and left; a longhand takes the side it names.
+    try testing.expectEqualDeep(page_mod.BoxStyle.Edges{ .top = .{ .px = 16 }, .right = .{ .px = 16 }, .bottom = .{ .px = 16 }, .left = .{ .px = 16 } }, kept.style.padding);
+    try testing.expectEqualDeep(page_mod.BoxStyle.Edges{ .top = .{ .px = 20 }, .right = .{ .px = 0 }, .bottom = .{ .px = 20 }, .left = .{ .px = 4 } }, kept.style.margin);
+    // Three leave the left its right's.
+    try testing.expectEqualDeep(page_mod.BoxStyle.Edges{ .top = .{ .px = 1 }, .right = .{ .px = 2 }, .bottom = .{ .px = 3 }, .left = .{ .px = 2 } }, (three orelse return error.NoThree).style.padding);
+    try testing.expect(std.mem.findScalar(rgb.Colour, page.palette.items, .hex(0xeeeeff)) != null);
+    try testing.expect(std.mem.findScalar(rgb.Colour, page.palette.items, .hex(0x2b2d42)) != null);
+}
+
 test "the boxes a stylesheet sets side by side are kept for the layout" {
     const it = try opened("<!DOCTYPE html><html><body><main><p>one</p><p>two</p></main></body></html>", false);
     defer it.end();
@@ -585,6 +627,9 @@ test "the boxes a stylesheet sets side by side are kept for the layout" {
     try testing.expectEqualDeep(page_mod.Unit{ .percent = 50 }, p.width);
     try testing.expectEqualDeep(page_mod.Unit{ .px = 400 }, p.max_width);
     // Each paragraph is held by the container, and owns the block it made.
-    try testing.expectEqualSlices(u32, &.{ 1, 2 }, page.childrenOf(page.containers.items[0]));
+    var kids = page.childrenOf(0);
+    try testing.expectEqual(@as(?u32, 1), kids.next());
+    try testing.expectEqual(@as(?u32, 2), kids.next());
+    try testing.expectEqual(@as(?u32, null), kids.next());
     for (page.blocks.items, 1..) |block, index| try testing.expectEqual(@as(u32, @intCast(index)), block.owner);
 }

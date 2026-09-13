@@ -605,6 +605,12 @@ const Pass = struct {
         const reach = @max(self.spacing.inset, self.spacing.above_heading);
         const top = band.y - self.area.y + self.view.scroll - reach;
         const bottom = band.bottom() - self.area.y + self.view.scroll + reach;
+        // The boxes' own grounds, each over the box as far as its padding.
+        for (self.view.layout.fills.items) |fill| {
+            const area = self.onScreen(fill.area);
+            if (area.intersect(s.clip).isEmpty()) continue;
+            s.fill(area, self.adapted(fill.ground) orelse continue);
+        }
         for (self.view.layout.tables.items) |grid| self.table(s, grid);
         const lines = self.view.layout.lines.items;
         var i = self.view.layout.lineAt(top);
@@ -650,7 +656,10 @@ const Pass = struct {
         // band, or the page.
         const own = self.adapted(block.ground);
         const under = own orelse if (block.kind == .preformatted) t.surface else self.ground;
-        if (own) |ground| {
+        // A page laid box by box has its grounds painted as boxes already;
+        // one laid as a column paints each block's behind its lines.
+        if (own != null and self.view.layout.fills.items.len == 0) {
+            const ground = own.?;
             // Out past the column by an inset either side, and up over the
             // gap to the line before where that line's block has the same.
             var top = y;

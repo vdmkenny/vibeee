@@ -52,6 +52,10 @@ pub const Placed = struct {
 /// Where one cell of a grid is, and which of the page's cells it is.
 pub const Box = struct { area: Area, cell: u32 };
 
+/// A box's own ground, and where it is painted: over the box as far as its
+/// padding reaches, and not over the margin around it.
+pub const Fill = struct { area: Area, ground: page_mod.Swatch };
+
 /// One thing on a line: words from one run, or a control or a picture.
 pub const Frag = struct {
     /// From the column's left edge.
@@ -149,6 +153,9 @@ pub const Layout = struct {
     boxes: std.ArrayList(Box) = .empty,
     /// Where each item of the page's flex containers was put.
     placed: std.ArrayList(Placed) = .empty,
+    /// The grounds the page's boxes paint, in the order they are painted:
+    /// a box before the boxes it holds.
+    fills: std.ArrayList(Fill) = .empty,
     /// How tall the whole page is.
     height: i32 = 0,
     /// The column it was laid out for, which is what says it needs doing
@@ -161,6 +168,7 @@ pub const Layout = struct {
         self.tables.deinit(gpa);
         self.boxes.deinit(gpa);
         self.placed.deinit(gpa);
+        self.fills.deinit(gpa);
         self.* = .{};
     }
 
@@ -249,10 +257,14 @@ pub fn buildIn(gpa: std.mem.Allocator, page: *const Page, viewport: Viewport, sp
 
 /// The room above `block`, given what came before it.
 /// Whether a box has to be laid as a box rather than folded into the column:
-/// one that sets its items side by side, or one that keeps room outside or
-/// inside itself that the column has no other way to leave.
-fn wantsBox(style: page_mod.BoxStyle) bool {
+/// one that sets its items side by side, or one with a ground of its own or
+/// room outside or inside itself, which the column has no other way to
+/// paint or leave. One set inline among words is its words' line's.
+fn wantsBox(box: page_mod.Container) bool {
+    const style = box.style;
     if (style.display == .flex) return true;
+    if (style.display == .@"inline") return false;
+    if (box.ground != .none) return true;
     const edges = [_]page_mod.Unit{
         style.margin.top,  style.margin.right,  style.margin.bottom,  style.margin.left,
         style.padding.top, style.padding.right, style.padding.bottom, style.padding.left,
@@ -263,6 +275,15 @@ fn wantsBox(style: page_mod.BoxStyle) bool {
     };
     return false;
 }
+
+/// The room a box keeps on its four sides, in pixels.
+const Room = struct { top: i32 = 0, right: i32 = 0, bottom: i32 = 0, left: i32 = 0 };
+
+/// What setting a box came to, for a flex box measuring an item: the ground
+/// the box painted for itself, among the layout's fills, the margin on its
+/// two sides, which its ground does not cover, and the room past its words
+/// on the right, which its width takes in.
+const Laid = struct { fill: ?usize = null, margin_x: i32 = 0, right: i32 = 0 };
 
 fn gap(spacing: Spacing, before: Block, block: Block) i32 {
     if (block.kind == .heading) return spacing.above_heading;
@@ -292,6 +313,11 @@ fn Placer(comptime Metrics: type) type {
         /// The block set last, which is what the room above the next one is
         /// read from. Each flex item's first block follows nothing.
         previous: ?Block = null,
+        /// The room already left below what was set last, which the room
+        /// the next thing asks for above itself stands on rather than adds
+        /// to: a box's margin and the reader's own room between blocks meet
+        /// as two margins do, the larger of them the room there is.
+        owed: i32 = 0,
         /// Where the box being set starts from the column's edge, and where
         /// it ends. Every block is set between them, stepped in by its depth.
         left: i32 = 0,
@@ -349,7 +375,7 @@ fn Placer(comptime Metrics: type) type {
                 self.spans = &.{};
                 self.parents = &.{};
             }
-            try self.container(0, 0, @max(self.viewport.w, 0));
+            _ = try self.container(0, 0, @max(self.viewport.w, 0), false);
         }
 
         /// The blocks `first` up to `last`, one after another down the page.
@@ -361,8 +387,9 @@ fn Placer(comptime Metrics: type) type {
         /// stepped in by its depth, below whatever came before it.
         fn layBlock(self: *Self, index: usize) Error!void {
             const block = self.page.blocks.items[index];
-            if (self.previous) |before| self.y += gap(self.spacing, before, block);
+            if (self.previous) |before| self.leave(gap(self.spacing, before, block));
             self.previous = block;
+            defer self.owed = 0;
 
             self.block = @intCast(index);
             self.leads = true;
@@ -405,13 +432,16 @@ fn Placer(comptime Metrics: type) type {
 
         /// What the box `index` holds, set in a box `room` wide from `x`: its
         /// own blocks, and the boxes it holds among them, in the order they
-        /// come. The room the box keeps outside and inside itself steps its
-        /// content in from the sides and leaves space above and below it. A
-        /// box that keeps space above or below owns that edge, so the reader's
-        /// own room between blocks does not land there on top of it.
-        fn container(self: *Self, index: u32, x: i32, room: i32) Error!void {
+        /// come. The room the box keeps outside itself, its margin, is left
+        /// around it, the room above standing in for the reader's own room
+        /// between blocks where it is the larger, as one margin does for
+        /// another; the room it keeps inside itself, its padding, steps its
+        /// content in and is what its own ground is painted over. A box set
+        /// inline among words keeps no room, its words being on the line
+        /// they are on, unless it is an `item` of a flex box.
+        fn container(self: *Self, index: u32, x: i32, room: i32, item: bool) Error!Laid {
             const span = self.owns(index);
-            if (span.first >= span.end) return;
+            if (span.first >= span.end) return .{};
             const keep_left = self.left;
             const keep_right = self.right;
             defer {
@@ -419,40 +449,55 @@ fn Placer(comptime Metrics: type) type {
                 self.right = keep_right;
             }
 
-            const style = self.page.containers.items[index].style;
-            const room_left = self.edge(style.margin.left, room) + self.edge(style.padding.left, room);
-            const room_right = self.edge(style.margin.right, room) + self.edge(style.padding.right, room);
-            const room_top = self.edge(style.margin.top, room) + self.edge(style.padding.top, room);
-            const room_bottom = self.edge(style.margin.bottom, room) + self.edge(style.padding.bottom, room);
+            const kept = self.page.containers.items[index];
+            const style = kept.style;
+            // An item of a flex box is a box whatever it says it is.
+            const boxed = item or style.display != .@"inline";
+            const margin = if (boxed) self.roomOf(style.margin, room) else Room{};
+            const padding = if (boxed) self.roomOf(style.padding, room) else Room{};
 
-            const inner_x = x + room_left;
-            const inner_room = @max(room - room_left - room_right, self.spacing.indent * 2);
+            if (self.previous) |before| self.leave(gap(self.spacing, before, self.page.blocks.items[span.first]));
+            self.leave(margin.top);
+            self.previous = null;
+            self.owed = 0;
+
+            const box_x = x + margin.left;
+            const box_w = @max(room - margin.left - margin.right, 0);
+            const box_top = self.y;
+            // The box's ground goes in before the boxes it holds, so that
+            // theirs are painted over it and not under it; how far down it
+            // reaches is known once they are set.
+            var laid = Laid{ .margin_x = margin.left + margin.right, .right = margin.right + padding.right };
+            if (kept.ground != .none) {
+                laid.fill = self.out.fills.items.len;
+                try self.out.fills.append(self.gpa, .{
+                    .area = .{ .x = box_x, .y = box_top, .w = box_w, .h = 0 },
+                    .ground = kept.ground,
+                });
+            }
+            const inner_x = box_x + padding.left;
+            const inner_room = @max(box_w - padding.left - padding.right, self.spacing.indent * 2);
             self.left = inner_x;
             self.right = inner_x + inner_room;
-
-            if (room_top != 0) {
-                self.y += room_top;
-                self.previous = null;
-            }
+            self.y += padding.top;
 
             if (style.display == .flex) {
                 try self.flex(index, inner_x, inner_room);
             } else {
                 var at = span.first;
-                var kid: usize = 0;
-                const children = self.page.childrenOf(self.page.containers.items[index]);
+                var kids = self.page.childrenOf(index);
+                var kid = kids.next();
                 while (at < span.end) {
-                    if (kid < children.len) {
-                        const there = self.owns(children[kid]);
+                    if (kid) |next| {
+                        const there = self.owns(next);
                         if (there.end <= at) {
-                            kid += 1;
+                            kid = kids.next();
                             continue;
                         }
                         if (there.first <= at) {
-                            const next = children[kid];
-                            kid += 1;
-                            try self.container(next, inner_x, inner_room);
-                            at = @max(at, self.owns(next).end);
+                            kid = kids.next();
+                            _ = try self.container(next, inner_x, inner_room, false);
+                            at = @max(at, there.end);
                             continue;
                         }
                     }
@@ -461,16 +506,30 @@ fn Placer(comptime Metrics: type) type {
                 }
             }
 
-            if (room_bottom != 0) {
-                self.y += room_bottom;
-                self.previous = null;
-            }
+            self.y += padding.bottom;
+            if (laid.fill) |fill| self.out.fills.items[fill].area.h = self.y - box_top;
+            self.y += margin.bottom;
+            self.owed = margin.bottom;
+            return laid;
         }
 
-        /// The room a side keeps, resolved to pixels against `base`: nought
-        /// for a side the page left unsaid, which keeps none.
-        fn edge(self: *const Self, unit: page_mod.Unit, base: i32) i32 {
-            return self.resolved(unit, base) orelse 0;
+        /// Leave at least `wanted` room below what was set last, counting
+        /// the room already left there.
+        fn leave(self: *Self, wanted: i32) void {
+            const more = @max(wanted - self.owed, 0);
+            self.y += more;
+            self.owed += more;
+        }
+
+        /// The room a box keeps on its sides, resolved to pixels against
+        /// `base`: nought for a side the page left unsaid, which keeps none.
+        fn roomOf(self: *const Self, edges: page_mod.BoxStyle.Edges, base: i32) Room {
+            return .{
+                .top = self.resolved(edges.top, base) orelse 0,
+                .right = self.resolved(edges.right, base) orelse 0,
+                .bottom = self.resolved(edges.bottom, base) orelse 0,
+                .left = self.resolved(edges.left, base) orelse 0,
+            };
         }
 
         /// Which of the page's blocks the box `index` holds, where the page
@@ -943,11 +1002,18 @@ fn Placer(comptime Metrics: type) type {
                 item.x = x;
                 item.y = self.y;
                 item.first = self.out.lines.items.len;
+                item.fills_first = self.out.fills.items.len;
                 self.previous = null;
-                try self.setItem(item, x, @max(if (down) (item.cross orelse wide) else along, 1));
+                self.owed = 0;
+                item.laid = try self.setItem(item, x, @max(if (down) (item.cross orelse wide) else along, 1));
                 item.lines = self.out.lines.items.len - item.first;
+                item.fills = self.out.fills.items.len - item.fills_first;
+                // As tall as its words come to, or as the room its box keeps
+                // below them reaches; as wide as they come to, and the room
+                // its box keeps past them.
+                item.tall = @max(item.tall, self.y - item.y);
                 for (self.out.lines.items[item.first..][0..item.lines]) |line| {
-                    for (self.out.fragsOf(line)) |frag| item.wide = @max(item.wide, frag.x + frag.width - x);
+                    for (self.out.fragsOf(line)) |frag| item.wide = @max(item.wide, frag.x + frag.width - x + item.laid.right);
                     item.tall = @max(item.tall, line.y + line.height - item.y);
                 }
                 if (item.main == null) {
@@ -1011,6 +1077,9 @@ fn Placer(comptime Metrics: type) type {
                     .{ .x = x + along, .y = top + offset, .w = item.main.?, .h = item.cross.? };
                 try self.out.placed.append(self.gpa, .{ .area = area, .container = item.container });
                 self.shift(item, area.x - item.x, area.y - item.y);
+                // The box's own ground is as wide as the item came out,
+                // less the margin its ground does not cover.
+                if (item.laid.fill) |fill| self.out.fills.items[fill].area.w = @max(area.w - item.laid.margin_x, 0);
                 along += item.main.? + between + between_extra;
             }
 
@@ -1021,6 +1090,7 @@ fn Placer(comptime Metrics: type) type {
             }
             if (self.resolved(style.max_height, self.viewport.h)) |most| tall = @min(tall, most);
             self.y = top + tall;
+            self.owed = 0;
             // Lines side by side are kept in the order of their tops.
             std.sort.block(Line, self.out.lines.items[first_line..], {}, topAbove);
         }
@@ -1033,25 +1103,20 @@ fn Placer(comptime Metrics: type) type {
             var items: std.ArrayList(Item) = .empty;
             errdefer items.deinit(self.gpa);
             const span = self.owns(index);
-            const children = self.page.childrenOf(self.page.containers.items[index]);
+            var kids = self.page.childrenOf(index);
+            var kid = kids.next();
             var at = span.first;
-            var kid: usize = 0;
             while (at < span.end) {
                 var which: ?u32 = null;
-                while (kid < children.len) {
-                    const next = children[kid];
-                    if (next >= self.page.containers.items.len) {
-                        kid += 1;
-                        continue;
-                    }
+                while (kid) |next| {
                     const there = self.owns(next);
                     if (there.end <= at) {
-                        kid += 1;
+                        kid = kids.next();
                         continue;
                     }
                     if (there.first > at) break;
                     which = next;
-                    kid += 1;
+                    kid = kids.next();
                     break;
                 }
                 if (which) |next| {
@@ -1066,8 +1131,8 @@ fn Placer(comptime Metrics: type) type {
         }
 
         /// Set what one flex item holds, in a box `width` wide from `x`.
-        fn setItem(self: *Self, item: *const Item, x: i32, width: i32) Error!void {
-            if (item.container) |which| return self.container(which, x, width);
+        fn setItem(self: *Self, item: *const Item, x: i32, width: i32) Error!Laid {
+            if (item.container) |which| return self.container(which, x, width, true);
             if (item.block) |which| {
                 const keep_left = self.left;
                 const keep_right = self.right;
@@ -1077,8 +1142,9 @@ fn Placer(comptime Metrics: type) type {
                 }
                 self.left = x;
                 self.right = x + width;
-                return self.layBlock(which);
+                try self.layBlock(which);
             }
+            return .{};
         }
 
         /// Move the lines of one item, and the words on them, to where the
@@ -1087,6 +1153,10 @@ fn Placer(comptime Metrics: type) type {
             for (self.out.lines.items[item.first..][0..item.lines]) |*line| {
                 line.y += by_y;
                 for (self.out.frags.items[line.first..][0..line.count]) |*frag| frag.x += by_x;
+            }
+            for (self.out.fills.items[item.fills_first..][0..item.fills]) |*fill| {
+                fill.area.x += by_x;
+                fill.area.y += by_y;
             }
         }
 
@@ -1127,18 +1197,12 @@ fn Placer(comptime Metrics: type) type {
             if (boxes.len == 0) return false;
             var asked = false;
             for (boxes) |each| {
-                if (wantsBox(each.style)) asked = true;
+                if (wantsBox(each)) asked = true;
             }
             if (!asked) return false;
 
             const spans = self.gpa.alloc(Owns, boxes.len) catch return false;
-            const parents = self.gpa.alloc(u32, boxes.len) catch {
-                self.gpa.free(spans);
-                return false;
-            };
             @memset(spans, .{ .first = std.math.maxInt(u32), .end = 0 });
-            @memset(parents, 0);
-            self.foster(parents, 0);
             // Every block is held by the box it was opened in and by every
             // box that holds that one.
             for (self.page.blocks.items, 0..) |block, index| {
@@ -1148,26 +1212,14 @@ fn Placer(comptime Metrics: type) type {
                     const at_index: u32 = @intCast(index);
                     spans[at].first = @min(spans[at].first, at_index);
                     spans[at].end = @max(spans[at].end, at_index + 1);
-                    if (at == 0) break;
-                    at = parents[at];
+                    at = boxes[at].parent orelse break;
                 }
             }
             for (spans) |*span| {
                 if (span.first > span.end) span.* = .{};
             }
             self.spans = spans;
-            self.parents = parents;
             return spans[0].first == 0 and spans[0].end == self.page.blocks.items.len;
-        }
-
-        /// Note the box holding each of the page's boxes, down from the one
-        /// at `index`.
-        fn foster(self: *Self, parents: []u32, index: u32) void {
-            for (self.page.childrenOf(self.page.containers.items[index])) |kid| {
-                if (kid == 0 or kid >= parents.len) continue;
-                parents[kid] = index;
-                self.foster(parents, kid);
-            }
         }
 
         /// A table too wide to set as a grid: its cells one after another, a
@@ -1209,6 +1261,11 @@ const Item = struct {
     y: i32 = 0,
     first: usize = 0,
     lines: usize = 0,
+    /// The grounds painted for the boxes it holds, which move with it.
+    fills_first: usize = 0,
+    fills: usize = 0,
+    /// What setting its box came to.
+    laid: Laid = .{},
 };
 
 /// The columns a cell spans, from the first to past the last, kept inside
@@ -1593,6 +1650,7 @@ test "a place in the page is found again once the page is laid out anew" {
 const Held = struct {
     words: []const u8,
     style: page_mod.BoxStyle = .{},
+    ground: page_mod.Swatch = .none,
     /// Words no element holds, which are held by the container itself.
     own: bool = false,
 };
@@ -1605,12 +1663,10 @@ fn flexed(wide: i32, container: page_mod.BoxStyle, held: []const Held) !Built {
     try b.page.containers.append(testing.allocator, .{ .style = container });
     for (held) |item| {
         if (item.own) continue;
-        try b.page.containers.append(testing.allocator, .{ .style = item.style });
+        const index: u32 = @intCast(b.page.containers.items.len);
+        try b.page.containers.append(testing.allocator, .{ .style = item.style, .ground = item.ground, .parent = 0, .end = index + 1 });
     }
-    for (held, 1..) |item, index| {
-        if (!item.own) try b.page.container_children.append(testing.allocator, @intCast(index));
-    }
-    b.page.containers.items[0].children = .{ .first = 0, .count = @intCast(b.page.container_children.items.len) };
+    b.page.containers.items[0].end = @intCast(b.page.containers.items.len);
     var box: u32 = 1;
     for (held) |item| {
         builder.owner = if (item.own) 0 else box;
@@ -1761,7 +1817,7 @@ test "items asking for more than the room there is are held to a share of it" {
 
 test "a box steps its words in by the room it keeps at its side, and is taller by the room above and below" {
     var b = try flexed(200, .{ .display = .block }, &.{
-        .{ .words = "aa", .style = .{ .padding = .{
+        .{ .words = "aa", .style = .{ .display = .block, .padding = .{
             .left = .{ .px = 20 },
             .top = .{ .px = 10 },
             .bottom = .{ .px = 10 },
@@ -1776,7 +1832,7 @@ test "a box steps its words in by the room it keeps at its side, and is taller b
 test "the room a box keeps above it stands in place of the reader's own, not on top of it" {
     var b = try flexed(200, .{ .display = .block }, &.{
         .{ .words = "aa" },
-        .{ .words = "bb", .style = .{ .margin = .{ .top = .{ .px = 30 } } } },
+        .{ .words = "bb", .style = .{ .display = .block, .margin = .{ .top = .{ .px = 30 } } } },
     });
     defer b.deinit();
     // The first box's line, then the second's, a plain thirty below it: the
@@ -1786,9 +1842,104 @@ test "the room a box keeps above it stands in place of the reader's own, not on 
     try testing.expectEqual(@as(i32, 18 + 30), b.layout.lines.items[1].y);
 }
 
+test "the room a box keeps below it stands in place of the reader's own too, and its padding does not" {
+    var spaced = try flexed(200, .{ .display = .block }, &.{
+        .{ .words = "aa", .style = .{ .display = .block, .margin = .{ .bottom = .{ .px = 30 } } } },
+        .{ .words = "bb" },
+    });
+    defer spaced.deinit();
+    try testing.expectEqual(@as(i32, 18 + 30), spaced.layout.lines.items[1].y);
+
+    // A margin smaller than the reader's own room leaves the reader's.
+    var slight = try flexed(200, .{ .display = .block }, &.{
+        .{ .words = "aa", .style = .{ .display = .block, .margin = .{ .bottom = .{ .px = 2 } } } },
+        .{ .words = "bb" },
+    });
+    defer slight.deinit();
+    try testing.expectEqual(@as(i32, 18 + eighteen.paragraph), slight.layout.lines.items[1].y);
+
+    // Padding is inside the box: the reader's room comes after it in full.
+    var padded = try flexed(200, .{ .display = .block }, &.{
+        .{ .words = "aa", .style = .{ .display = .block, .padding = .{ .bottom = .{ .px = 30 } } } },
+        .{ .words = "bb" },
+    });
+    defer padded.deinit();
+    try testing.expectEqual(@as(i32, 18 + 30 + eighteen.paragraph), padded.layout.lines.items[1].y);
+}
+
+test "a box with a ground of its own paints it as far as its padding, and not over its margin" {
+    var b = try flexed(200, .{ .display = .block }, &.{
+        .{ .words = "aa", .ground = @enumFromInt(1), .style = .{
+            .display = .block,
+            .margin = .{ .left = .{ .px = 20 }, .top = .{ .px = 5 } },
+            .padding = .{ .left = .{ .px = 10 }, .top = .{ .px = 4 }, .bottom = .{ .px = 6 } },
+        } },
+    });
+    defer b.deinit();
+    try testing.expectEqual(@as(usize, 1), b.layout.fills.items.len);
+    const fill = b.layout.fills.items[0];
+    try testing.expectEqual(@as(page_mod.Swatch, @enumFromInt(1)), fill.ground);
+    try testing.expectEqual(@as(i32, 20), fill.area.x);
+    try testing.expectEqual(@as(i32, 180), fill.area.w);
+    try testing.expectEqual(@as(i32, 5), fill.area.y);
+    try testing.expectEqual(@as(i32, 4 + 18 + 6), fill.area.h);
+    try testing.expectEqual(@as(i32, 30), b.line(0)[0].x);
+    try testing.expectEqual(@as(i32, 9), b.layout.lines.items[0].y);
+}
+
+test "a box inside a box with a ground paints its own ground over it, not under it" {
+    var b = Built{};
+    defer b.deinit();
+    var builder = page_mod.Builder{ .gpa = testing.allocator, .page = &b.page };
+    // The root, a box in it with a ground and padding, and a box in that
+    // with a ground of its own: the child's fill is painted after the
+    // parent's, whose height reaches round it.
+    try b.page.containers.append(testing.allocator, .{ .style = .{ .display = .block }, .end = 3 });
+    try b.page.containers.append(testing.allocator, .{
+        .style = .{ .display = .block, .padding = .{ .top = .{ .px = 5 }, .bottom = .{ .px = 5 } } },
+        .ground = @enumFromInt(1),
+        .parent = 0,
+        .end = 3,
+    });
+    try b.page.containers.append(testing.allocator, .{ .style = .{ .display = .block }, .ground = @enumFromInt(2), .parent = 1, .end = 3 });
+    builder.owner = 2;
+    try builder.boundary(.{});
+    try builder.words("aa");
+    try builder.finish();
+    b.layout = try build(testing.allocator, &b.page, 200, eighteen, Fixed{});
+
+    const fills = b.layout.fills.items;
+    try testing.expectEqual(@as(usize, 2), fills.len);
+    try testing.expectEqual(@as(page_mod.Swatch, @enumFromInt(1)), fills[0].ground);
+    try testing.expectEqual(@as(page_mod.Swatch, @enumFromInt(2)), fills[1].ground);
+    try testing.expectEqual(@as(i32, 5 + 18 + 5), fills[0].area.h);
+    try testing.expectEqual(@as(i32, 5), fills[1].area.y);
+    try testing.expectEqual(@as(i32, 18), fills[1].area.h);
+}
+
+test "a box set among a row's items takes its ground with it to where the item goes" {
+    var b = try flexed(200, .{ .display = .flex, .justify = .end }, &.{
+        .{ .words = "aa", .ground = @enumFromInt(1), .style = .{ .padding = .{ .right = .{ .px = 8 } } } },
+    });
+    defer b.deinit();
+    const fill = b.layout.fills.items[0];
+    // Twelve pixels of words and eight of padding, set at the row's end.
+    try testing.expectEqual(@as(i32, 180), fill.area.x);
+    try testing.expectEqual(@as(i32, 180), b.line(0)[0].x);
+}
+
+test "a box set inline among words keeps no room and paints no ground" {
+    var b = try flexed(200, .{ .display = .block }, &.{
+        .{ .words = "aa", .ground = @enumFromInt(1), .style = .{ .display = .@"inline", .padding = .{ .top = .{ .px = 10 } } } },
+    });
+    defer b.deinit();
+    try testing.expectEqual(@as(usize, 0), b.layout.fills.items.len);
+    try testing.expectEqual(@as(i32, 0), b.layout.lines.items[0].y);
+}
+
 test "a share on a box's side is a share of the room around the box" {
     var b = try flexed(200, .{ .display = .block }, &.{
-        .{ .words = "aa", .style = .{ .padding = .{ .left = .{ .percent = 10 } } } },
+        .{ .words = "aa", .style = .{ .display = .block, .padding = .{ .left = .{ .percent = 10 } } } },
     });
     defer b.deinit();
     // Ten per cent of the two hundred the box has is twenty.

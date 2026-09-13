@@ -98,17 +98,31 @@ pub fn boxStyle(node: *const Node, fallback: page_mod.BoxStyle.Display) page_mod
 /// its own taking the side it names.
 fn edgesOf(node: *const Node, shorthand: lexbor.Property, longhands: [4]lexbor.Property) page_mod.BoxStyle.Edges {
     var edges = page_mod.BoxStyle.Edges{};
-    if (valueOf(lexbor.Sides, node, shorthand)) |sides| edges = .{
-        .top = unitOf(&sides.top),
-        .right = unitOf(&sides.right),
-        .bottom = unitOf(&sides.bottom),
-        .left = unitOf(&sides.left),
-    };
-    const sides = [_]*page_mod.Unit{ &edges.top, &edges.right, &edges.bottom, &edges.left };
-    for (longhands, sides) |property, side| {
+    if (valueOf(lexbor.Sides, node, shorthand)) |sides| edges = expanded(sides);
+    const each = [_]*page_mod.Unit{ &edges.top, &edges.right, &edges.bottom, &edges.left };
+    for (longhands, each) |property, side| {
         if (lengthMaybe(node, property)) |unit| side.* = unit;
     }
     return edges;
+}
+
+/// The four sides a shorthand gives, from the one to four values the page
+/// wrote. Upstream keeps them in the order written, top, right, bottom and
+/// left, and leaves the rest unwritten; a shorthand means one value for
+/// every side, two for the top and bottom and the right and left, and
+/// three leave the left its right's.
+fn expanded(sides: *const lexbor.Sides) page_mod.BoxStyle.Edges {
+    const written = [_]*const lexbor.LengthPercentage{ &sides.top, &sides.right, &sides.bottom, &sides.left };
+    var count: usize = 0;
+    while (count < written.len and written[count].kind != .undef) count += 1;
+    const top = unitOf(written[0]);
+    return switch (count) {
+        0 => .{},
+        1 => .{ .top = top, .right = top, .bottom = top, .left = top },
+        2 => .{ .top = top, .right = unitOf(written[1]), .bottom = top, .left = unitOf(written[1]) },
+        3 => .{ .top = top, .right = unitOf(written[1]), .bottom = unitOf(written[2]), .left = unitOf(written[1]) },
+        else => .{ .top = top, .right = unitOf(written[1]), .bottom = unitOf(written[2]), .left = unitOf(written[3]) },
+    };
 }
 
 fn displayOf(node: *const Node) ?page_mod.BoxStyle.Display {
@@ -137,6 +151,8 @@ fn unitOf(length: *const lexbor.LengthPercentage) page_mod.Unit {
     return switch (length.kind) {
         .auto => .auto,
         .percentage => .{ .percent = @floatCast(length.value.percentage.num) },
+        // A bare number is a length of nought, which a page writes as `0`.
+        .number => .{ .px = @floatCast(length.value.percentage.num) },
         .length => switch (length.value.length.unit) {
             .undef, .px => .{ .px = @floatCast(length.value.length.num) },
             .vw => .{ .vw = @floatCast(length.value.length.num) },

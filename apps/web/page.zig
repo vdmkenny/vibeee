@@ -117,17 +117,35 @@ pub const BoxStyle = struct {
     pub const Items = enum { start, center, end };
 };
 
-/// A contiguous range in `Page.container_children`, not in `Page.containers`:
-/// descendants sit between siblings in the latter's preorder sequence.
-pub const ContainerRange = struct { first: u32 = 0, count: u32 = 0 };
-
-/// One retained CSS box. Its child range contains indexes into
-/// `Page.containers`, in document order, for direct children only. Which of
-/// the page's blocks it holds is not kept here: every block names the box
+/// One retained CSS box. The boxes are kept in the order the walk arrives
+/// at them, so a box's descendants are the run after it up to `end`, and
+/// its children are found by stepping over each child's run in turn. Which
+/// of the page's blocks it holds is not kept here: every block names the box
 /// that held it when it was opened, in `Block.owner`.
 pub const Container = struct {
     style: BoxStyle,
-    children: ContainerRange = .{},
+    /// The box it is in, or none for the page's root.
+    parent: ?u32 = null,
+    /// The place after its last descendant, among `Page.containers`.
+    end: u32 = 0,
+    /// The ground the box paints itself, where the page gives it one of its
+    /// own: painted over the box, as far as its padding reaches.
+    ground: Swatch = .none,
+};
+
+/// The children of a box, one at a time, in the order they come.
+pub const Children = struct {
+    page: *const Page,
+    at: u32,
+    end: u32,
+
+    pub fn next(self: *Children) ?u32 {
+        if (self.at >= self.end) return null;
+        const kid = self.at;
+        // Past the child's own run; a box left unclosed reads as childless.
+        self.at = @max(self.page.containers.items[kid].end, kid + 1);
+        return kid;
+    }
 };
 
 /// The parsed node a link, a form or a control came from, for a script to be
@@ -369,8 +387,6 @@ pub const Page = struct {
     cells: std.ArrayList(Cell) = .empty,
     /// CSS boxes retained independently of the legacy text-block stream.
     containers: std.ArrayList(Container) = .empty,
-    /// Direct-child indexes for `containers`; each box owns one range here.
-    container_children: std.ArrayList(u32) = .empty,
     /// How many of the controls are lines to type in, and boxes to tick.
     lines: u16 = 0,
     ticks: u16 = 0,
@@ -394,7 +410,6 @@ pub const Page = struct {
         self.palette.deinit(gpa);
         self.cells.deinit(gpa);
         self.containers.deinit(gpa);
-        self.container_children.deinit(gpa);
         self.* = .{};
     }
 
@@ -410,8 +425,10 @@ pub const Page = struct {
         return self.runs.items[cell.first..][0..cell.count];
     }
 
-    pub fn childrenOf(self: *const Page, container: Container) []const u32 {
-        return self.container_children.items[container.children.first..][0..container.children.count];
+    /// The children of the box at `index`.
+    pub fn childrenOf(self: *const Page, index: u32) Children {
+        const box = self.containers.items[index];
+        return .{ .page = self, .at = index + 1, .end = @min(box.end, @as(u32, @intCast(self.containers.items.len))) };
     }
 
     pub fn textOf(self: *const Page, text: Text) []const u8 {

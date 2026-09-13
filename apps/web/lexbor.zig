@@ -465,6 +465,8 @@ pub const Sides = extern struct {
 /// The keywords and kinds of value this reader tells apart, numbered as
 /// upstream numbers them. Anything else is a value it does not act on.
 pub const Keyword = enum(c_uint) {
+    /// Nothing written: a side of a shorthand the page did not give.
+    undef = 0x0000,
     auto = 0x000c,
     length = 0x0014,
     flex_start = 0x0005,
