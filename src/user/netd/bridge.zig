@@ -40,11 +40,12 @@ const HOSTS_PATH = "/etc/hosts";
 /// How long a cached `/etc/hosts` is believed.
 const HOSTS_TTL_US = 2 * 1_000_000;
 
-/// How many sockets one process may hold at once. Half the table: every
-/// socket is a shared segment and an event, and a client that can take all
-/// eight can lock every other program on the machine out of the network by
+/// How many sockets one process may hold at once, which the protocol
+/// publishes so a client can keep within it. Half the table: every socket
+/// is a shared segment and an event, and a client that could take all eight
+/// could lock every other program on the machine out of the network by
 /// opening eight and going to sleep.
-const MAX_SOCKS_PER_CLIENT = 4;
+const MAX_SOCKS_PER_CLIENT = proto.SOCKETS_PER_PROCESS;
 
 /// How many deferred actions one reap may queue for the loop.
 const MAX_DEFERRED = 4;

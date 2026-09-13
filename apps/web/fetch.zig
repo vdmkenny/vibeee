@@ -24,6 +24,7 @@
 //! next request has what the last answer set.
 
 const std = @import("std");
+const proto = @import("proto");
 const sys = @import("sys");
 const ulib = @import("ulib");
 const Bounded = @import("lib").bounded.Bounded;
@@ -82,16 +83,43 @@ const Kept = struct {
 /// The longest a host's name can be.
 const HOST_MAX = 255;
 
-/// How many connections are kept between them, one a site: a page's
-/// stylesheets, scripts and pictures come from where the page came and from
-/// a site or two beside it, and its next page from one of those.
-const KEPT_MAX = 4;
+/// How many connections the fetches may hold between them at once, open or
+/// kept: the network service's share for one process. A kept connection
+/// gives way to one that is needed now.
+const HELD_MAX = proto.net.SOCKETS_PER_PROCESS;
 
 /// The connections kept after answers, for the next request to the same
 /// site from any fetch: reaching a site and sealing the connection is the
 /// step that blocks, and a site is reached once for a page rather than once
-/// for each thing on it.
-var pool: Bounded(Kept, KEPT_MAX) = .{};
+/// for each thing on it. One a site, the oldest giving way: a page's
+/// stylesheets, scripts and pictures come from where the page came and from
+/// a site or two beside it, and its next page from one of those.
+var pool: Bounded(Kept, HELD_MAX) = .{};
+
+/// How many connections the fetches hold between them, open or kept.
+var held: usize = 0;
+
+/// Reach `where` on a new connection. Where the service would grant no
+/// socket for it, the oldest kept connection is let go first: what is
+/// needed now comes before what might be needed next.
+fn openWire(where: url.Url, kind: ulib.wire.Kind) ulib.wire.Error!Wire {
+    while (held >= HELD_MAX and !pool.isEmpty()) dropKept(0);
+    const wire = try ulib.wire.open(where.host, where.port, kind);
+    held += 1;
+    return wire;
+}
+
+/// Close a connection, which gives its socket back.
+fn drop(wire: Wire) void {
+    wire.close();
+    held -= 1;
+}
+
+/// Close the kept connection at `index` and forget it.
+fn dropKept(index: usize) void {
+    drop(pool.slice()[index].wire);
+    pool.remove(index);
+}
 
 /// The kept connection that goes to `where`, taken out of the pool.
 fn takeFromPool(where: url.Url) ?Kept {
@@ -109,15 +137,11 @@ fn takeFromPool(where: url.Url) ?Kept {
 fn putInPool(kept: Kept) void {
     for (pool.slice(), 0..) |old, index| {
         if (!old.goesTo(.{ .scheme = kept.scheme, .host = kept.host.slice(), .port = kept.port, .path = "" })) continue;
-        old.wire.close();
-        pool.remove(index);
+        dropKept(index);
         break;
     }
-    if (pool.isFull()) {
-        pool.slice()[0].wire.close();
-        pool.remove(0);
-    }
-    pool.append(kept) catch kept.wire.close();
+    if (pool.isFull()) dropKept(0);
+    pool.append(kept) catch drop(kept.wire);
 }
 
 /// How many times one request may be sent on to somewhere else.
@@ -293,7 +317,7 @@ pub const Fetch = struct {
         self.reused = false;
         self.reach = .{};
         const wire = if (self.takeKept(where)) |kept| kept else opened: {
-            const opened = ulib.wire.open(where.host, where.port, kind) catch |err| return self.fail(err);
+            const opened = openWire(where, kind) catch |err| return self.fail(err);
             self.reach = ulib.wire.last_reach;
             break :opened opened;
         };
@@ -323,7 +347,7 @@ pub const Fetch = struct {
     fn takeKept(self: *Fetch, where: url.Url) ?Wire {
         const kept = takeFromPool(where) orelse return null;
         if (kept.wire.finished()) {
-            kept.wire.close();
+            drop(kept.wire);
             return null;
         }
         self.reused = true;
@@ -388,10 +412,10 @@ pub const Fetch = struct {
     fn keep(self: *Fetch) void {
         const wire = self.wire orelse return;
         self.wire = null;
-        const where = url.parse(self.address()) orelse return wire.close();
-        if (!self.response.reusable() or wire.finished()) return wire.close();
+        const where = url.parse(self.address()) orelse return drop(wire);
+        if (!self.response.reusable() or wire.finished()) return drop(wire);
         var kept = Kept{ .wire = wire, .scheme = where.scheme, .port = where.port };
-        if (!kept.host.set(where.host)) return wire.close();
+        if (!kept.host.set(where.host)) return drop(wire);
         putInPool(kept);
     }
 
@@ -401,7 +425,7 @@ pub const Fetch = struct {
     }
 
     fn closeWire(self: *Fetch) void {
-        if (self.wire) |wire| wire.close();
+        if (self.wire) |wire| drop(wire);
         self.wire = null;
     }
 };

@@ -395,6 +395,12 @@ pub const SockGrant = extern struct {
 
 pub const GRANT_HANDLES = 3;
 
+/// How many sockets one process may hold at once, open or idle: half the
+/// service's table, so that one program cannot take every socket on the
+/// machine. A program that keeps connections for later keeps them within
+/// this, and lets one go when it needs another.
+pub const SOCKETS_PER_PROCESS = 4;
+
 pub const Resolved = extern struct {
     addr: u32 = 0,
     source: ResolveSource = .dns,
