@@ -276,6 +276,32 @@ test "an event is told to its listeners, to the handler on the element, and to t
     );
 }
 
+test "a link to a place on the page is a link, and a click the reader tells is refused and read" {
+    const it = try opened(
+        "<!DOCTYPE html><html><body><p><a href=\"#\" id=\"link\">Click</a>: <span id=\"said\">no</span></p>" ++
+            "<p><a href=\"javascript:void(0)\" id=\"other\">Other</a></p><h2 id=\"place\">Place</h2>" ++
+            "<script>document.getElementById('link').addEventListener('click', function (ev) {" ++
+            "ev.preventDefault(); document.getElementById('said').textContent = 'clicked'; });</script></body></html>",
+        true,
+    );
+    defer it.end();
+    var page = try it.page();
+    defer page.deinit(heap);
+    try testing.expectEqual(@as(usize, 2), page.links.items.len);
+    const link = page.links.items[0];
+    try testing.expectEqual(page_mod.Link.Goes.here, link.goes);
+    try testing.expectEqualStrings("", page.string(link.address));
+    try testing.expectEqual(page_mod.Link.Goes.script, page.links.items[1].goes);
+    try testing.expectEqualStrings("void(0)", page.string(page.links.items[1].address));
+    try testing.expect(page.placeOf("place") != null);
+
+    try testing.expect(dom.click(it.doc, @ptrCast(@alignCast(link.node.?))));
+    try testing.expect(dom.changed(it.doc));
+    var again = try it.page();
+    defer again.deinit(heap);
+    try testing.expect(std.mem.containsAtLeast(u8, again.text.items, 1, "clicked"));
+}
+
 test "a handler put on the element the script got earlier is still there when the reader clicks" {
     const it = try opened(with("document.getElementById('one').onclick = function (ev) { ev.preventDefault(); window.__clicked = 1; };"), true);
     defer it.end();

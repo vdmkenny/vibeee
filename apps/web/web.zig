@@ -443,13 +443,40 @@ fn landed(final: url.Url) void {
 /// its own.
 fn follow(link: u16) void {
     if (link >= shown.links.items.len) return;
+    const it = shown.links.items[link];
     if (scripts) |doc| {
-        if (shown.links.items[link].node) |node| {
+        if (it.node) |node| {
             const prevented = dom.click(doc, @ptrCast(@alignCast(node)));
             if (afterScripts(doc) or prevented) return;
         }
     }
-    go(shown.address(link) orelse return);
+    switch (it.goes) {
+        .elsewhere => go(shown.string(it.address)),
+        .here => jump(shown.string(it.address)),
+        .script => if (scripts) |doc| {
+            dom.run(doc, shown.string(it.address));
+            _ = afterScripts(doc);
+        },
+    }
+}
+
+/// Go to the place `name` marks on the page on screen, or to its top for a
+/// name the page has no place for, which is what a bare `#` asks for.
+fn jump(name: []const u8) void {
+    const place = shown.placeOf(name);
+    view.jumpTo(if (place) |found| .{ .run = found.run, .at = found.at } else null);
+    if (history.current()) |entry| entry.scroll = view.scroll;
+}
+
+/// What the status line says a link goes to.
+fn linkLabel(link: u16, buf: []u8) []const u8 {
+    if (link >= shown.links.items.len) return "";
+    const it = shown.links.items[link];
+    return switch (it.goes) {
+        .elsewhere => shown.string(it.address),
+        .here => std.fmt.bufPrint(buf, "#{s}", .{shown.string(it.address)}) catch "",
+        .script => "a script on this page",
+    };
 }
 
 /// Go somewhere new, which the history remembers. What a form last sent is
@@ -1523,7 +1550,8 @@ fn status(area: Rect, body: Rect) void {
     var right = str.Builder{ .buf = &right_buf };
 
     if (view.hover) |link| {
-        left.text(shown.address(link) orelse "");
+        var label_buf: [url.ADDRESS_MAX]u8 = undefined;
+        left.text(linkLabel(link, &label_buf));
     } else switch (fetch.state) {
         .connecting => {
             left.text("Reaching ");

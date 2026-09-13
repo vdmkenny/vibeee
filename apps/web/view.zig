@@ -46,6 +46,7 @@ const Control = page_mod.Control;
 const Face = page_mod.Face;
 const Page = page_mod.Page;
 const Layout = layout_mod.Layout;
+const Place = layout_mod.Place;
 const Size = layout_mod.Size;
 const Spacing = layout_mod.Spacing;
 const Pictures = pictures_mod.Pictures;
@@ -225,6 +226,8 @@ pub const View = struct {
     painted: ?Painted = null,
     /// The link under the pointer, for the status line to say where it goes.
     hover: ?u16 = null,
+    /// A place on the page to go to once it is laid out.
+    going_to: ?Place = null,
     /// What is typed in the page's lines, and which of its boxes are ticked.
     lines: []Line = &.{},
     ticks: []bool = &.{},
@@ -256,6 +259,21 @@ pub const View = struct {
         // The shade pages are drawn in is a setting, and outlasts the page.
         const shade = self.shade;
         self.* = .{ .shade = shade };
+    }
+
+    /// Go to `place` on the page, or to its top for none: now where the page
+    /// is laid out, and otherwise once it is.
+    pub fn jumpTo(self: *View, place: ?Place) void {
+        self.going_to = null;
+        const wanted = place orelse {
+            self.scroll = 0;
+            return;
+        };
+        if (self.stale or self.layout.lines.items.len == 0) {
+            self.going_to = wanted;
+            return;
+        }
+        if (self.layout.lineOf(wanted)) |y| self.scroll = y;
     }
 
     /// What the page on screen is drawn on, which a picture's see-through
@@ -333,6 +351,10 @@ pub const View = struct {
             self.layout = layout_mod.buildIn(gpa, page, .{ .w = column.w, .h = area.h }, spacing, metrics) catch .{ .width = column.w };
             if (mark) |kept| {
                 if (self.layout.lineOf(kept.place)) |y| self.scroll = @max(y + (self.scroll - kept.y), 0);
+            }
+            if (self.going_to) |place| {
+                if (self.layout.lineOf(place)) |y| self.scroll = y;
+                self.going_to = null;
             }
             self.stale = false;
             self.painted = null;

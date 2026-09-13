@@ -125,9 +125,21 @@ pub const Node = opaque {};
 
 /// Where a link goes, and the anchor it was.
 pub const Link = struct {
-    /// Already resolved against the page's own address.
+    /// Where it goes: an address, already resolved against the page's own;
+    /// the name of a place on this page; or the script it runs.
     address: Span,
+    goes: Goes = .elsewhere,
     node: ?*Node = null,
+
+    pub const Goes = enum(u8) { elsewhere, here, script };
+};
+
+/// A place on the page that a link may go to: what an element's id names,
+/// by the run and the point in the page's text where the element began.
+pub const Place = struct {
+    name: Span,
+    run: u32,
+    at: u32,
 };
 
 /// Words in one look, going to one link or to none.
@@ -335,6 +347,7 @@ pub const Page = struct {
     /// What the page keeps beside its words, one string after another.
     strings: std.ArrayList(u8) = .empty,
     links: std.ArrayList(Link) = .empty,
+    places: std.ArrayList(Place) = .empty,
     forms: std.ArrayList(Form) = .empty,
     controls: std.ArrayList(Control) = .empty,
     pictures: std.ArrayList(Picture) = .empty,
@@ -362,6 +375,7 @@ pub const Page = struct {
         self.blocks.deinit(gpa);
         self.strings.deinit(gpa);
         self.links.deinit(gpa);
+        self.places.deinit(gpa);
         self.forms.deinit(gpa);
         self.controls.deinit(gpa);
         self.pictures.deinit(gpa);
@@ -407,6 +421,14 @@ pub const Page = struct {
     pub fn address(self: *const Page, link: u16) ?[]const u8 {
         if (link >= self.links.items.len) return null;
         return self.string(self.links.items[link].address);
+    }
+
+    /// The place `name` marks on the page, where the page has one.
+    pub fn placeOf(self: *const Page, name: []const u8) ?Place {
+        for (self.places.items) |place| {
+            if (std.mem.eql(u8, self.string(place.name), name)) return place;
+        }
+        return null;
     }
 };
 
@@ -680,10 +702,19 @@ pub const Builder = struct {
 
     /// Keep an address, and say which link it is. Past the last number a
     /// link can have, the words still read and simply go nowhere.
-    pub fn addLink(self: *Builder, address: []const u8) Error!?u16 {
+    pub fn addLink(self: *Builder, address: []const u8, goes: Link.Goes) Error!?u16 {
         const index = std.math.cast(u16, self.page.links.items.len) orelse return null;
-        try self.page.links.append(self.gpa, .{ .address = try self.keep(address), .node = self.node });
+        try self.page.links.append(self.gpa, .{ .address = try self.keep(address), .goes = goes, .node = self.node });
         return index;
+    }
+
+    /// A place a link may go to, at whatever is put in next.
+    pub fn addPlace(self: *Builder, name: []const u8) Error!void {
+        try self.page.places.append(self.gpa, .{
+            .name = try self.keep(name),
+            .run = @intCast(self.page.runs.items.len),
+            .at = @intCast(self.page.text.items.len),
+        });
     }
 
     /// A form, and which one it is.
@@ -1020,7 +1051,7 @@ test "a space before a link stays outside it" {
     f.init();
     defer f.deinit();
     try f.builder.words("see ");
-    f.builder.link = try f.builder.addLink("https://a.org/");
+    f.builder.link = try f.builder.addLink("https://a.org/", .elsewhere);
     f.builder.look.ink = .link;
     try f.builder.words("the page");
     f.builder.link = null;

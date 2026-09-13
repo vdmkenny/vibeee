@@ -381,6 +381,13 @@ pub fn load(it: *Document, fetched: []const Fetched) void {
     _ = tell(it, root, "load", false);
 }
 
+/// Run `source` as a link's own script, which is what a link whose address
+/// is a script does when it is followed.
+pub fn run(it: *Document, source: []const u8) void {
+    runText(it, source, "<link>");
+    _ = it.machine.runJobs();
+}
+
 /// The first of the page's scripts that has not run.
 fn nextScript(it: *Document) ?*Node {
     const root = lexbor.lxb_dom_document_root(it.tree) orelse return null;

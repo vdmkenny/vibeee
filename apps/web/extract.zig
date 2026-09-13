@@ -351,6 +351,11 @@ const Walker = struct {
         const role = roleOf(lexbor.tagOf(node) orelse return false);
         if (unread(node)) return false;
         self.builder.node = @ptrCast(node);
+        // An element's id names a place a link may go to.
+        if (lexbor.attribute(node, "id")) |id| {
+            const name = std.mem.trim(u8, id, &std.ascii.whitespace);
+            if (name.len > 0) try self.builder.addPlace(name);
+        }
 
         if (role != .hidden) try self.beginContainer(node, displayFor(role));
 
@@ -553,13 +558,16 @@ const Walker = struct {
         };
     }
 
-    /// The link an anchor makes, or none for one that goes nowhere this
-    /// reader follows: no address, another scheme, a place on this page.
+    /// The link an anchor makes: to an address, to a place on this page, or
+    /// to a script it runs. None for one that goes nowhere this reader
+    /// follows: no address, or another scheme.
     fn linkFor(self: *Walker, node: *Node) Error!?u16 {
         const href = lexbor.attribute(node, "href") orelse return null;
+        if (url.placeOf(href)) |name| return self.builder.addLink(name, .here);
+        if (url.scriptOf(href)) |script| return self.builder.addLink(script, .script);
         var buf: [url.ADDRESS_MAX]u8 = undefined;
         const resolved = url.resolve(self.base, href, &buf) orelse return null;
-        return self.builder.addLink(resolved);
+        return self.builder.addLink(resolved, .elsewhere);
     }
 
     /// A picture: where it is, what the page says it shows, and the size the

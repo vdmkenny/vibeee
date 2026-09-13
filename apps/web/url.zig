@@ -217,6 +217,24 @@ fn schemeOf(ref: []const u8) ?[]const u8 {
     return null;
 }
 
+/// The place on the page a reference names, where it is only a fragment:
+/// what follows the `#`, which for a bare `#` is nothing, the top of the
+/// page.
+pub fn placeOf(reference: []const u8) ?[]const u8 {
+    const ref = std.mem.trim(u8, reference, &c0_or_space);
+    if (ref.len == 0 or ref[0] != '#') return null;
+    return ref[1..];
+}
+
+/// The script a reference holds, where it is a `javascript:` address, which
+/// a link runs instead of going anywhere.
+pub fn scriptOf(reference: []const u8) ?[]const u8 {
+    const ref = std.mem.trim(u8, reference, &c0_or_space);
+    const named = schemeOf(ref) orelse return null;
+    if (!std.ascii.eqlIgnoreCase(named, "javascript")) return null;
+    return ref[named.len + 1 ..];
+}
+
 fn withoutFragment(text: []const u8) []const u8 {
     const end = std.mem.indexOfScalar(u8, text, '#') orelse text.len;
     return text[0..end];
@@ -315,6 +333,16 @@ test "a fragment names a place on the page, and what is around a link is not par
     try expectResolved("https://a.org/x", "#top", null);
     try expectResolved("https://a.org/x", "  page.html#part \n", "https://a.org/page.html");
     try expectResolved("https://a.org/x", "\x00\tpage.html\x1f", "https://a.org/page.html");
+}
+
+test "a reference that is a place on the page or a script is told apart from an address" {
+    try std.testing.expectEqualStrings("top", placeOf(" #top ").?);
+    try std.testing.expectEqualStrings("", placeOf("#").?);
+    try std.testing.expect(placeOf("a.html#top") == null);
+    try std.testing.expectEqualStrings("void(0)", scriptOf("javascript:void(0)").?);
+    try std.testing.expectEqualStrings(" go()", scriptOf("JavaScript: go()").?);
+    try std.testing.expect(scriptOf("https://a.org/") == null);
+    try std.testing.expect(scriptOf("#x") == null);
 }
 
 test "a colon in the first segment makes a scheme, and a leading dot makes a path" {

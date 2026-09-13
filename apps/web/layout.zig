@@ -1384,7 +1384,7 @@ test "a line breaks at a space, never where a link meets the text after it" {
     defer b.deinit();
     var builder = page_mod.Builder{ .gpa = testing.allocator, .page = &b.page };
     try builder.words("aaaa bbbb ");
-    builder.link = try builder.addLink("https://a.org/");
+    builder.link = try builder.addLink("https://a.org/", .elsewhere);
     builder.look.ink = .link;
     try builder.words("cccc");
     builder.link = null;
@@ -1731,7 +1731,7 @@ test "a link's words are their own fragment beside the text around them" {
     defer b.deinit();
     var builder = page_mod.Builder{ .gpa = testing.allocator, .page = &b.page };
     try builder.words("see ");
-    builder.link = try builder.addLink("https://a.org/");
+    builder.link = try builder.addLink("https://a.org/", .elsewhere);
     builder.look.ink = .link;
     try builder.words("here");
     builder.link = null;
