@@ -56,6 +56,33 @@ fn writeByte(w: *Writer, byte: u8) Writer.Error!void {
     }
 }
 
+/// The inverse: `text` as it was read out of a query, with a plus back to a
+/// space and each `%` and two hex digits back to the byte they name. A `%`
+/// that two hex digits do not follow is left as it is, as a reader reading a
+/// query leaves it.
+pub fn writeDecoded(w: *Writer, text: []const u8) Writer.Error!void {
+    var i: usize = 0;
+    while (i < text.len) {
+        switch (text[i]) {
+            '+' => {
+                try w.writeByte(' ');
+                i += 1;
+            },
+            '%' => if (i + 3 <= text.len and std.fmt.parseInt(u8, text[i + 1 .. i + 3], 16) catch null != null) {
+                try w.writeByte(std.fmt.parseInt(u8, text[i + 1 .. i + 3], 16) catch unreachable);
+                i += 3;
+            } else {
+                try w.writeByte('%');
+                i += 1;
+            },
+            else => |byte| {
+                try w.writeByte(byte);
+                i += 1;
+            },
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -86,4 +113,21 @@ test "the page's encoding decides the bytes a letter is sent as" {
 
 test "a letter the encoding cannot hold is sent as a reference to it" {
     try testing.expectEqualStrings("q=%26%239731%3B", try answers(&.{.{ "q", "\xE2\x98\x83" }}, .windows1252));
+}
+
+fn decoded(text: []const u8) ![]const u8 {
+    const S = struct {
+        var buf: [256]u8 = undefined;
+    };
+    var w: Writer = .fixed(&S.buf);
+    try writeDecoded(&w, text);
+    return w.buffered();
+}
+
+test "a query value is read back with its plus a space and its escapes undone" {
+    try testing.expectEqualStrings("eee pc & more", try decoded("eee+pc+%26+more"));
+    try testing.expectEqualStrings("caf\xC3\xA9", try decoded("caf%C3%A9"));
+    // A stray percent, and one without two hex digits after it, is left be.
+    try testing.expectEqualStrings("100% and %zz", try decoded("100%25+and+%zz"));
+    try testing.expectEqualStrings("ends%", try decoded("ends%"));
 }

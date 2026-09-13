@@ -35,6 +35,7 @@ const js = @import("js");
 const qjs = @import("quickjs");
 const cookie = @import("cookie.zig");
 const css = @import("css.zig");
+const form_mod = @import("form.zig");
 const http = @import("http.zig");
 const lexbor = @import("lexbor.zig");
 const links = @import("links.zig");
@@ -2829,50 +2830,36 @@ fn jsNewParams(ctx: *Context, _: Value, argc: c_int, argv: [*]const Value) callc
 
 /// The value under `name` in a query, or nothing: `a=1&b=2`, read with its
 /// plus signs and percent escapes undone.
-fn paramValue(it: *Document, query: []const u8, name: []const u8) ?[]const u8 {
+fn paramValue(query: []const u8, name: []const u8) ?[]const u8 {
     var pairs = std.mem.tokenizeScalar(u8, query, '&');
     while (pairs.next()) |pair| {
         const equal = std.mem.indexOfScalar(u8, pair, '=') orelse pair.len;
-        if (!std.mem.eql(u8, unescaped(it, pair[0..equal]) orelse continue, name)) continue;
-        return unescaped(it, if (equal < pair.len) pair[equal + 1 ..] else "");
+        if (!std.mem.eql(u8, unescaped(pair[0..equal]) orelse continue, name)) continue;
+        return unescaped(if (equal < pair.len) pair[equal + 1 ..] else "");
     }
     return null;
 }
 
 /// `text` with its plus signs and percent escapes undone, kept until the
-/// next asking.
-fn unescaped(it: *Document, text: []const u8) ?[]const u8 {
-    _ = it;
+/// next asking. The reader's form encoding read backwards, so a query a
+/// script reads matches what one it sends carries.
+fn unescaped(text: []const u8) ?[]const u8 {
     const S = struct {
         var buf: [url.ADDRESS_MAX]u8 = undefined;
     };
-    var n: usize = 0;
-    var i: usize = 0;
-    while (i < text.len and n < S.buf.len) : (n += 1) {
-        const c = text[i];
-        if (c == '+') {
-            S.buf[n] = ' ';
-            i += 1;
-        } else if (c == '%' and i + 2 < text.len + 0 + 1 and i + 3 <= text.len) {
-            S.buf[n] = std.fmt.parseInt(u8, text[i + 1 .. i + 3], 16) catch c;
-            i += if (std.fmt.parseInt(u8, text[i + 1 .. i + 3], 16)) |_| 3 else |_| 1;
-        } else {
-            S.buf[n] = c;
-            i += 1;
-        }
-    }
-    return S.buf[0..n];
+    var w: std.Io.Writer = .fixed(&S.buf);
+    form_mod.writeDecoded(&w, text) catch return null;
+    return w.buffered();
 }
 
 fn jsParamsGet(ctx: *Context, this: Value, argc: c_int, argv: [*]const Value) callconv(.c) Value {
-    const it = documentOf(ctx) orelse return qjs.nullValue();
     const held = qjs.getStr(ctx, this, "__q");
     defer qjs.free(ctx, held);
     const query = words(ctx, held) orelse return qjs.nullValue();
     defer qjs.freeText(ctx, query.ptr);
     const name = argument(ctx, argc, argv, 0) orelse return qjs.nullValue();
     defer qjs.freeText(ctx, name.ptr);
-    return if (paramValue(it, query, name)) |value| str(ctx, value) else qjs.nullValue();
+    return if (paramValue(query, name)) |value| str(ctx, value) else qjs.nullValue();
 }
 
 fn jsParamsHas(ctx: *Context, this: Value, argc: c_int, argv: [*]const Value) callconv(.c) Value {
@@ -2898,9 +2885,11 @@ const params_methods = [_]qjs.ListEntry{
 // A form sent by a script
 // ---------------------------------------------------------------------------
 
-/// Every answer in `node`'s subtree that goes under a name: a form's own
-/// controls, which is what a form sends, written the way a form sends them.
-fn answersIn(it: *Document, node: *Node, out: *std.ArrayList(u8)) void {
+/// Every answer in `node`'s subtree that goes under a name, written into `w`
+/// the way a form sends them: a form's own controls, which is what a form
+/// sends. The encoding is `form`'s, so a script sends what the reader does.
+fn answersIn(node: *Node, w: *std.Io.Writer) void {
+    var first = true;
     var at = lexbor.following(node, node);
     while (at) |one| : (at = lexbor.following(one, node)) {
         if (one.type != .element) continue;
@@ -2912,32 +2901,13 @@ fn answersIn(it: *Document, node: *Node, out: *std.ArrayList(u8)) void {
             if (ticks and attributeOf(one, "checked") == null) continue;
             if (std.ascii.eqlIgnoreCase(kind, "submit") or std.ascii.eqlIgnoreCase(kind, "button")) continue;
         }
-        if (out.items.len > 0) out.append(it.gpa, '&') catch return;
-        encoded(it, out, named);
-        out.append(it.gpa, '=') catch return;
-        if (attributeOf(one, "value")) |value| {
-            encoded(it, out, value);
-        } else if (isTag(one, "INPUT")) {
-            // A box ticked, or a radio button chosen, without a value of its
-            // own sends `on`, which is what a form is told.
-            encoded(it, out, "on");
-        } else {
-            const text = textOfNode(one);
-            defer text.deinit();
-            encoded(it, out, text.bytes);
-        }
-    }
-}
-
-/// Written the way a form's answers are: letters, digits and four marks as
-/// they are, a space as a plus, and every other byte escaped.
-fn encoded(it: *Document, out: *std.ArrayList(u8), text: []const u8) void {
-    for (text) |byte| {
-        switch (byte) {
-            'A'...'Z', 'a'...'z', '0'...'9', '-', '.', '_', '*' => out.append(it.gpa, byte) catch return,
-            ' ' => out.append(it.gpa, '+') catch return,
-            else => out.print(it.gpa, "%{X:0>2}", .{byte}) catch return,
-        }
+        const text = if (attributeOf(one, "value") == null and !isTag(one, "INPUT")) textOfNode(one) else NodeText{ .node = one, .data = null, .bytes = "" };
+        defer text.deinit();
+        // A box ticked, or a radio button chosen, without a value of its own
+        // sends `on`, which is what a form is told.
+        const value = attributeOf(one, "value") orelse if (isTag(one, "INPUT")) "on" else text.bytes;
+        form_mod.writeAnswer(w, first, named, value, .utf8) catch return;
+        first = false;
     }
 }
 
@@ -2951,22 +2921,20 @@ fn jsSubmit(ctx: *Context, this: Value, _: c_int, _: [*]const Value) callconv(.c
     const form = formOf(node) orelse return qjs.undefinedValue();
     if (tell(it, form, "submit", true)) return qjs.undefinedValue();
 
-    var answers: std.ArrayList(u8) = .empty;
-    defer answers.deinit(it.gpa);
-    answersIn(it, form, &answers);
+    var buf: [form_mod.ANSWERS_MAX]u8 = undefined;
+    var answers: std.Io.Writer = .fixed(&buf);
+    answersIn(form, &answers);
+    const sent = answers.buffered();
     const action = attributeOf(form, "action") orelse it.address;
     if (std.ascii.eqlIgnoreCase(attributeOf(form, "method") orelse "get", "post")) {
-        goTo(it, action, answers.items);
+        goTo(it, action, sent);
         return qjs.undefinedValue();
     }
-    var where: std.ArrayList(u8) = .empty;
-    defer where.deinit(it.gpa);
-    where.appendSlice(it.gpa, action[0 .. std.mem.indexOfScalar(u8, action, '?') orelse action.len]) catch return qjs.undefinedValue();
-    if (answers.items.len > 0) {
-        where.append(it.gpa, '?') catch return qjs.undefinedValue();
-        where.appendSlice(it.gpa, answers.items) catch return qjs.undefinedValue();
-    }
-    goTo(it, where.items, null);
+    var where: [url.ADDRESS_MAX]u8 = undefined;
+    var w: std.Io.Writer = .fixed(&where);
+    w.writeAll(action[0 .. std.mem.indexOfScalar(u8, action, '?') orelse action.len]) catch return qjs.undefinedValue();
+    if (sent.len > 0) w.print("?{s}", .{sent}) catch return qjs.undefinedValue();
+    goTo(it, w.buffered(), null);
     return qjs.undefinedValue();
 }
 
