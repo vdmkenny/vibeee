@@ -370,9 +370,12 @@ fn timed(what: []const u8, where: []const u8, bytes: usize, from: *const fetch_m
     const ms = (now -| from.started_us) / std.time.us_per_ms;
     // How much of it was reaching the site, where it was reached at all.
     const reach = if (from.reached_us >= from.started_us) (from.reached_us -| from.started_us) / std.time.us_per_ms else 0;
-    out.trouble(std.fmt.bufPrint(&buf, "{d:>6} ms {d:>8} B  {s} {s} (reached in {d} ms: name {d}, reach {d}, seal {d})\n", .{
-        ms,    bytes,                                    what,                                         where,
-        reach, from.reach.named_us / std.time.us_per_ms, from.reach.connected_us / std.time.us_per_ms, from.reach.sealed_us / std.time.us_per_ms,
+    // The steps are the last connection's: a redirect reached the site once
+    // more, on a connection of its own or on one kept from the answer before.
+    const steps = from.reach;
+    out.trouble(std.fmt.bufPrint(&buf, "{d:>6} ms {d:>8} B  {s} {s} (reached in {d} ms, {d} redirects: name {d}, trust {d}, reach {d}, seal {d})\n", .{
+        ms,                                  bytes,                                 what,                                    where,                                reach, from.redirects,
+        steps.named_us / std.time.us_per_ms, steps.trusted_us / std.time.us_per_ms, steps.connected_us / std.time.us_per_ms, steps.sealed_us / std.time.us_per_ms,
     }) catch return);
 }
 

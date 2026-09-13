@@ -88,14 +88,15 @@ pub const Kind = std.meta.Tag(Wire);
 /// the name, because a certificate is issued for the name that was asked for
 /// rather than for the address it resolved to.
 pub fn open(host: []const u8, port: u16, kind: Kind) Error!Wire {
-    const started = sys.clockMicros();
+    var reach: Reach = .{};
+    defer last_reach = reach;
+    var mark = sys.clockMicros();
     const address = sock.addressOf(host) catch return error.NoName;
-    last_reach.named_us = sys.clockMicros() -| started;
+    reach.named_us = lap(&mark);
     switch (kind) {
         .plain => {
             const plain = sock.Sock.connect(address, port) catch return error.Unreachable;
-            last_reach.connected_us = sys.clockMicros() -| started -| last_reach.named_us;
-            last_reach.sealed_us = 0;
+            reach.connected_us = lap(&mark);
             return .{ .plain = plain };
         },
         .secure => {
@@ -103,23 +104,32 @@ pub fn open(host: []const u8, port: u16, kind: Kind) Error!Wire {
             // dates checked against nothing say nothing.
             const when = time.now();
             if (when <= 0) return error.NoClock;
-            const before = sys.clockMicros();
-            const secure = try tls.Stream.connect(heap.allocator, try authorities(when), address, port, host, when);
-            last_reach.connected_us = 0;
-            last_reach.sealed_us = sys.clockMicros() -| before;
+            const trusted = try authorities(when);
+            reach.trusted_us = lap(&mark);
+            const secure = try tls.Stream.connect(heap.allocator, trusted, address, port, host, when);
+            reach.sealed_us = lap(&mark);
             return .{ .secure = secure };
         },
     }
 }
 
+/// The microseconds since `mark`, which is moved to now.
+fn lap(mark: *u64) u64 {
+    const now = sys.clockMicros();
+    defer mark.* = now;
+    return now -| mark.*;
+}
+
 /// How long the last `open` spent on each of its steps: finding the
-/// address, reaching the host, and sealing the connection, which for a
-/// sealed one includes reaching it. For a program saying where its time
-/// goes.
+/// address, reading the authorities where a sealed connection was the
+/// first to want them, reaching the host in the clear, and sealing the
+/// connection, which includes reaching it. For a program saying where its
+/// time goes.
 pub var last_reach: Reach = .{};
 
 pub const Reach = struct {
     named_us: u64 = 0,
+    trusted_us: u64 = 0,
     connected_us: u64 = 0,
     sealed_us: u64 = 0,
 };
