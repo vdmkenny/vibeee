@@ -137,11 +137,19 @@ var window: ?media.Screen = null;
 var reading: ?Reading = null;
 /// The page's fetch, which brings its stylesheets and scripts too.
 var fetch: fetch_mod.Fetch = .{};
-/// What a script asks for, fetched apart from the page's own, which may be
-/// mid-page, and from the pictures', which may be mid-picture.
+/// The page's own scripts and what its scripts ask for, fetched apart from
+/// the page's own fetch, which may be mid-page, and from the pictures',
+/// which may be mid-picture.
 var script_fetch: fetch_mod.Fetch = .{};
-/// Which of the scripts' asks that fetch is answering.
-var current_ask: ?u32 = null;
+/// What that fetch is bringing: one of the page's own scripts, or one of
+/// the scripts' asks.
+var script_job: ScriptJob = .idle;
+/// The page's own scripts still to come, by address in the page's order.
+var queued: dom.Scripts = .{};
+/// The page's own script being brought.
+var queued_own: links.Link = .{ .address = "", .media = "" };
+
+const ScriptJob = union(enum) { idle, own, ask: u32 };
 /// The cookies sites set and scripts write, kept while the reader is open:
 /// they belong to a site, and go with every request to it.
 var jar: cookie_mod.Jar = .{};
@@ -165,6 +173,10 @@ var period_us: usize = IDLE_US;
 /// Whether this is `web -t`, printing a page's words to the shell: no
 /// window, no pictures, and a failure said on a line rather than as a page.
 var shell = false;
+/// `web -t -v`: each thing fetched is reported on the shell's failure
+/// stream as it comes, with how long it took, which is where a slow page's
+/// time goes.
+var verbose = false;
 
 /// How much of the rule under the strip was last painted, in thousandths.
 var drawn_progress: ?u16 = null;
@@ -243,16 +255,16 @@ const Arrival = struct {
 };
 
 /// A page between its markup arriving and its words being read: what came so
-/// far, the tree its markup parsed into, and the stylesheets and scripts it
-/// links to, fetched one after another.
+/// far, the tree its markup parsed into, the stylesheets it links to, fetched
+/// one after another, and the scripts it names, to be fetched once it is on
+/// screen.
 const Reading = struct {
     source: Source,
     tree: Tree,
     sheets: css.Sheets = .{},
     scripts: dom.Scripts = .{},
-    /// The link being fetched, and whether it is a stylesheet or a script.
+    /// The stylesheet being fetched.
     link: links.Link = .{ .address = "", .media = "" },
-    fetching: enum { sheet, script } = .sheet,
 
     fn deinit(self: *Reading) void {
         self.tree.close(gpa);
@@ -309,7 +321,14 @@ export fn _start(frame: [*]usize) callconv(.c) noreturn {
     apply();
     const first = env.arg(frame, 1);
     if (first) |flag| {
-        if (std.mem.eql(u8, flag, "-t")) printText(env.arg(frame, 2) orelse usage());
+        if (std.mem.eql(u8, flag, "-t")) {
+            var target = env.arg(frame, 2) orelse usage();
+            if (std.mem.eql(u8, target, "-v")) {
+                verbose = true;
+                target = env.arg(frame, 3) orelse usage();
+            }
+            printText(target);
+        }
     }
 
     address.init(.{ .hint = "an address, or a file on this machine" });
@@ -331,8 +350,19 @@ export fn _start(frame: [*]usize) callconv(.c) noreturn {
 }
 
 fn usage() noreturn {
-    out.trouble("usage: web [address]    web -t <address>\n");
+    out.trouble("usage: web [address]    web -t [-v] <address>\n");
     sys.exit(2);
+}
+
+/// Say what came and how long it took, where `-v` asked for it.
+fn timed(what: []const u8, where: []const u8, bytes: usize, from: *const fetch_mod.Fetch) void {
+    if (!verbose) return;
+    var buf: [url.ADDRESS_MAX + 96]u8 = undefined;
+    const now = sys.clockMicros();
+    const ms = (now -| from.started_us) / std.time.us_per_ms;
+    // How much of it was reaching the site, where it was reached at all.
+    const reach = if (from.reached_us >= from.started_us) (from.reached_us -| from.started_us) / std.time.us_per_ms else 0;
+    out.trouble(std.fmt.bufPrint(&buf, "{d:>6} ms {d:>8} B  {s} {s} (reached in {d} ms)\n", .{ ms, bytes, what, where, reach }) catch return);
 }
 
 // ---------------------------------------------------------------------------
@@ -558,10 +588,17 @@ fn visit(target: []const u8) void {
 fn stop() void {
     fetch.cancel(gpa);
     if (reading != null) {
-        // What of its stylesheets and scripts came is what it is read with.
+        // What of its stylesheets came is what it is read with.
         fetch.asking.wanted = .page;
         return finish();
     }
+    // The page's own scripts still to come are left uncome: what has run
+    // has run.
+    if (script_job == .own) {
+        script_fetch.cancel(gpa);
+        script_job = .idle;
+    }
+    queued.deinit(gpa);
     if (history.current()) |entry| address.setFromStart(entry.address.slice());
     // The page on screen stays, and so do its pictures still to come.
 }
@@ -739,6 +776,7 @@ fn arrive() void {
     const said_kind = fetch.response.contentType();
     const body = fetch.body.bytes;
     fetch.body.bytes = .empty;
+    timed("page", final, body.items.len, &fetch);
     const next = take(body, base, kindOf(said_kind, final), charset.fromContentType(said_kind));
     if (reading != null) fetch.release(gpa) else fetch.cancel(gpa);
     // The address the page came from is still the fetch's own until the
@@ -801,9 +839,8 @@ fn take(body: std.ArrayList(u8), base: url.Url, kind: Kind, declared: ?charset.C
     return null;
 }
 
-/// Go on to the page's next link: read one from this machine at once, or
-/// fetch one from a site. Its stylesheets first, then its scripts. With none
-/// left, read the page.
+/// Go on to the page's next stylesheet: read one from this machine at once,
+/// or fetch one from a site. With none left, read the page.
 fn nextLink() void {
     const r = if (reading) |*open| open else return;
     while (r.sheets.next()) |link| {
@@ -813,20 +850,7 @@ fn nextLink() void {
             continue;
         }
         r.link = link;
-        r.fetching = .sheet;
         fetch.asking.wanted = .style;
-        fetch.begin(gpa, link.address);
-        return;
-    }
-    while (r.scripts.next()) |link| {
-        if (readLink(link, fetch_mod.SCRIPT_MAX)) |text| {
-            r.scripts.took(text.len);
-            r.source.keepScript(gpa, link.address, text);
-            continue;
-        }
-        r.link = link;
-        r.fetching = .script;
-        fetch.asking.wanted = .script;
         fetch.begin(gpa, link.address);
         return;
     }
@@ -843,35 +867,25 @@ fn readLink(link: links.Link, most: usize) ?[]u8 {
     return file.readAlloc(gpa, where.file(), most) catch null;
 }
 
-/// A link is here, or is not coming: kept where it came as what it is, and
-/// on to the next.
+/// A stylesheet is here, or is not coming: kept where it came, and on to
+/// the next.
 fn linkArrived() void {
     const r = if (reading) |*open| open else return;
-    if (fetch.state == .done) {
-        const came = switch (r.fetching) {
-            .sheet => isStyle(&fetch.response),
-            .script => fetch.response.status / 100 == 2,
-        };
-        if (came) {
-            if (fetch.body.bytes.toOwnedSlice(gpa)) |text| switch (r.fetching) {
-                .sheet => {
-                    r.sheets.took(text.len);
-                    r.source.keep(gpa, text, r.link.media);
-                },
-                .script => {
-                    r.scripts.took(text.len);
-                    r.source.keepScript(gpa, r.link.address, text);
-                },
-            } else |_| {}
-        }
+    timed("sheet", r.link.address, fetch.received(), &fetch);
+    if (fetch.state == .done and isStyle(&fetch.response)) {
+        if (fetch.body.bytes.toOwnedSlice(gpa)) |text| {
+            r.sheets.took(text.len);
+            r.source.keep(gpa, text, r.link.media);
+        } else |_| {}
     }
     fetch.release(gpa);
     nextLink();
 }
 
 /// Read the page being read into words, with what of its stylesheets came,
-/// as it reads in the window, run its scripts on it where the settings say,
-/// and put it on screen.
+/// as it reads in the window, and put it on screen. Its scripts come after
+/// it is on screen, where the settings say they run: what they change is
+/// read again as they run, and the page is there to read meanwhile.
 fn finish() void {
     const r = if (reading) |*open| open else return;
     var tree = r.tree;
@@ -891,13 +905,10 @@ fn finish() void {
     document = tree;
     const held = &document.?;
 
-    // A page's scripts run before it is read, so that what they change is
-    // what is read, which is the order a browser has them in.
     const doc: ?*dom.Document = if (choices.scripts) opened: {
         const engine = machine() orelse break :opened null;
         break :opened dom.open(engine, held.document, &held.rules, from.base.slice(), hostOf());
     } else null;
-    if (doc) |it| dom.load(it, from.scripts.items);
 
     var fresh: Page = .{};
     held.read(gpa, &from, window, &fresh) catch |err| {
@@ -914,7 +925,45 @@ fn finish() void {
     read_for = window;
     showPage(&fresh);
     focus_next = .page;
-    if (doc) |it| _ = afterScripts(it);
+
+    // The page's own scripts, now that it is on screen: those it names by
+    // address are brought one at a time in its order, and every one is run
+    // as soon as the ones before it have.
+    queued.deinit(gpa);
+    queued = r.scripts;
+    r.scripts = .{};
+    if (doc) |it| loadMore(it);
+}
+
+/// Run the page's own scripts as far as they are here, and bring the next
+/// one the page waits for, or read it from this machine. What they change
+/// is read again.
+fn loadMore(it: *dom.Document) void {
+    while (true) {
+        switch (dom.loadNext(it, source.scripts.items)) {
+            .done => break,
+            .waiting => {
+                const link = queued.next() orelse {
+                    // One the page names that was not kept, past what a
+                    // page may name: the rest run with what is here.
+                    dom.load(it, source.scripts.items);
+                    break;
+                };
+                if (readLink(link, fetch_mod.SCRIPT_MAX)) |text| {
+                    queued.took(text.len);
+                    source.keepScript(gpa, link.address, text);
+                    continue;
+                }
+                queued_own = link;
+                script_job = .own;
+                script_fetch.asking.wanted = .script;
+                script_fetch.asking.sent = null;
+                script_fetch.begin(gpa, link.address);
+                break;
+            },
+        }
+    }
+    _ = afterScripts(it);
 }
 
 /// The engine the page's scripts run in, started the first time a page wants
@@ -955,7 +1004,8 @@ fn forget() void {
     if (document) |*tree| tree.close(gpa);
     document = null;
     script_fetch.cancel(gpa);
-    current_ask = null;
+    script_job = .idle;
+    queued.deinit(gpa);
 }
 
 /// Read the page on screen again from its tree, at the place it was left:
@@ -1023,13 +1073,15 @@ fn kindOf(content_type: ?[]const u8, name: []const u8) Kind {
     return media_kinds.get(media_type) orelse .{ .other = media_type };
 }
 
-/// The window a page's versions are chosen for: as wide as the column the
-/// page is set in, which is what its words have however wide the window is,
-/// and as tall as the window. With no window, as the shell has none, a
-/// column the measure wide and as tall.
+/// The width a page has to be set in where there is no window, as the shell
+/// has none: the panel's, in its own pixels.
+const PANEL_WIDTH = 800;
+
+/// The window a page's versions are chosen for: as wide as the page is set,
+/// and as tall as the window. With no window, as the shell has none, as
+/// wide as the panel and as tall.
 fn versionWindow() media.Screen {
-    const measure: f32 = @floatFromInt(view_mod.MEASURE);
-    const in = window orelse return .{ .width = measure, .height = measure };
+    const in = window orelse return .{ .width = @floatFromInt(view_mod.measureIn(PANEL_WIDTH)), .height = PANEL_WIDTH };
     return .{ .width = @floatFromInt(view_mod.measureIn(@intFromFloat(in.width))), .height = in.height, .scale = in.scale };
 }
 
@@ -1113,10 +1165,12 @@ fn showPage(fresh: *Page) void {
     });
 }
 
-/// The widest a picture is drawn: the widest the column is, at the size the
-/// interface is drawn.
+/// The widest a picture is drawn: as wide as the page is set, in the
+/// screen's pixels.
 fn widest() u16 {
-    return @intCast(view_mod.MEASURE * eui.theme.textScale());
+    const scale = eui.theme.textScale();
+    const wide: i32 = if (window) |in| @intFromFloat(in.width) else @divTrunc(PANEL_WIDTH, scale);
+    return @intCast(@min(view_mod.measureIn(wide) * scale, std.math.maxInt(u16)));
 }
 
 /// The window a page is drawn in, as a stylesheet asks about it: in the
@@ -1136,9 +1190,9 @@ fn windowOf(area: Rect) media.Screen {
 // The page's scripts
 // ---------------------------------------------------------------------------
 
-/// Go on with what the page's scripts have on their way: the ask being
-/// answered, the next one to ask, or what they set to run and is now due.
-/// True where something happened.
+/// Go on with what the page's scripts have on their way: the page's own
+/// script or the ask being brought, the next ask to bring, or what they set
+/// to run and is now due. True where something happened.
 fn stepScripts() bool {
     const doc = scripts orelse return false;
     if (script_fetch.busy()) {
@@ -1146,7 +1200,7 @@ fn stepScripts() bool {
         return true;
     }
     if (dom.nextAsk(doc)) |ask| {
-        current_ask = ask.id;
+        script_job = .{ .ask = ask.id };
         script_fetch.asking.wanted = if (ask.script) .script else .page;
         script_fetch.asking.sent = ask.sent;
         script_fetch.begin(gpa, ask.address);
@@ -1158,17 +1212,36 @@ fn stepScripts() bool {
     return true;
 }
 
-/// The ask being answered has its answer, or will not: the scripts are told.
+/// What the scripts' fetch was bringing is here, or will not be: one of
+/// the page's own scripts is kept and the page's scripts go on, or the
+/// scripts are told what their ask came to.
 fn answered(doc: *dom.Document) void {
-    const id = current_ask orelse return;
-    current_ask = null;
-    const got: dom.Answer = if (script_fetch.state == .done)
-        .{ .status = script_fetch.response.status, .body = script_fetch.body.bytes.items }
-    else
-        .{ .failed = true };
-    dom.answer(doc, id, got);
-    script_fetch.release(gpa);
-    _ = afterScripts(doc);
+    const job = script_job;
+    script_job = .idle;
+    switch (job) {
+        .idle => script_fetch.release(gpa),
+        .own => {
+            timed("script", queued_own.address, script_fetch.received(), &script_fetch);
+            const came = script_fetch.state == .done and script_fetch.response.status / 100 == 2;
+            // One that did not come is kept as nothing, so the page's
+            // scripts go on past it rather than wait for it.
+            const text: []u8 = if (came) script_fetch.body.bytes.toOwnedSlice(gpa) catch &.{} else &.{};
+            queued.took(text.len);
+            source.keepScript(gpa, queued_own.address, text);
+            script_fetch.release(gpa);
+            loadMore(doc);
+        },
+        .ask => |id| {
+            timed("ask", script_fetch.address(), script_fetch.received(), &script_fetch);
+            const got: dom.Answer = if (script_fetch.state == .done)
+                .{ .status = script_fetch.response.status, .body = script_fetch.body.bytes.items }
+            else
+                .{ .failed = true };
+            dom.answer(doc, id, got);
+            script_fetch.release(gpa);
+            _ = afterScripts(doc);
+        },
+    }
 }
 
 /// What the scripts have done since they were last asked: sent the reader
@@ -1610,6 +1683,7 @@ fn scriptsText(buf: []u8) []const u8 {
     if (!choices.scripts) return "scripts off";
     const doc = scripts orelse return "";
     const report = dom.reportOf(doc);
+    if (script_job == .own) return std.fmt.bufPrint(buf, "scripts {d}, more coming", .{report.ran}) catch "scripts coming";
     if (report.ran == 0) return "no scripts";
     if (report.error_last.len > 0) {
         const line = report.error_last[0 .. std.mem.indexOfScalar(u8, report.error_last, '\n') orelse report.error_last.len];

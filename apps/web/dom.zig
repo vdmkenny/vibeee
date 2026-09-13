@@ -64,9 +64,10 @@ pub const Host = struct {
 };
 
 /// How many scripts a page names by address that are fetched for it, and
-/// what they may come to between them. A page's own scripts are a few;
-/// one that names more is run with those it names first.
-pub const SCRIPTS_MAX = 16;
+/// what they may come to between them. A page's own scripts are a handful,
+/// a site's a few dozen; one that names more is run with those it names
+/// first.
+pub const SCRIPTS_MAX = 32;
 pub const SCRIPTS_BYTES_MAX = 2 * 1024 * 1024;
 
 /// The scripts a page names by address, in the order it names them.
@@ -369,17 +370,59 @@ pub fn close(it: *Document) void {
 
 /// Run what the page carries, in the order it carries it: each script
 /// element's own words, or the text the reader fetched for the address it
-/// names. A script that adds a script to the page as it runs has that one
-/// run after it. Then the document is told it is ready, which is what a
-/// page waits for.
+/// names, where it fetched one. A script that adds a script to the page as
+/// it runs has that one run after it. Then the document is told it is
+/// ready, which is what a page waits for.
 pub fn load(it: *Document, fetched: []const Fetched) void {
     while (nextScript(it)) |node| {
         it.ran_nodes.put(it.gpa, node, {}) catch return;
         runElement(it, node, fetched);
     }
+    loaded(it);
+}
+
+/// What running the page's scripts as far as they are here came to.
+pub const Loading = enum {
+    /// Every script the page carries has run, and it has been told it is
+    /// ready.
+    done,
+    /// The next script in the page's order is one by address whose text has
+    /// not come: the page waits for it.
+    waiting,
+};
+
+/// Run the page's scripts in its order as far as their text is here, and
+/// stop at the first named by an address the reader has not brought yet,
+/// so that a page is shown and its scripts run as each one comes. Once the
+/// last has run the document is told it is ready.
+pub fn loadNext(it: *Document, fetched: []const Fetched) Loading {
+    while (nextScript(it)) |node| {
+        if (lexbor.attribute(node, "src")) |named| {
+            var buf: [url.ADDRESS_MAX]u8 = undefined;
+            if (resolvedFrom(it, named, &buf)) |resolved| {
+                if (fetchedText(fetched, resolved) == null) return .waiting;
+            }
+        }
+        it.ran_nodes.put(it.gpa, node, {}) catch return .done;
+        runElement(it, node, fetched);
+    }
+    loaded(it);
+    return .done;
+}
+
+/// Tell the page it is ready, which is what a page waits for.
+fn loaded(it: *Document) void {
     const root = lexbor.lxb_dom_document_root(it.tree) orelse return;
     _ = tell(it, root, "DOMContentLoaded", false);
     _ = tell(it, root, "load", false);
+}
+
+/// The text the reader fetched for `address`, where it fetched one.
+fn fetchedText(fetched: []const Fetched, address: []const u8) ?[]const u8 {
+    for (fetched) |script| {
+        if (std.mem.eql(u8, script.address, address)) return script.text;
+    }
+    return null;
 }
 
 /// Run `source` as a link's own script, which is what a link whose address
@@ -425,9 +468,8 @@ fn runElement(it: *Document, node: *Node, fetched: []const Fetched) void {
     if (lexbor.attribute(node, "src")) |named| {
         var buf: [url.ADDRESS_MAX]u8 = undefined;
         const resolved = resolvedFrom(it, named, &buf) orelse return;
-        for (fetched) |script| {
-            if (std.mem.eql(u8, script.address, resolved)) return runText(it, script.text, "<script src>");
-        }
+        const text = fetchedText(fetched, resolved) orelse return;
+        if (text.len > 0) runText(it, text, "<script src>");
         return;
     }
     const text = textOfNode(node);
