@@ -51,13 +51,10 @@ const Size = layout_mod.Size;
 const Spacing = layout_mod.Spacing;
 const Pictures = pictures_mod.Pictures;
 
-/// The widest a column of text is set, in the interface's own pixels: about
-/// seventy-five letters of the body face, past which the eye loses its way
-/// back to the start of the next line.
-pub const MEASURE = 480;
-
-/// The least room either side of the column.
-const MARGIN = 16;
+/// The room either side of the page, in the interface's own pixels: a page
+/// is set as wide as the window less this, as a browser sets one, and keeps
+/// its own margins and widths within that.
+const MARGIN = 8;
 
 /// Lines the wheel moves a page by for each step it turns.
 const WHEEL_LINES = 3;
@@ -645,16 +642,61 @@ const Pass = struct {
         const reach = @max(self.spacing.inset, self.spacing.above_heading);
         const top = band.y - self.area.y + self.view.scroll - reach;
         const bottom = band.bottom() - self.area.y + self.view.scroll + reach;
-        // The boxes' own grounds, each over the box as far as its padding.
+        // The boxes' own grounds and lines, each over the box as far as
+        // its padding.
         for (self.view.layout.fills.items) |fill| {
             const area = self.onScreen(fill.area);
             if (area.intersect(s.clip).isEmpty()) continue;
-            s.fill(area, self.adapted(fill.ground) orelse continue);
+            self.paintBox(s, area, fill);
         }
         for (self.view.layout.tables.items) |grid| self.table(s, grid);
         const lines = self.view.layout.lines.items;
         var i = self.view.layout.lineAt(top);
         while (i < lines.len and lines[i].y < bottom) : (i += 1) self.line(s, i);
+    }
+
+    /// A box's lines along its sides and its ground inside them. Where the
+    /// corners are rounded and the four lines are one line all round, both
+    /// are drawn rounded; a box whose sides differ is drawn square, a side
+    /// at a time.
+    fn paintBox(self: Pass, s: Surface, area: Rect, fill: layout_mod.Fill) void {
+        const e = fill.edges;
+        const inner = Rect{
+            .x = area.x + e.left.width,
+            .y = area.y + e.top.width,
+            .w = @max(area.w - e.left.width - e.right.width, 0),
+            .h = @max(area.h - e.top.width - e.bottom.width, 0),
+        };
+        const ground = self.adapted(fill.ground);
+        const uniform = e.top.width == e.right.width and e.top.width == e.bottom.width and e.top.width == e.left.width and
+            std.meta.eql(e.top.colour, e.right.colour) and std.meta.eql(e.top.colour, e.bottom.colour) and std.meta.eql(e.top.colour, e.left.colour);
+        if (fill.radius > 0 and uniform) {
+            if (ground) |colour| {
+                if (e.top.width > 0) s.fillRounded(area, fill.radius, .all, self.lineColour(e.top));
+                s.fillRounded(inner, @max(fill.radius - e.top.width, 0), .all, colour);
+            } else {
+                // A line around nothing of its own: rings, one a pixel, so
+                // that whatever is under the box stays under its words.
+                var ring: i32 = 0;
+                while (ring < e.top.width) : (ring += 1) {
+                    s.frameRounded(area.inset(ring), @max(fill.radius - ring, 0), .all, self.lineColour(e.top));
+                }
+            }
+            return;
+        }
+        if (ground) |colour| s.fill(inner, colour);
+        if (e.top.width > 0) s.fill(.{ .x = area.x, .y = area.y, .w = area.w, .h = e.top.width }, self.lineColour(e.top));
+        if (e.bottom.width > 0) s.fill(.{ .x = area.x, .y = area.bottom() - e.bottom.width, .w = area.w, .h = e.bottom.width }, self.lineColour(e.bottom));
+        if (e.left.width > 0) s.fill(.{ .x = area.x, .y = area.y, .w = e.left.width, .h = area.h }, self.lineColour(e.left));
+        if (e.right.width > 0) s.fill(.{ .x = area.right() - e.right.width, .y = area.y, .w = e.right.width, .h = area.h }, self.lineColour(e.right));
+    }
+
+    /// What a line along a box's side is drawn in: the page's colour for it
+    /// brought onto the theme, or the theme's own line where the page gives
+    /// none.
+    fn lineColour(self: Pass, edge: layout_mod.Fill.Edge) Color {
+        const colour = edge.colour orelse return self.theme.line;
+        return recolour.adapted(colour, shadeOf(self.page), self.theme.surface_hot);
     }
 
     /// A table set as a grid: the rule colour it is filled with, showing
@@ -837,6 +879,7 @@ fn columnOf(area: Rect, scale: i32) Rect {
 
 /// How wide the column a page is set in is, in the page's own pixels, in a
 /// view that many of them wide.
+/// How wide a page is set in a window `width` wide.
 pub fn measureIn(width: i32) i32 {
-    return @max(@min(MEASURE, width - 2 * MARGIN), 1);
+    return @max(width - 2 * MARGIN, 1);
 }

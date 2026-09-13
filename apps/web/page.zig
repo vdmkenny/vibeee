@@ -97,6 +97,10 @@ pub const BoxStyle = struct {
     /// The room the box keeps outside itself and inside itself.
     margin: Edges = .{},
     padding: Edges = .{},
+    /// The lines it draws along its sides, between the two.
+    border: Lines = .{},
+    /// How far its corners are rounded, where they are.
+    radius: Unit = .auto,
 
     /// The room on a box's four sides, each a length the layout resolves. A
     /// side a page leaves unsaid is `auto`, which is no room.
@@ -105,6 +109,21 @@ pub const BoxStyle = struct {
         right: Unit = .auto,
         bottom: Unit = .auto,
         left: Unit = .auto,
+    };
+
+    /// The line a box draws along one side: how wide, which for `auto` is
+    /// no line, and in what colour where the page gives one; in the words'
+    /// where it does not.
+    pub const Line = struct {
+        width: Unit = .auto,
+        colour: ?rgb.Colour = null,
+    };
+
+    pub const Lines = struct {
+        top: Line = .{},
+        right: Line = .{},
+        bottom: Line = .{},
+        left: Line = .{},
     };
 
     pub const Display = enum { block, @"inline", flex };

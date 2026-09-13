@@ -90,7 +90,71 @@ pub fn boxStyle(node: *const Node, fallback: page_mod.BoxStyle.Display) page_mod
         .max_height = lengthOf(node, .max_height),
         .margin = edgesOf(node, .margin, .{ .margin_top, .margin_right, .margin_bottom, .margin_left }),
         .padding = edgesOf(node, .padding, .{ .padding_top, .padding_right, .padding_bottom, .padding_left }),
+        .border = linesOf(node),
+        .radius = radiusOf(node),
     };
+}
+
+/// The lines a box draws along its sides: from the `border` shorthand for
+/// all four, a side's own shorthand such as `border-left` for that side,
+/// and a side's colour written on its own taking the colour alone.
+fn linesOf(node: *const Node) page_mod.BoxStyle.Lines {
+    var lines = page_mod.BoxStyle.Lines{};
+    if (valueOf(lexbor.Border, node, .border)) |all| {
+        const line = lineOf(all);
+        lines = .{ .top = line, .right = line, .bottom = line, .left = line };
+    }
+    const sides = [_]*page_mod.BoxStyle.Line{ &lines.top, &lines.right, &lines.bottom, &lines.left };
+    const shorthands = [_]lexbor.Property{ .border_top, .border_right, .border_bottom, .border_left };
+    const colours = [_]lexbor.Property{ .border_top_color, .border_right_color, .border_bottom_color, .border_left_color };
+    for (sides, shorthands, colours) |side, shorthand, colour| {
+        if (valueOf(lexbor.Border, node, shorthand)) |one| side.* = lineOf(one);
+        if (valueOf(lexbor.Colour, node, colour)) |given| side.colour = colourOf(given);
+    }
+    return lines;
+}
+
+/// One side as a stylesheet writes it. No line where it is not drawn, or is
+/// drawn in nothing; every way of drawing one is drawn as a solid line
+/// here. A width unsaid is the middle one, as a stylesheet means it.
+fn lineOf(border: *const lexbor.Border) page_mod.BoxStyle.Line {
+    switch (border.style) {
+        .undef, .none, .hidden => return .{},
+        else => {},
+    }
+    const width: page_mod.Unit = switch (border.width.kind) {
+        .thin => .{ .px = 1 },
+        .undef, .medium => .{ .px = 3 },
+        .thick => .{ .px = 5 },
+        .length => switch (border.width.length.unit) {
+            .undef, .px => .{ .px = @floatCast(border.width.length.num) },
+            else => .auto,
+        },
+        else => .auto,
+    };
+    if (paintOf(&border.colour)) |given| {
+        if (given == .transparent) return .{};
+    }
+    return .{ .width = width, .colour = colourOf(&border.colour) };
+}
+
+/// A colour value as one of the system's colours, or nothing where it is
+/// the words' own or none.
+fn colourOf(colour: *const lexbor.Colour) ?rgb.Colour {
+    return switch (paintOf(colour) orelse return null) {
+        .colour => |given| given,
+        .current, .transparent => null,
+    };
+}
+
+/// How far a box's corners are rounded, from `border-radius`, which
+/// upstream keeps as written: the first length of it, read as a width.
+fn radiusOf(node: *const Node) page_mod.Unit {
+    if (node.type != .element) return .auto;
+    const cascade = cascadeOf(node) orelse return .auto;
+    const declaration = lexbor.lxb_dom_element_style_by_name(node, "border-radius", "border-radius".len) orelse return .auto;
+    const custom = customOf(declaration) orelse return .auto;
+    return lengthIn(cascade.parser, "width", firstOf(custom.value.slice()));
 }
 
 /// The room on a box's four sides, from the `margin` or `padding` shorthand
@@ -202,7 +266,7 @@ fn itemsOf(node: *const Node) page_mod.BoxStyle.Items {
 /// Upstream reads none of the three, so the value is kept as it was written
 /// and read back as the length of a `width`.
 fn gapOf(node: *const Node) page_mod.Unit {
-    if (cascadeOf(node) == null) return .auto;
+    if (node.type != .element or cascadeOf(node) == null) return .auto;
     for ([_][]const u8{ "gap", "row-gap", "column-gap" }) |name| {
         const declaration = lexbor.lxb_dom_element_style_by_name(node, name.ptr, name.len) orelse continue;
         const custom = customOf(declaration) orelse continue;
@@ -564,13 +628,14 @@ fn honoured(style: *const lexbor.StyleRule) bool {
         if (rule.kind != .declaration) continue;
         const declaration: *const lexbor.Declaration = @fieldParentPtr("rule", rule);
         switch (declaration.property) {
-            .display, .width, .height, .min_width, .min_height, .max_width, .max_height, .flex_direction, .justify_content, .align_items, .visibility, .opacity, .color, .background_color, .text_align, .white_space, .margin, .margin_top, .margin_right, .margin_bottom, .margin_left, .padding, .padding_top, .padding_right, .padding_bottom, .padding_left => return true,
+            .display, .width, .height, .min_width, .min_height, .max_width, .max_height, .flex_direction, .justify_content, .align_items, .visibility, .opacity, .color, .background_color, .text_align, .white_space, .margin, .margin_top, .margin_right, .margin_bottom, .margin_left, .padding, .padding_top, .padding_right, .padding_bottom, .padding_left, .border, .border_top, .border_right, .border_bottom, .border_left, .border_top_color, .border_right_color, .border_bottom_color, .border_left_color => return true,
             .custom => {
                 const custom = customOf(declaration) orelse continue;
                 const name = custom.name.slice();
                 if (std.ascii.eqlIgnoreCase(name, "background") or
                     std.ascii.eqlIgnoreCase(name, "list-style-type") or
                     std.ascii.eqlIgnoreCase(name, "list-style") or
+                    std.ascii.eqlIgnoreCase(name, "border-radius") or
                     isGap(name)) return true;
             },
             else => {},

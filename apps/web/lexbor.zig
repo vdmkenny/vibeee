@@ -425,6 +425,15 @@ pub const Property = enum(usize) {
     custom = 0x0001,
     align_items = 0x0003,
     background_color = 0x0006,
+    border = 0x0009,
+    border_bottom = 0x000a,
+    border_bottom_color = 0x000b,
+    border_left = 0x000c,
+    border_left_color = 0x000d,
+    border_right = 0x000e,
+    border_right_color = 0x000f,
+    border_top = 0x0010,
+    border_top_color = 0x0011,
     color = 0x0015,
     display = 0x0017,
     flex_direction = 0x001b,
@@ -468,6 +477,9 @@ pub const Keyword = enum(c_uint) {
     /// Nothing written: a side of a shorthand the page did not give.
     undef = 0x0000,
     auto = 0x000c,
+    thin = 0x001c,
+    medium = 0x001d,
+    thick = 0x001e,
     length = 0x0014,
     flex_start = 0x0005,
     flex_end = 0x0006,
@@ -629,6 +641,22 @@ pub const Number = extern struct { num: f64, is_float: bool };
 
 /// A length, with its unit.
 pub const Length = extern struct { num: f64, is_float: bool, unit: Unit };
+
+/// A length, or a keyword in its place, as a border's width is: `thin`,
+/// `medium` or `thick`.
+pub const LengthType = extern struct {
+    kind: Keyword,
+    length: Length,
+};
+
+/// One side of a border, or all four from the shorthand: how it is drawn,
+/// how wide, and in what colour. A side the page did not write is `undef`
+/// in each.
+pub const Border = extern struct {
+    style: Keyword,
+    width: LengthType,
+    colour: Colour,
+};
 
 /// A length, a percentage, or a keyword such as `auto`.
 pub const LengthPercentage = extern struct {

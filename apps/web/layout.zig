@@ -19,6 +19,7 @@
 const std = @import("std");
 const text_lib = @import("lib").text;
 const page_mod = @import("page.zig");
+const rgb = @import("lib").rgb;
 
 const Page = page_mod.Page;
 const Block = page_mod.Block;
@@ -52,9 +53,25 @@ pub const Placed = struct {
 /// Where one cell of a grid is, and which of the page's cells it is.
 pub const Box = struct { area: Area, cell: u32 };
 
-/// A box's own ground, and where it is painted: over the box as far as its
-/// padding reaches, and not over the margin around it.
-pub const Fill = struct { area: Area, ground: page_mod.Swatch };
+/// A box's own ground and the lines along its sides, and where they are
+/// painted: over the box as far as its padding reaches, and not over the
+/// margin around it. The lines are painted inside `area`'s edge, and the
+/// ground inside them.
+pub const Fill = struct {
+    area: Area,
+    ground: page_mod.Swatch,
+    edges: Edges = .{},
+    /// How far the corners are rounded.
+    radius: i32 = 0,
+
+    pub const Edge = struct { width: i32 = 0, colour: ?rgb.Colour = null };
+    pub const Edges = struct { top: Edge = .{}, right: Edge = .{}, bottom: Edge = .{}, left: Edge = .{} };
+
+    /// Whether any line is drawn.
+    pub fn lined(self: Fill) bool {
+        return self.edges.top.width > 0 or self.edges.right.width > 0 or self.edges.bottom.width > 0 or self.edges.left.width > 0;
+    }
+};
 
 /// One thing on a line: words from one run, or a control or a picture.
 pub const Frag = struct {
@@ -266,8 +283,9 @@ fn wantsBox(box: page_mod.Container) bool {
     if (style.display == .@"inline") return false;
     if (box.ground != .none) return true;
     const edges = [_]page_mod.Unit{
-        style.margin.top,  style.margin.right,  style.margin.bottom,  style.margin.left,
-        style.padding.top, style.padding.right, style.padding.bottom, style.padding.left,
+        style.margin.top,       style.margin.right,       style.margin.bottom,       style.margin.left,
+        style.padding.top,      style.padding.right,      style.padding.bottom,      style.padding.left,
+        style.border.top.width, style.border.right.width, style.border.bottom.width, style.border.left.width,
     };
     for (edges) |unit| switch (unit) {
         .auto => {},
@@ -455,6 +473,8 @@ fn Placer(comptime Metrics: type) type {
             const boxed = item or style.display != .@"inline";
             const margin = if (boxed) self.roomOf(style.margin, room) else Room{};
             const padding = if (boxed) self.roomOf(style.padding, room) else Room{};
+            const edges = if (boxed) self.edgesOf(style.border, room) else Fill.Edges{};
+            const lined = edges.top.width > 0 or edges.right.width > 0 or edges.bottom.width > 0 or edges.left.width > 0;
 
             if (self.previous) |before| self.leave(gap(self.spacing, before, self.page.blocks.items[span.first]));
             self.leave(margin.top);
@@ -467,19 +487,21 @@ fn Placer(comptime Metrics: type) type {
             // The box's ground goes in before the boxes it holds, so that
             // theirs are painted over it and not under it; how far down it
             // reaches is known once they are set.
-            var laid = Laid{ .margin_x = margin.left + margin.right, .right = margin.right + padding.right };
-            if (kept.ground != .none) {
+            var laid = Laid{ .margin_x = margin.left + margin.right, .right = margin.right + edges.right.width + padding.right };
+            if (kept.ground != .none or lined) {
                 laid.fill = self.out.fills.items.len;
                 try self.out.fills.append(self.gpa, .{
                     .area = .{ .x = box_x, .y = box_top, .w = box_w, .h = 0 },
                     .ground = kept.ground,
+                    .edges = edges,
+                    .radius = self.resolved(style.radius, room) orelse 0,
                 });
             }
-            const inner_x = box_x + padding.left;
-            const inner_room = @max(box_w - padding.left - padding.right, self.spacing.indent * 2);
+            const inner_x = box_x + edges.left.width + padding.left;
+            const inner_room = @max(box_w - edges.left.width - edges.right.width - padding.left - padding.right, self.spacing.indent * 2);
             self.left = inner_x;
             self.right = inner_x + inner_room;
-            self.y += padding.top;
+            self.y += edges.top.width + padding.top;
 
             if (style.display == .flex) {
                 try self.flex(index, inner_x, inner_room);
@@ -506,7 +528,7 @@ fn Placer(comptime Metrics: type) type {
                 }
             }
 
-            self.y += padding.bottom;
+            self.y += padding.bottom + edges.bottom.width;
             if (laid.fill) |fill| self.out.fills.items[fill].area.h = self.y - box_top;
             self.y += margin.bottom;
             self.owed = margin.bottom;
@@ -519,6 +541,21 @@ fn Placer(comptime Metrics: type) type {
             const more = @max(wanted - self.owed, 0);
             self.y += more;
             self.owed += more;
+        }
+
+        /// The lines a box draws along its sides, each as wide in pixels as
+        /// it says, and nought wide where it draws none.
+        fn edgesOf(self: *const Self, lines: page_mod.BoxStyle.Lines, base: i32) Fill.Edges {
+            return .{
+                .top = self.edgeOf(lines.top, base),
+                .right = self.edgeOf(lines.right, base),
+                .bottom = self.edgeOf(lines.bottom, base),
+                .left = self.edgeOf(lines.left, base),
+            };
+        }
+
+        fn edgeOf(self: *const Self, line: page_mod.BoxStyle.Line, base: i32) Fill.Edge {
+            return .{ .width = @max(self.resolved(line.width, base) orelse 0, 0), .colour = line.colour };
         }
 
         /// The room a box keeps on its sides, resolved to pixels against
@@ -1916,6 +1953,30 @@ test "a box inside a box with a ground paints its own ground over it, not under 
     try testing.expectEqual(@as(i32, 5 + 18 + 5), fills[0].area.h);
     try testing.expectEqual(@as(i32, 5), fills[1].area.y);
     try testing.expectEqual(@as(i32, 18), fills[1].area.h);
+}
+
+test "a box draws its lines inside its edge, its words inside them, and its ground between them" {
+    var b = try flexed(200, .{ .display = .block }, &.{
+        .{ .words = "aa", .style = .{
+            .display = .block,
+            .border = .{ .left = .{ .width = .{ .px = 10 }, .colour = .hex(0xf28500) }, .top = .{ .width = .{ .px = 1 } } },
+            .padding = .{ .left = .{ .px = 12 } },
+        } },
+    });
+    defer b.deinit();
+    // Ten of line and twelve of room before the words; one of line above.
+    try testing.expectEqual(@as(i32, 22), b.line(0)[0].x);
+    try testing.expectEqual(@as(i32, 1), b.layout.lines.items[0].y);
+    try testing.expectEqual(@as(usize, 1), b.layout.fills.items.len);
+    const fill = b.layout.fills.items[0];
+    try testing.expect(fill.lined());
+    try testing.expectEqual(@as(i32, 10), fill.edges.left.width);
+    try testing.expectEqual(@as(?rgb.Colour, .hex(0xf28500)), fill.edges.left.colour);
+    try testing.expectEqual(@as(i32, 1), fill.edges.top.width);
+    try testing.expectEqual(@as(?rgb.Colour, null), fill.edges.top.colour);
+    try testing.expectEqual(@as(i32, 0), fill.edges.right.width);
+    try testing.expectEqual(@as(i32, 1 + 18), fill.area.h);
+    try testing.expectEqual(@as(i32, 200), fill.area.w);
 }
 
 test "a box set among a row's items takes its ground with it to where the item goes" {

@@ -604,9 +604,9 @@ test "a box with room and a ground of its own is kept as a block with both, for 
     );
     defer it.end();
     css.apply(heap, it.tree,
-        \\.card { background: #eef; padding: 16px; margin: 20px 0; margin-left: 4px; }
+        \\.card { background: #eef; padding: 16px; margin: 20px 0; margin-left: 4px; border: 1px solid #a2a9b1; border-left: 10px solid #f28500; border-radius: 6px; }
         \\.panel { background: #2b2d42 url(none.png) no-repeat; color: #edf2f4; }
-        \\.three { padding: 1px 2px 3px; }
+        \\.three { padding: 1px 2px 3px; border-top: none; border-bottom: solid; border-bottom-color: #2a9d8f; }
     , null, &rules);
     var page = try it.page();
     defer page.deinit(heap);
@@ -634,6 +634,15 @@ test "a box with room and a ground of its own is kept as a block with both, for 
     try testing.expectEqualDeep(page_mod.BoxStyle.Edges{ .top = .{ .px = 20 }, .right = .{ .px = 0 }, .bottom = .{ .px = 20 }, .left = .{ .px = 4 } }, kept.style.margin);
     // Three leave the left its right's.
     try testing.expectEqualDeep(page_mod.BoxStyle.Edges{ .top = .{ .px = 1 }, .right = .{ .px = 2 }, .bottom = .{ .px = 3 }, .left = .{ .px = 2 } }, (three orelse return error.NoThree).style.padding);
+    // The lines along the card's sides: one all round, the left its own
+    // wider and orange, and the corners rounded.
+    try testing.expectEqualDeep(page_mod.BoxStyle.Line{ .width = .{ .px = 1 }, .colour = .hex(0xa2a9b1) }, kept.style.border.top);
+    try testing.expectEqualDeep(page_mod.BoxStyle.Line{ .width = .{ .px = 10 }, .colour = .hex(0xf28500) }, kept.style.border.left);
+    try testing.expectEqualDeep(page_mod.Unit{ .px = 6 }, kept.style.radius);
+    // A line drawn as none is no line, and one whose colour stands alone
+    // takes that colour.
+    try testing.expectEqualDeep(page_mod.BoxStyle.Line{}, (three orelse return error.NoThree).style.border.top);
+    try testing.expectEqualDeep(page_mod.BoxStyle.Line{ .width = .{ .px = 3 }, .colour = .hex(0x2a9d8f) }, (three orelse return error.NoThree).style.border.bottom);
     try testing.expect(std.mem.findScalar(rgb.Colour, page.palette.items, .hex(0xeeeeff)) != null);
     try testing.expect(std.mem.findScalar(rgb.Colour, page.palette.items, .hex(0x2b2d42)) != null);
 }
