@@ -248,6 +248,22 @@ pub fn buildIn(gpa: std.mem.Allocator, page: *const Page, viewport: Viewport, sp
 }
 
 /// The room above `block`, given what came before it.
+/// Whether a box has to be laid as a box rather than folded into the column:
+/// one that sets its items side by side, or one that keeps room outside or
+/// inside itself that the column has no other way to leave.
+fn wantsBox(style: page_mod.BoxStyle) bool {
+    if (style.display == .flex) return true;
+    const edges = [_]page_mod.Unit{
+        style.margin.top,  style.margin.right,  style.margin.bottom,  style.margin.left,
+        style.padding.top, style.padding.right, style.padding.bottom, style.padding.left,
+    };
+    for (edges) |unit| switch (unit) {
+        .auto => {},
+        else => return true,
+    };
+    return false;
+}
+
 fn gap(spacing: Spacing, before: Block, block: Block) i32 {
     if (block.kind == .heading) return spacing.above_heading;
     if (before.kind == .heading) return spacing.below_heading;
@@ -387,9 +403,12 @@ fn Placer(comptime Metrics: type) type {
             self.y += inset;
         }
 
-        /// What the box `index` holds, set in a box `room` wide from `x`:
-        /// its own blocks, and the boxes it holds among them, in the order
-        /// they come.
+        /// What the box `index` holds, set in a box `room` wide from `x`: its
+        /// own blocks, and the boxes it holds among them, in the order they
+        /// come. The room the box keeps outside and inside itself steps its
+        /// content in from the sides and leaves space above and below it. A
+        /// box that keeps space above or below owns that edge, so the reader's
+        /// own room between blocks does not land there on top of it.
         fn container(self: *Self, index: u32, x: i32, room: i32) Error!void {
             const span = self.owns(index);
             if (span.first >= span.end) return;
@@ -399,31 +418,59 @@ fn Placer(comptime Metrics: type) type {
                 self.left = keep_left;
                 self.right = keep_right;
             }
-            self.left = x;
-            self.right = x + room;
-            if (self.page.containers.items[index].style.display == .flex) return self.flex(index, x, room);
 
-            var at = span.first;
-            var kid: usize = 0;
-            const children = self.page.childrenOf(self.page.containers.items[index]);
-            while (at < span.end) {
-                if (kid < children.len) {
-                    const there = self.owns(children[kid]);
-                    if (there.end <= at) {
-                        kid += 1;
-                        continue;
-                    }
-                    if (there.first <= at) {
-                        const next = children[kid];
-                        kid += 1;
-                        try self.container(next, x, room);
-                        at = @max(at, self.owns(next).end);
-                        continue;
-                    }
-                }
-                try self.layBlock(at);
-                at += 1;
+            const style = self.page.containers.items[index].style;
+            const room_left = self.edge(style.margin.left, room) + self.edge(style.padding.left, room);
+            const room_right = self.edge(style.margin.right, room) + self.edge(style.padding.right, room);
+            const room_top = self.edge(style.margin.top, room) + self.edge(style.padding.top, room);
+            const room_bottom = self.edge(style.margin.bottom, room) + self.edge(style.padding.bottom, room);
+
+            const inner_x = x + room_left;
+            const inner_room = @max(room - room_left - room_right, self.spacing.indent * 2);
+            self.left = inner_x;
+            self.right = inner_x + inner_room;
+
+            if (room_top != 0) {
+                self.y += room_top;
+                self.previous = null;
             }
+
+            if (style.display == .flex) {
+                try self.flex(index, inner_x, inner_room);
+            } else {
+                var at = span.first;
+                var kid: usize = 0;
+                const children = self.page.childrenOf(self.page.containers.items[index]);
+                while (at < span.end) {
+                    if (kid < children.len) {
+                        const there = self.owns(children[kid]);
+                        if (there.end <= at) {
+                            kid += 1;
+                            continue;
+                        }
+                        if (there.first <= at) {
+                            const next = children[kid];
+                            kid += 1;
+                            try self.container(next, inner_x, inner_room);
+                            at = @max(at, self.owns(next).end);
+                            continue;
+                        }
+                    }
+                    try self.layBlock(at);
+                    at += 1;
+                }
+            }
+
+            if (room_bottom != 0) {
+                self.y += room_bottom;
+                self.previous = null;
+            }
+        }
+
+        /// The room a side keeps, resolved to pixels against `base`: nought
+        /// for a side the page left unsaid, which keeps none.
+        fn edge(self: *const Self, unit: page_mod.Unit, base: i32) i32 {
+            return self.resolved(unit, base) orelse 0;
         }
 
         /// Which of the page's blocks the box `index` holds, where the page
@@ -1080,7 +1127,7 @@ fn Placer(comptime Metrics: type) type {
             if (boxes.len == 0) return false;
             var asked = false;
             for (boxes) |each| {
-                if (each.style.display == .flex) asked = true;
+                if (wantsBox(each.style)) asked = true;
             }
             if (!asked) return false;
 
@@ -1710,6 +1757,42 @@ test "items asking for more than the room there is are held to a share of it" {
     try testing.expectEqual(@as(i32, 34), placed[0].area.w);
     try testing.expectEqual(@as(i32, 34), placed[1].area.x);
     try testing.expectEqual(@as(i32, 26), placed[1].area.w);
+}
+
+test "a box steps its words in by the room it keeps at its side, and is taller by the room above and below" {
+    var b = try flexed(200, .{ .display = .block }, &.{
+        .{ .words = "aa", .style = .{ .padding = .{
+            .left = .{ .px = 20 },
+            .top = .{ .px = 10 },
+            .bottom = .{ .px = 10 },
+        } } },
+    });
+    defer b.deinit();
+    try testing.expectEqual(@as(i32, 20), b.line(0)[0].x);
+    try testing.expectEqual(@as(i32, 10), b.layout.lines.items[0].y);
+    try testing.expectEqual(@as(i32, 10 + 18 + 10), b.layout.height);
+}
+
+test "the room a box keeps above it stands in place of the reader's own, not on top of it" {
+    var b = try flexed(200, .{ .display = .block }, &.{
+        .{ .words = "aa" },
+        .{ .words = "bb", .style = .{ .margin = .{ .top = .{ .px = 30 } } } },
+    });
+    defer b.deinit();
+    // The first box's line, then the second's, a plain thirty below it: the
+    // reader's own room between blocks does not land there as well.
+    try testing.expectEqual(@as(usize, 2), b.layout.lines.items.len);
+    try testing.expectEqual(@as(i32, 0), b.layout.lines.items[0].y);
+    try testing.expectEqual(@as(i32, 18 + 30), b.layout.lines.items[1].y);
+}
+
+test "a share on a box's side is a share of the room around the box" {
+    var b = try flexed(200, .{ .display = .block }, &.{
+        .{ .words = "aa", .style = .{ .padding = .{ .left = .{ .percent = 10 } } } },
+    });
+    defer b.deinit();
+    // Ten per cent of the two hundred the box has is twenty.
+    try testing.expectEqual(@as(i32, 20), b.line(0)[0].x);
 }
 
 test "a page whose boxes ask for no box layout keeps the column it had" {

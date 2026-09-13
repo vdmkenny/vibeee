@@ -430,16 +430,36 @@ pub const Property = enum(usize) {
     flex_direction = 0x001b,
     height = 0x002a,
     justify_content = 0x0030,
+    margin = 0x0035,
+    margin_bottom = 0x0036,
+    margin_left = 0x0037,
+    margin_right = 0x0038,
+    margin_top = 0x0039,
     max_height = 0x003a,
     max_width = 0x003b,
     min_height = 0x003c,
     min_width = 0x003d,
     opacity = 0x003e,
+    padding = 0x0045,
+    padding_bottom = 0x0046,
+    padding_left = 0x0047,
+    padding_right = 0x0048,
+    padding_top = 0x0049,
     text_align = 0x004d,
     visibility = 0x005d,
     white_space = 0x005e,
     width = 0x005f,
     _,
+};
+
+/// The four sides a `margin` or a `padding` shorthand sets, in the order
+/// upstream keeps them, each a length this reader reads as it reads a width.
+/// A longhand such as `margin-left` is a `LengthPercentage` on its own.
+pub const Sides = extern struct {
+    top: LengthPercentage,
+    right: LengthPercentage,
+    bottom: LengthPercentage,
+    left: LengthPercentage,
 };
 
 /// The keywords and kinds of value this reader tells apart, numbered as

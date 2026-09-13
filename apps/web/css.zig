@@ -88,7 +88,27 @@ pub fn boxStyle(node: *const Node, fallback: page_mod.BoxStyle.Display) page_mod
         .min_height = lengthOf(node, .min_height),
         .max_width = lengthOf(node, .max_width),
         .max_height = lengthOf(node, .max_height),
+        .margin = edgesOf(node, .margin, .{ .margin_top, .margin_right, .margin_bottom, .margin_left }),
+        .padding = edgesOf(node, .padding, .{ .padding_top, .padding_right, .padding_bottom, .padding_left }),
     };
+}
+
+/// The room on a box's four sides, from the `margin` or `padding` shorthand
+/// where the page wrote one, with a longhand such as `margin-left` written on
+/// its own taking the side it names.
+fn edgesOf(node: *const Node, shorthand: lexbor.Property, longhands: [4]lexbor.Property) page_mod.BoxStyle.Edges {
+    var edges = page_mod.BoxStyle.Edges{};
+    if (valueOf(lexbor.Sides, node, shorthand)) |sides| edges = .{
+        .top = unitOf(&sides.top),
+        .right = unitOf(&sides.right),
+        .bottom = unitOf(&sides.bottom),
+        .left = unitOf(&sides.left),
+    };
+    const sides = [_]*page_mod.Unit{ &edges.top, &edges.right, &edges.bottom, &edges.left };
+    for (longhands, sides) |property, side| {
+        if (lengthMaybe(node, property)) |unit| side.* = unit;
+    }
+    return edges;
 }
 
 fn displayOf(node: *const Node) ?page_mod.BoxStyle.Display {
@@ -103,7 +123,13 @@ fn displayOf(node: *const Node) ?page_mod.BoxStyle.Display {
 }
 
 fn lengthOf(node: *const Node, property: lexbor.Property) page_mod.Unit {
-    const length = valueOf(lexbor.LengthPercentage, node, property) orelse return .auto;
+    return lengthMaybe(node, property) orelse .auto;
+}
+
+/// The length a property is set to, or nothing where it is not set: what
+/// tells a side a shorthand gave from one a longhand takes for itself.
+fn lengthMaybe(node: *const Node, property: lexbor.Property) ?page_mod.Unit {
+    const length = valueOf(lexbor.LengthPercentage, node, property) orelse return null;
     return unitOf(length);
 }
 
@@ -522,7 +548,7 @@ fn honoured(style: *const lexbor.StyleRule) bool {
         if (rule.kind != .declaration) continue;
         const declaration: *const lexbor.Declaration = @fieldParentPtr("rule", rule);
         switch (declaration.property) {
-            .display, .width, .height, .min_width, .min_height, .max_width, .max_height, .flex_direction, .justify_content, .align_items, .visibility, .opacity, .color, .background_color, .text_align, .white_space => return true,
+            .display, .width, .height, .min_width, .min_height, .max_width, .max_height, .flex_direction, .justify_content, .align_items, .visibility, .opacity, .color, .background_color, .text_align, .white_space, .margin, .margin_top, .margin_right, .margin_bottom, .margin_left, .padding, .padding_top, .padding_right, .padding_bottom, .padding_left => return true,
             .custom => {
                 const custom = customOf(declaration) orelse continue;
                 const name = custom.name.slice();

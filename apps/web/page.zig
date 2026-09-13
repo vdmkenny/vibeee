@@ -94,6 +94,18 @@ pub const BoxStyle = struct {
     min_height: Unit = .auto,
     max_width: Unit = .auto,
     max_height: Unit = .auto,
+    /// The room the box keeps outside itself and inside itself.
+    margin: Edges = .{},
+    padding: Edges = .{},
+
+    /// The room on a box's four sides, each a length the layout resolves. A
+    /// side a page leaves unsaid is `auto`, which is no room.
+    pub const Edges = struct {
+        top: Unit = .auto,
+        right: Unit = .auto,
+        bottom: Unit = .auto,
+        left: Unit = .auto,
+    };
 
     pub const Display = enum { block, @"inline", flex };
     pub const Direction = enum { row, column };
