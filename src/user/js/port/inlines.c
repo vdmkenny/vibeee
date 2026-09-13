@@ -1,10 +1,11 @@
 /* What QuickJS writes as an inline function, given a name to link against.
  *
  * The engine's small helpers -- taking a reference, giving one back, reading a
- * value as text, making a number or a bool -- are `static inline` in its
- * header, so there is nothing for the Zig mirror in `quickjs.zig` to call.
- * They are one line each. This, and the assertions in `pin.c`, are the only C
- * of ours in the mirror: everything that does something is Zig.
+ * value as text, making a number or a bool, asking what kind of thing a value
+ * is -- are `static inline` in its header, so there is nothing for the Zig
+ * mirror in `quickjs.zig` to call. They are one line each. This, and the
+ * assertions in `pin.c`, are the only C of ours in the engine's mirror:
+ * everything that does something is Zig.
  */
 #include "quickjs.h"
 
@@ -43,7 +44,7 @@ JSValue qjs_float(JSContext *ctx, double value)
     return JS_NewFloat64(ctx, value);
 }
 
-int qjs_is_exception(JSValue value)
+int qjs_tag(JSValueConst value)
 {
-    return JS_IsException(value);
+    return JS_VALUE_GET_NORM_TAG(value);
 }

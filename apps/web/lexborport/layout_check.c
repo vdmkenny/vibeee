@@ -189,8 +189,6 @@ CHECK("text-align is one keyword",
       sizeof(lxb_css_property_text_align_t) == sizeof(unsigned int));
 CHECK("opacity is a number or a percentage, as a channel of rgb() is",
       sizeof(lxb_css_property_opacity_t) == sizeof(lxb_css_value_number_percentage_t));
-CHECK("position is one keyword",
-       sizeof(lxb_css_property_position_t) == sizeof(unsigned int));
 CHECK("a length percentage keeps one kind and one aligned union",
        offsetof(lxb_css_value_length_percentage_t, u) == _Alignof(double)
            && sizeof(lxb_css_value_length_percentage_t)

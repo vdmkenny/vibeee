@@ -14,7 +14,8 @@ const std = @import("std");
 const builtin = @import("builtin");
 const Bounded = @import("lib").bounded.Bounded;
 const rgb = @import("lib").rgb;
-const url_mod = @import("url");
+const cookie = @import("cookie.zig");
+const url_mod = @import("url.zig");
 
 /// The largest request the reader puts together. Modern consent and sign-in
 /// flows legitimately carry several kilobytes of cookies; a one-kilobyte
@@ -29,24 +30,26 @@ const Writer = std.Io.Writer;
 pub const USER_AGENT = "vibeee-web/1.0 (vibeee; " ++ @tagName(builtin.cpu.arch) ++ ")";
 
 /// What a request is for, which says what the site is told.
-pub const Wanted = enum { page, style, picture };
+pub const Wanted = enum { page, style, script, picture };
 
 /// What a request tells the site the reader takes: a page as markup or as
-/// words, a stylesheet, and a picture in a format its decoder reads, so that
-/// a site able to answer in several answers in one of those.
+/// words, a stylesheet, a script, and a picture in a format its decoder
+/// reads, so that a site able to answer in several answers in one of those.
 const accepts = std.EnumArray(Wanted, []const u8).init(.{
     .page = "text/html, text/plain;q=0.8, */*;q=0.1",
     .style = "text/css, */*;q=0.1",
+    .script = "text/javascript, application/javascript;q=0.9, */*;q=0.1",
     .picture = "image/png, image/jpeg, image/gif;q=0.8",
 });
 
-/// What a request carries to a site, and how: nothing, which is what a GET
-/// asks with, or a form's answers as the body of a POST.
-pub const Sent = union(enum) {
-    nothing,
-    /// A form's answers, as `application/x-www-form-urlencoded`, which is how
-    /// a form that sends no files sends them.
-    form: []const u8,
+/// What a request carries to a site as the body of a POST, and what kind of
+/// thing that is: a form's answers are `application/x-www-form-urlencoded`,
+/// which is how a form that sends no files sends them.
+pub const Payload = struct {
+    bytes: []const u8,
+    kind: []const u8 = FORM,
+
+    pub const FORM = "application/x-www-form-urlencoded";
 };
 
 /// What a request asks of a site: what it is for, whether for the version
@@ -65,11 +68,11 @@ pub const Asking = struct {
     /// that is known: what a site with several sizes of one reads to send the
     /// size that is enough.
     width: ?u16 = null,
-    /// What it carries: a form's answers, sent as the body of a POST.
-    sent: Sent = .nothing,
-    /// What the page's scripts have kept for this site, as a `Cookie` line
-    /// is written: `name=value` pairs, or nothing where there are none.
-    cookies: []const u8 = "",
+    /// What it carries, as the body of a POST, where it carries anything.
+    sent: ?Payload = null,
+    /// The cookies the reader keeps, of which those for the site go with the
+    /// request as its `Cookie` line.
+    jar: ?*const cookie.Jar = null,
 };
 
 /// The request for `url`, written into `out`.
@@ -80,10 +83,7 @@ pub fn request(out: []u8, url: Url, asking: Asking) ?[]const u8 {
 }
 
 fn writeRequest(w: *Writer, url: Url, asking: Asking) Writer.Error!void {
-    switch (asking.sent) {
-        .nothing => try w.writeAll("GET "),
-        .form => try w.writeAll("POST "),
-    }
+    try w.writeAll(if (asking.sent == null) "GET " else "POST ");
     try url.writeTarget(w);
     try w.writeAll(" HTTP/1.1\r\nHost: ");
     try url.writeHost(w);
@@ -93,9 +93,14 @@ fn writeRequest(w: *Writer, url: Url, asking: Asking) Writer.Error!void {
     // bound by law to honour.
     try w.writeAll("Sec-GPC: 1\r\n");
     if (asking.mobile) try w.writeAll("Sec-CH-UA-Mobile: ?1\r\nSave-Data: on\r\n");
-    // What the page's scripts have kept for this site, which is all this
-    // reader knows of cookies: a script writes them, and they are sent back.
-    if (asking.cookies.len > 0) try w.print("Cookie: {s}\r\n", .{asking.cookies});
+    // The cookies the site set, and those its scripts wrote, sent back.
+    if (asking.jar) |jar| {
+        if (jar.has(url, true)) {
+            try w.writeAll("Cookie: ");
+            try jar.writeInto(w, url, true);
+            try w.writeAll("\r\n");
+        }
+    }
     // The hints a reader sends only on a sealed connection: which shade the
     // page is drawn in, and how wide a picture is drawn.
     if (url.scheme == .https) {
@@ -108,17 +113,11 @@ fn writeRequest(w: *Writer, url: Url, asking: Asking) Writer.Error!void {
     // fail to decompress it, and the saving on a small page is not worth a
     // second decoder in the image.
     try w.writeAll("Accept-Encoding: identity\r\nConnection: keep-alive\r\n");
-    switch (asking.sent) {
-        .nothing => try w.writeAll("\r\n"),
-        // The answers go after the head, in the one encoding a form on a page
-        // that sends no files is written in. Their length is sent as well,
-        // which is how the site knows where they end.
-        .form => |answers| {
-            try w.writeAll("Content-Type: application/x-www-form-urlencoded\r\n");
-            try w.print("Content-Length: {d}\r\n\r\n", .{answers.len});
-            try w.writeAll(answers);
-        },
-    }
+    // What is carried goes after the head, with what it is and how long,
+    // which is how the site knows where it ends.
+    const sent = asking.sent orelse return w.writeAll("\r\n");
+    try w.print("Content-Type: {s}\r\nContent-Length: {d}\r\n\r\n", .{ sent.kind, sent.bytes.len });
+    try w.writeAll(sent.bytes);
 }
 
 /// The media type a `Content-Type` value names, without its parameters:
@@ -513,13 +512,28 @@ test "a sealed request says the shade the page is drawn in, and a picture's how 
 
 test "a form's answers go as the body of a POST, with what they are and how long" {
     var buf: [512]u8 = undefined;
-    const sent = request(&buf, url_mod.parse("https://a.org/lite/").?, .{ .sent = .{ .form = "q=eee&lang=en" } }).?;
+    const sent = request(&buf, url_mod.parse("https://a.org/lite/").?, .{ .sent = .{ .bytes = "q=eee&lang=en" } }).?;
 
     try testing.expect(std.mem.startsWith(u8, sent, "POST /lite/ HTTP/1.1\r\n"));
     try testing.expect(std.mem.indexOf(u8, sent, "Content-Type: application/x-www-form-urlencoded\r\n") != null);
     try testing.expect(std.mem.indexOf(u8, sent, "Content-Length: 13\r\n") != null);
     // Behind the head's own empty line, which is where a body goes.
     try testing.expect(std.mem.endsWith(u8, sent, "\r\n\r\nq=eee&lang=en"));
+}
+
+test "the cookies the jar holds for the site go with the request" {
+    var jar: cookie.Jar = .{};
+    defer jar.deinit(testing.allocator);
+    const where = url_mod.parse("https://a.org/lite/").?;
+    jar.take(testing.allocator, where, "sid=1; HttpOnly", true);
+    jar.take(testing.allocator, url_mod.parse("https://b.org/").?, "other=2", true);
+    var buf: [512]u8 = undefined;
+    const sent = request(&buf, where, .{ .jar = &jar }).?;
+    try testing.expect(std.mem.indexOf(u8, sent, "\r\nCookie: sid=1\r\n") != null);
+    try testing.expect(std.mem.indexOf(u8, sent, "other") == null);
+    // A site the jar holds nothing for is sent no line at all.
+    const bare = request(&buf, url_mod.parse("https://c.org/").?, .{ .jar = &jar }).?;
+    try testing.expect(std.mem.indexOf(u8, bare, "Cookie") == null);
 }
 
 test "a request that carries nothing is a GET with no body" {

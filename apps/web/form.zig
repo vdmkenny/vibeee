@@ -12,6 +12,11 @@ const charset = @import("charset.zig");
 
 const Writer = std.Io.Writer;
 
+/// The most a form's answers may come to, written as a query. A search is a
+/// dozen words; this leaves room for a form with a page of them, and none for
+/// one that sends a file.
+pub const ANSWERS_MAX = 8 * 1024;
+
 /// One answer, after any before it: `name=value`, joined to them by `&`.
 pub fn writeAnswer(w: *Writer, first: bool, name: []const u8, value: []const u8, encoding: charset.Charset) Writer.Error!void {
     if (!first) try w.writeByte('&');

@@ -238,10 +238,10 @@ pub const Web = struct {
     /// built.
     ad_protection: bool = true,
     /// Whether a page's scripts are run. Off, a page reads as it was
-    /// written, which is what a site that can do without them — a search
-    /// engine among them — sends for a reader that does not run any. On,
-    /// what the script would have made of it is what is drawn, where the
-    /// script asks for nothing this reader cannot give it yet.
+    /// written, which is what a site that can do without them sends for a
+    /// reader that does not run any, and a page comes sooner for it. On,
+    /// what a script makes of a page is what is drawn, under bounds on how
+    /// much it may hold and how long it may run.
     scripts: bool = true,
 };
 

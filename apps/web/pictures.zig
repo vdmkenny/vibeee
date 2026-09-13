@@ -33,7 +33,7 @@ const ulib = @import("ulib");
 
 const fetch_mod = @import("fetch.zig");
 const page_mod = @import("page.zig");
-const url = @import("url");
+const url = @import("url.zig");
 
 const Page = page_mod.Page;
 

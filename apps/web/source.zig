@@ -1,22 +1,24 @@
 //! A page as it came, and what it reads as.
 //!
 //! What arrived is kept for as long as the page is shown: its markup, where it
-//! came from, and the stylesheets it links to as they came. A page is read
-//! from these in one place however it arrived: parsed with its cascade, its
-//! stylesheets applied for the window it is read for, and its words walked
-//! into a `page`. When the window changes size, its stylesheets are asked
-//! first whether the page reads any differently in the new one, which is
-//! whether one of their media blocks, or the media a link names, answers
-//! differently, and only then is it read again.
+//! came from, the stylesheets it links to as they came, and the scripts it
+//! names by address as they came. A page is read from these in one place
+//! however it arrived: parsed with its cascade, its stylesheets applied for
+//! the window it is read for, and its words walked into a `page`. When the
+//! window changes size, its stylesheets are asked first whether the page
+//! reads any differently in the new one, which is whether one of their media
+//! blocks, or the media a link names, answers differently, and only then is
+//! it read again.
 
 const std = @import("std");
 const charset = @import("charset.zig");
 const css = @import("css.zig");
+const dom = @import("dom.zig");
 const extract = @import("extract.zig");
-const lexbor = @import("lexbor");
+const lexbor = @import("lexbor.zig");
 const media = @import("media.zig");
 const page_mod = @import("page.zig");
-const url = @import("url");
+const url = @import("url.zig");
 
 const Allocator = std.mem.Allocator;
 const Page = page_mod.Page;
@@ -40,6 +42,8 @@ pub const Source = struct {
     styled: bool = false,
     /// Its stylesheets as they came, in the order the page names them.
     sheets: std.ArrayList(Sheet) = .empty,
+    /// The scripts it names by address, as they came.
+    scripts: std.ArrayList(dom.Fetched) = .empty,
 
     pub const Sheet = struct {
         text: []u8,
@@ -54,6 +58,11 @@ pub const Source = struct {
             gpa.free(sheet.media);
         }
         self.sheets.deinit(gpa);
+        for (self.scripts.items) |script| {
+            gpa.free(script.address);
+            gpa.free(script.text);
+        }
+        self.scripts.deinit(gpa);
         self.* = .{};
     }
 
@@ -62,6 +71,15 @@ pub const Source = struct {
     pub fn keep(self: *Source, gpa: Allocator, text: []u8, asked: []const u8) void {
         const kept = gpa.dupe(u8, asked) catch return gpa.free(text);
         self.sheets.append(gpa, .{ .text = text, .media = kept }) catch {
+            gpa.free(text);
+            gpa.free(kept);
+        };
+    }
+
+    /// Keep a script that came, whose text the source takes, from `address`.
+    pub fn keepScript(self: *Source, gpa: Allocator, address: []const u8, text: []u8) void {
+        const kept = gpa.dupe(u8, address) catch return gpa.free(text);
+        self.scripts.append(gpa, .{ .address = kept, .text = text }) catch {
             gpa.free(text);
             gpa.free(kept);
         };
@@ -78,10 +96,11 @@ pub const Source = struct {
         return true;
     }
 
-    /// The page as it reads in `screen`, into `page`.
+    /// The page as it reads in `screen`, into `page`, parsed afresh.
     pub fn read(self: *const Source, gpa: Allocator, screen: ?media.Screen, page: *Page) Error!void {
         var tree = try Tree.parse(gpa, self);
-        defer tree.close();
+        defer tree.close(gpa);
+        tree.style(gpa, self, screen);
         try tree.read(gpa, self, screen, page);
     }
 };
@@ -93,6 +112,9 @@ pub const Tree = struct {
     /// The encoding the markup turned out to be in, which is the one its
     /// forms answer in.
     encoding: charset.Charset,
+    /// The rules of its stylesheets that were applied, for a script's
+    /// changes to be matched against.
+    rules: css.Rules = .empty,
 
     pub fn parse(gpa: Allocator, source: *const Source) Error!Tree {
         // The parser reads UTF-8 and nothing else, and neither does the page.
@@ -104,7 +126,7 @@ pub const Tree = struct {
 
         const document = lexbor.lxb_html_document_create() orelse return error.OutOfMemory;
         var tree = Tree{ .document = document, .styled = false, .encoding = encoding };
-        errdefer tree.close();
+        errdefer tree.close(gpa);
         if (source.styled) {
             try check(lexbor.lxb_style_init(document));
             tree.styled = true;
@@ -113,7 +135,8 @@ pub const Tree = struct {
         return tree;
     }
 
-    pub fn close(self: *Tree) void {
+    pub fn close(self: *Tree, gpa: Allocator) void {
+        self.rules.deinit(gpa);
         if (self.styled) lexbor.lxb_style_destroy(self.document);
         _ = lexbor.lxb_html_document_destroy(self.document);
     }
@@ -123,18 +146,29 @@ pub const Tree = struct {
         if (self.styled) try css.sheetsOf(gpa, self.document, base, into);
     }
 
+    /// The scripts it names by address, to fetch.
+    pub fn scripts(self: *const Tree, gpa: Allocator, base: url.Url, into: *dom.Scripts) Allocator.Error!void {
+        try dom.scriptsOf(gpa, self.document, base, into);
+    }
+
     /// Where it names a version of itself for windows like `screen`, written
     /// into `buf`.
     pub fn versionFor(self: *const Tree, base: url.Url, screen: ?media.Screen, buf: *[url.ADDRESS_MAX]u8) ?[]const u8 {
         return extract.versionFor(self.document, base, screen, buf);
     }
 
-    /// Its words, read into `page` with `source`'s stylesheets applied as
-    /// they read in `screen`.
-    pub fn read(self: *Tree, gpa: Allocator, source: *const Source, screen: ?media.Screen, page: *Page) Error!void {
+    /// Apply `source`'s stylesheets as they read in `screen`. Once: a rule
+    /// applied twice is a rule the tree holds twice.
+    pub fn style(self: *Tree, gpa: Allocator, source: *const Source, screen: ?media.Screen) void {
         for (source.sheets.items) |sheet| {
-            if (media.matches(sheet.media, screen)) css.apply(gpa, self.document, sheet.text, screen);
+            if (media.matches(sheet.media, screen)) css.apply(gpa, self.document, sheet.text, screen, &self.rules);
         }
+    }
+
+    /// Its words, read into `page`, links resolved against `source`'s
+    /// address.
+    pub fn read(self: *Tree, gpa: Allocator, source: *const Source, screen: ?media.Screen, page: *Page) Error!void {
+        _ = screen;
         const base = url.parse(source.base.slice()) orelse return error.Unparsable;
         page.encoding = self.encoding;
         try extract.extract(gpa, self.document, base, page);

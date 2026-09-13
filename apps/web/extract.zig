@@ -31,10 +31,10 @@
 const std = @import("std");
 const Bounded = @import("lib").bounded.Bounded;
 const css = @import("css.zig");
-const lexbor = @import("lexbor");
+const lexbor = @import("lexbor.zig");
 const media = @import("media.zig");
 const page_mod = @import("page.zig");
-const url = @import("url");
+const url = @import("url.zig");
 
 const Node = lexbor.Node;
 const Tag = lexbor.Tag;
@@ -350,6 +350,7 @@ const Walker = struct {
         }
         const role = roleOf(lexbor.tagOf(node) orelse return false);
         if (unread(node)) return false;
+        self.builder.node = @ptrCast(node);
 
         if (role != .hidden) try self.beginContainer(node, displayFor(role));
 

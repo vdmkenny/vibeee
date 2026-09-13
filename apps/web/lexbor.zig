@@ -51,6 +51,8 @@ pub const Collection = opaque {};
 pub const Text = extern struct { data: ?[*]const u8, length: usize };
 /// Lexbor's own selectors engine.
 pub const Selectors = opaque {};
+/// One attribute of an element.
+pub const Attr = opaque {};
 
 /// The elements this reader has a rule for, numbered as upstream numbers
 /// them: an element's `local_name` is its number. Every value is pinned
@@ -210,7 +212,49 @@ pub const CssTokenizer = opaque {};
 
 /// Lexbor's DOM operation result. `ok` means the specification-level tree
 /// operation was valid and applied; anything else leaves the tree alone.
-pub const DomException = enum(c_int) { ok = 0, _ };
+/// What a change to the tree ends in. Upstream counts its one good answer
+/// below its first bad one.
+pub const DomException = enum(c_int) {
+    ok = -1,
+    err = 0,
+    index_size = 1,
+    domstring_size,
+    hierarchy_request,
+    wrong_document,
+    invalid_character,
+    no_data_allowed,
+    no_modification_allowed,
+    not_found,
+    not_supported,
+    inuse_attribute,
+    invalid_state,
+    syntax,
+    invalid_modification,
+    namespace,
+    invalid_access,
+    validation,
+    type_mismatch,
+    security,
+    network,
+    abort,
+    url_mismatch,
+    quota_exceeded,
+    timeout,
+    invalid_node_type,
+    data_clone,
+    encoding,
+    not_readable,
+    unknown,
+    constraint,
+    data,
+    transaction_inactive,
+    read_only,
+    version,
+    operation,
+    not_allowed,
+    opt_out,
+    _,
+};
 
 pub extern fn lxb_dom_node_text_content(node: *Node, len: *usize) ?[*]const u8;
 pub extern fn lxb_dom_node_text_content_set(node: *Node, text: [*]const u8, len: usize) Status;
@@ -227,6 +271,9 @@ pub extern fn lxb_dom_element_tag_name(element: *Node, len: *usize) ?[*:0]const 
 pub extern fn lxb_dom_document_root(document: *Document) ?*Node;
 pub extern fn lxb_dom_document_create_element(document: *Document, name: [*]const u8, name_len: usize, reserved: ?*anyopaque) ?*Element;
 pub extern fn lxb_dom_document_create_text_node(document: *Document, text: [*]const u8, len: usize) ?*Node;
+/// A comment and a fragment each begin with a node, as a text node does.
+pub extern fn lxb_dom_document_create_comment(document: *Document, text: [*]const u8, len: usize) ?*Node;
+pub extern fn lxb_dom_document_create_document_fragment(document: *Document) ?*Node;
 pub extern fn lxb_html_document_parse_fragment(document: *Document, element: *Node, html: [*]const u8, size: usize) ?*Node;
 pub extern fn lxb_html_serialize_deep_str(node: *Node, out: *Text) c_int;
 pub extern fn lxb_dom_collection_create(document: *Document) ?*Collection;
@@ -235,6 +282,11 @@ pub extern fn lxb_dom_collection_destroy(collection: *Collection, itself: bool) 
 pub extern fn lxb_dom_elements_by_tag_name(root: *Node, collection: *Collection, name: [*]const u8, len: usize) Status;
 pub extern fn lxb_dom_elements_by_class_name(root: *Node, collection: *Collection, name: [*]const u8, len: usize) Status;
 pub extern fn lxb_dom_elements_by_attr(root: *Node, collection: *Collection, name: [*]const u8, name_len: usize, value: [*]const u8, value_len: usize, regardless: bool) Status;
+/// An element's attributes, first to last, each by its name and value.
+pub extern fn lxb_dom_element_first_attribute_noi(element: *Node) ?*Attr;
+pub extern fn lxb_dom_element_next_attribute_noi(attr: *Attr) ?*Attr;
+pub extern fn lxb_dom_attr_qualified_name(attr: *const Attr, len: *usize) ?[*]const u8;
+pub extern fn lxb_dom_attr_value_noi(attr: *Attr, len: *usize) ?[*]const u8;
 pub extern fn lxb_selectors_create() ?*Selectors;
 pub extern fn lxb_selectors_init(engine: *Selectors) Status;
 pub extern fn lxb_selectors_find(engine: *Selectors, root: *Node, list: *const CssSelectorList, found: *const fn (*Node, u32, ?*anyopaque) callconv(.c) Status, taken: ?*anyopaque) Status;
@@ -359,6 +411,9 @@ pub extern fn lxb_css_stylesheet_parse(sheet: *Stylesheet, parser: *CssParser, d
 pub extern fn lxb_css_declaration_list_parse(parser: *CssParser, data: [*]const u8, len: usize) ?*DeclarationList;
 /// Apply one rule to every element its selectors match.
 pub extern fn lxb_dom_document_style_attach(document: *DomDocument, rule: *StyleRule) Status;
+pub extern fn lxb_dom_document_style_attach_by_element(document: *DomDocument, element: *Node, rule: *StyleRule) Status;
+pub extern fn lxb_dom_element_style_remove_non_inline(element: *Node) Status;
+pub extern fn lxb_dom_document_element_styles_attach(element: *Node) Status;
 
 pub const CssMemory = opaque {};
 pub const CssParser = opaque {};
@@ -370,22 +425,17 @@ pub const Property = enum(usize) {
     custom = 0x0001,
     align_items = 0x0003,
     background_color = 0x0006,
-    bottom = 0x0012,
     color = 0x0015,
     display = 0x0017,
     flex_direction = 0x001b,
     height = 0x002a,
     justify_content = 0x0030,
-    left = 0x0031,
     max_height = 0x003a,
     max_width = 0x003b,
     min_height = 0x003c,
     min_width = 0x003d,
     opacity = 0x003e,
-    position = 0x004a,
-    right = 0x004b,
     text_align = 0x004d,
-    top = 0x005a,
     visibility = 0x005d,
     white_space = 0x005e,
     width = 0x005f,
@@ -428,9 +478,6 @@ pub const Keyword = enum(c_uint) {
     collapse = 0x0165,
     pre = 0x0166,
     pre_wrap = 0x0167,
-    static = 0x0145,
-    absolute = 0x0147,
-    fixed = 0x0149,
     _,
 
     /// Upstream's named colours are keywords in a run, in alphabetical
@@ -555,13 +602,10 @@ pub const Display = extern struct { a: Keyword, b: Keyword, c: Keyword };
 /// `visibility` and `text-align`, each one keyword.
 pub const Single = extern struct { kind: Keyword };
 
-/// `position`, one keyword.
-pub const Position = extern struct { kind: Keyword };
-
 /// A number, and whether it was written with a point.
 pub const Number = extern struct { num: f64, is_float: bool };
 
-/// A CSS dimension, retaining only the unit kinds a box layout understands.
+/// A length, with its unit.
 pub const Length = extern struct { num: f64, is_float: bool, unit: Unit };
 
 /// A length, a percentage, or a keyword such as `auto`.
@@ -616,7 +660,6 @@ comptime {
     if (@offsetOf(Custom, "value") != 2 * word) @compileError("a custom declaration's value does not follow its name");
     if (@offsetOf(Colour, "u") != @alignOf(f64)) @compileError("a colour's value does not follow its kind");
     if (@sizeOf(Channel) != @alignOf(f64) + @sizeOf(Number)) @compileError("a colour channel is not a kind and a number");
-    if (@sizeOf(Position) != @sizeOf(c_uint)) @compileError("a position is not one keyword");
     if (@offsetOf(LengthPercentage, "value") != @alignOf(f64)) @compileError("a length value does not follow its kind");
     if (@sizeOf(LengthPercentage) != @alignOf(f64) + @sizeOf(Length)) @compileError("a length value is not one kind and one union");
 }

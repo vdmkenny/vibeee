@@ -129,7 +129,8 @@ const UserBuild = struct {
         self.addClibc(out);
     }
 
-    /// QuickJS and the port over it, compiled into whatever runs a script.
+    /// QuickJS, compiled into whatever runs a script, with the Zig mirror of
+    /// its face as `quickjs` and the engine's face for a program as `js`.
     ///
     /// Added once, however many parts of a program reach for them.
     ///
@@ -137,18 +138,19 @@ const UserBuild = struct {
     /// compiler, the regular expressions and the Unicode tables behind them,
     /// its own conversion of a number to text, and its little utilities.
     /// Upstream's library of helpers is not vendored, because what it gives a
-    /// script is a POSIX this system does not have — shared objects to open,
-    /// processes to wait for, a poll to block on — and a stub for each would
+    /// script is a POSIX this system does not have, shared objects to open,
+    /// processes to wait for, a poll to block on, and a stub for each would
     /// be a promise the machine cannot keep. What a script gets instead is
-    /// written in the port, and is only what is true here: the language, and
-    /// a way to say something. Nor `qjs.c`, which is upstream's shell and
-    /// whose job a program of this system does for itself; nor the test
-    /// runner, the standalone compiler, nor the Unicode generator, which is
-    /// how the tables are made rather than read.
+    /// written in `js.zig`, and is only what is true here: the language, a
+    /// way to say something, and the bounds a script runs under. Nor
+    /// `qjs.c`, which is upstream's shell and whose job a program of this
+    /// system does for itself; nor the test runner, the standalone compiler,
+    /// nor the Unicode generator, which is how the tables are made rather
+    /// than read.
     ///
-    /// The Zig side of it is `src/user/js/js.zig`, which declares the port's
-    /// calls and nothing else, so a signature changed on either side fails
-    /// the build on its own.
+    /// The only C of ours is `port/inlines.c`, which gives a symbol to what
+    /// upstream writes inline, and `port/pin.c`, which asserts the shapes the
+    /// mirror hand-writes against the vendored header.
     fn addQuickJs(self: UserBuild, out: *std.Build.Step.Compile) void {
         if (out.root_module.import_table.contains("js")) return;
 
@@ -164,7 +166,6 @@ const UserBuild = struct {
                 "third_party/quickjs/libregexp.c",
                 "third_party/quickjs/libunicode.c",
                 "third_party/quickjs/cutils.c",
-                "src/user/js/port/engine.c",
                 "src/user/js/port/inlines.c",
                 "src/user/js/port/pin.c",
             },
@@ -179,14 +180,12 @@ const UserBuild = struct {
             }),
         });
         self.addClibc(out);
-        // The engine's own face, which `js` is written over: a mirror of
-        // QuickJS's C rather than the C itself, so an app that has scripts
-        // in it gets the mirror too and not a second spelling of the header.
         const quickjs = self.b.createModule(.{
             .root_source_file = self.b.path("src/user/js/quickjs.zig"),
             .target = self.target,
             .optimize = self.optimize,
         });
+        out.root_module.addImport("quickjs", quickjs);
         out.root_module.addImport("js", self.b.createModule(.{
             .root_source_file = self.b.path("src/user/js/js.zig"),
             .target = self.target,
@@ -348,17 +347,6 @@ pub fn build(b: *std.Build) void {
         "symbols",
         "User programs to build unstripped, comma separated",
     ) orelse "";
-
-    // Whether the reader carries a script engine. Off, it is the reader it
-    // was before a page could run anything: half the size, and a page that
-    // leans on a script reads as it is written rather than as the script
-    // would have made it. `web.zig` is the same either way: it asks for
-    // `scripts`, and gets either the engine or a module that does nothing.
-    const with_scripts = b.option(
-        bool,
-        "scripts",
-        "Build the web reader with QuickJS, so a page's scripts run (default: true)",
-    ) orelse true;
 
     // ---------------------------------------------------------------------
     // Target, one per architecture.
@@ -752,133 +740,23 @@ pub fn build(b: *std.Build) void {
             const echat_step = b.step("echat", "Build the echat IRC client into zig-out/bin");
             echat_step.dependOn(&b.addInstallArtifact(echat, .{}).step);
 
-            // The script runner: QuickJS in a program of this system's, which
-            // is the first half of giving the reader a script to run.
+            // The script runner: QuickJS in a program of this system's, for
+            // running a script on the machine outside any page.
             const qjs = user.exe("qjs", "apps/qjs/qjs.zig", !named(symbols, "qjs"));
             user.addQuickJs(qjs);
             const qjs_step = b.step("qjs", "Build the qjs script runner into zig-out/bin");
             qjs_step.dependOn(&b.addInstallArtifact(qjs, .{}).step);
 
-            // The words the reader and the worker say to each other, as one
-            // module both import: a protocol written twice is a protocol the
-            // two halves of it disagree about. design/13-script-worker.md §5.
-            // Wire only, so it is built of nothing but this one file.
-            const worker_proto_mod = b.createModule(.{
-                .root_source_file = b.path("apps/web/worker_proto.zig"),
-                .target = user.target,
-                .optimize = optimize,
-            });
-
-            // Where a page's scripts run, and what the reader does when
-            // they stop: the seam of design/13-script-worker.md, which is
-            // one type whichever side of the boundary the scripts are on.
-            const script_host_mod = b.createModule(.{
-                .root_source_file = b.path("apps/web/script_host.zig"),
-                .target = user.target,
-                .optimize = optimize,
-                .imports = &.{.{ .name = "worker_proto", .module = worker_proto_mod }},
-            });
-
+            // The page reader: the parser and its cascade, the engine a
+            // page's scripts run in, the picture decoder, and the blocklist
+            // as the build fetched it.
             const web = user.exe("web", "apps/web/web.zig", !named(symbols, "web"));
             user.addLexbor(web);
-            web.root_module.addImport("worker_proto", worker_proto_mod);
-            web.root_module.addImport("script_host", script_host_mod);
-            // The host's machine: two pipes and a program to put between
-            // them. The reader always has a worker, so it always needs the
-            // way to start one.
-            web.root_module.addImport("script_host_sys", b.createModule(.{
-                .root_source_file = b.path("apps/web/script_host_sys.zig"),
-                .target = user.target,
-                .optimize = optimize,
-                .imports = &.{
-                    .{ .name = "script_host", .module = script_host_mod },
-                    .{ .name = "sys", .module = user.sys },
-                },
-            }));
-            // A page's scripts: the engine and the document built over
-            // lexbor, or a module of the same shape that does nothing. The
-            // reader itself does not know which.
-            if (with_scripts) {
-                user.addQuickJs(web);
-                web.root_module.addCSourceFiles(.{
-                    .files = &.{},
-                    .flags = user.cFlags(&.{}),
-                });
-                web.root_module.addIncludePath(b.path("src/user/js/port"));
-            }
-            // One lexbor for the reader and its scripts both: imported by
-            // name rather than by path, so there is only ever one of it, and a
-            // node handed from one to the other is the same type on either
-            // side.
-            const lexbor_mod = b.createModule(.{
-                .root_source_file = b.path("apps/web/lexbor.zig"),
-                .target = user.target,
-                .optimize = optimize,
-                .imports = &.{.{ .name = "lib", .module = user.lib }},
-            });
-            web.root_module.addImport("lexbor", lexbor_mod);
-            const url_mod = b.createModule(.{
-                .root_source_file = b.path("apps/web/url.zig"),
-                .target = user.target,
-                .optimize = optimize,
-                .imports = &.{.{ .name = "lib", .module = user.lib }},
-            });
-            web.root_module.addImport("url", url_mod);
-            const quickjs_mod = b.createModule(.{
-                .root_source_file = b.path("src/user/js/quickjs.zig"),
-                .target = user.target,
-                .optimize = optimize,
-            });
-            const js_mod = b.createModule(.{
-                .root_source_file = b.path("src/user/js/js.zig"),
-                .target = user.target,
-                .optimize = optimize,
-                .imports = &.{.{ .name = "quickjs", .module = quickjs_mod }},
-            });
-            web.root_module.addImport("page_scripts", b.createModule(.{
-                .root_source_file = b.path(if (with_scripts)
-                    "apps/web/scripts/on.zig"
-                else
-                    "apps/web/scripts/off.zig"),
-                .target = user.target,
-                .optimize = optimize,
-                .imports = if (with_scripts) &.{
-                    .{ .name = "js", .module = js_mod },
-                    .{ .name = "quickjs", .module = quickjs_mod },
-                    .{ .name = "lexbor", .module = lexbor_mod },
-                    .{ .name = "url", .module = url_mod },
-                    .{ .name = "ulib", .module = user.ulib },
-                    .{ .name = "sys", .module = user.sys },
-                } else &.{
-                    .{ .name = "lexbor", .module = lexbor_mod },
-                },
-            }));
-            // The formats pages use that the decoder reads.
+            user.addQuickJs(web);
             user.addPictures(web, &.{ "-DSTBI_ONLY_PNG", "-DSTBI_ONLY_JPEG", "-DSTBI_ONLY_GIF" });
             web.root_module.addImport("blocklist_data", blocklistData(b));
             const web_step = b.step("web", "Build the web reader into zig-out/bin");
             web_step.dependOn(&b.addInstallArtifact(web, .{}).step);
-
-            // The process a page's scripts run in: a program of the reader's
-            // own, built the way the reader is, holding the engine, the
-            // bridge and the parse that a page can turn against them. The
-            // reader spawns one per committed navigation and there is no
-            // other place a page's scripts run, so this is not a build a
-            // reader can do without; see design/13-script-worker.md.
-            const worker = user.exe(
-                "script_worker",
-                "apps/web/script_worker.zig",
-                !named(symbols, "script_worker"),
-            );
-            // The protocol, the same module the reader imports: one
-            // spelling of what the two of them say to each other, and
-            // the first thing that crosses the boundary.
-            worker.root_module.addImport("worker_proto", worker_proto_mod);
-            // TODO(13): `user.addLexbor(worker)` and `user.addQuickJs(worker)`,
-            // with the `lexbor`, `url`, `js` and `dom` imports the reader
-            // hands across, when §9 step 2 moves them behind the boundary.
-            const worker_step = b.step("script-worker", "Build the reader's script worker into zig-out/bin");
-            worker_step.dependOn(&b.addInstallArtifact(worker, .{}).step);
 
             // The portable library built for the host, which the apps' host
             // tests import as the apps themselves do.
@@ -888,66 +766,20 @@ pub fn build(b: *std.Build) void {
                 .optimize = .Debug,
             });
 
-            // Its host side: addresses, the protocol, encodings, the page
-            // and its layout, which are all arithmetic over text.
-            // A lexbor for this machine: the same file the reader builds for
-            // its target, built for the host so the parts of web that walk a
-            // tree can be tested here.
-            const lexbor_host = b.createModule(.{
-                .root_source_file = b.path("apps/web/lexbor.zig"),
-                .target = b.graph.host,
-                .optimize = .Debug,
-                .imports = &.{.{ .name = "lib", .module = app_lib }},
-            });
-            const url_host = b.createModule(.{
-                .root_source_file = b.path("apps/web/url.zig"),
-                .target = b.graph.host,
-                .optimize = .Debug,
-                .imports = &.{.{ .name = "lib", .module = app_lib }},
-            });
-
-            // What the reader and the worker say to each other, and where a
-            // page's scripts run: both arithmetic over bytes and buffers, so
-            // both are tested here. The host is tested with a channel made
-            // of two arrays rather than two pipes, which is the point of it
-            // asking for the machine instead of reaching for it.
-            const worker_proto_host = b.createModule(.{
-                .root_source_file = b.path("apps/web/worker_proto.zig"),
-                .target = b.graph.host,
-                .optimize = .Debug,
-            });
-            const script_host_host = b.createModule(.{
-                .root_source_file = b.path("apps/web/script_host.zig"),
-                .target = b.graph.host,
-                .optimize = .Debug,
-                .imports = &.{.{ .name = "worker_proto", .module = worker_proto_host }},
-            });
-
+            // Its host side: addresses, the protocol, encodings, cookies, what
+            // sites put by, the page and its layout, which are all arithmetic
+            // over text.
             const web_test = b.addTest(.{
                 .root_module = b.createModule(.{
                     .root_source_file = b.path("apps/web/tests.zig"),
                     .target = b.graph.host,
                     .optimize = .Debug,
-                    .imports = &.{
-                        .{ .name = "lib", .module = app_lib },
-                        .{ .name = "lexbor", .module = lexbor_host },
-                        .{ .name = "url", .module = url_host },
-                        .{ .name = "worker_proto", .module = worker_proto_host },
-                        .{ .name = "script_host", .module = script_host_host },
-                    },
+                    .imports = &.{.{ .name = "lib", .module = app_lib }},
                 }),
             });
             const web_test_step = b.step("test-web", "Test web's addresses, protocol, encodings, page and layout on the host");
             web_test_step.dependOn(&b.addRunArtifact(web_test).step);
 
-            // The document a script sees, on the host: QuickJS, lexbor and
-            // the reader's own DOM over them, built for this machine rather
-            // than the target, so a page can be parsed, a script run in it,
-            // and the tree read back. It is C reaching into two vendored
-            // trees, which is the part the Zig tests above cannot see, and
-            // where every mistake in it has been: a value handed to the
-            // wrong kind of call, matches gathered in a callback and lost,
-            // a title asked for before the parser had settled it.
             // The document a script sees, on the host: QuickJS, lexbor and the
             // reader's own document over them, built for this machine rather
             // than the target, so a page can be parsed, a script run in it,
@@ -955,10 +787,6 @@ pub fn build(b: *std.Build) void {
             // trees, and the part the reader's other tests cannot see: a value
             // handed to the wrong kind of call, matches gathered in a callback
             // and lost, a title asked for before the parser had settled it.
-
-            // The host's own mirror of the engine: the same files, built for
-            // this machine, since a document tested on the host cannot be
-            // handed a model built for the target.
             const quickjs_host = b.createModule(.{
                 .root_source_file = b.path("src/user/js/quickjs.zig"),
                 .target = b.graph.host,
@@ -970,18 +798,6 @@ pub fn build(b: *std.Build) void {
                 .optimize = .Debug,
                 .imports = &.{.{ .name = "quickjs", .module = quickjs_host }},
             });
-            const dom_host = b.createModule(.{
-                .root_source_file = b.path("apps/web/scripts/dom.zig"),
-                .target = b.graph.host,
-                .optimize = .Debug,
-                .imports = &.{
-                    .{ .name = "js", .module = js_host },
-                    .{ .name = "quickjs", .module = quickjs_host },
-                    .{ .name = "lexbor", .module = lexbor_host },
-                    .{ .name = "url", .module = url_host },
-                },
-            });
-
             const dom_test = b.addTest(.{
                 .root_module = b.createModule(.{
                     .root_source_file = b.path("apps/web/domtest.zig"),
@@ -992,9 +808,6 @@ pub fn build(b: *std.Build) void {
                         .{ .name = "lib", .module = app_lib },
                         .{ .name = "js", .module = js_host },
                         .{ .name = "quickjs", .module = quickjs_host },
-                        .{ .name = "lexbor", .module = lexbor_host },
-                        .{ .name = "dom", .module = dom_host },
-                        .{ .name = "url", .module = url_host },
                     },
                 }),
             });
@@ -1016,20 +829,23 @@ pub fn build(b: *std.Build) void {
                 "third_party/quickjs/libregexp.c",
                 "third_party/quickjs/libunicode.c",
                 "third_party/quickjs/cutils.c",
-                "src/user/js/port/engine.c",
                 "src/user/js/port/inlines.c",
                 "src/user/js/port/pin.c",
                 "apps/web/lexborport/inlines.c",
             }) catch @panic("out of memory");
             dom_test.root_module.addIncludePath(b.path("third_party/lexbor/source"));
             dom_test.root_module.addIncludePath(b.path("third_party/quickjs"));
-            dom_test.root_module.addIncludePath(b.path("src/user/js/port"));
             dom_test.root_module.addCSourceFiles(.{
                 .files = dom_sources.items,
+                // Vendored C, built as its authors build it: the checks a
+                // debug build of Zig puts into C it compiles would stop the
+                // engine on arithmetic upstream means, a shift into the sign
+                // bit among it, and the target is built without them.
                 .flags = &.{
                     "-std=gnu11",
                     "-DCONFIG_VERSION=\"2026-06-04\"",
                     "-Dalloca=__builtin_alloca",
+                    "-fno-sanitize=undefined",
                 },
             });
             const dom_test_step = b.step("test-dom", "Test the reader's document, with QuickJS and lexbor built for this machine");

@@ -1046,12 +1046,12 @@ fn Placer(comptime Metrics: type) type {
         /// What a length says in pixels, where it says: nothing where a page
         /// says `auto`, or a unit this reader does not read.
         fn resolved(self: *const Self, unit: page_mod.Unit, base: i32) ?i32 {
-            const value: f64 = switch (unit) {
+            const value: f32 = switch (unit) {
                 .auto => return null,
-                .px => unit.px,
-                .percent => unit.percent / 100 * @as(f64, @floatFromInt(base)),
-                .vw => unit.vw / 100 * @as(f64, @floatFromInt(self.viewport.w)),
-                .vh => unit.vh / 100 * @as(f64, @floatFromInt(self.viewport.h)),
+                .px => |px| px,
+                .percent => |share| share / 100 * @as(f32, @floatFromInt(base)),
+                .vw => |share| share / 100 * @as(f32, @floatFromInt(self.viewport.w)),
+                .vh => |share| share / 100 * @as(f32, @floatFromInt(self.viewport.h)),
             };
             return @intFromFloat(@round(value));
         }

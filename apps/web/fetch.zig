@@ -17,6 +17,11 @@
 //! A site on the blocklist a fetch is given is not reached at all: the
 //! request to one, a redirect to one included, fails before anything is
 //! sent.
+//!
+//! The cookie jar a fetch is given goes with it: what the jar holds for a
+//! site goes out with each request, and what the site sets comes back into
+//! the jar as each answer arrives, before a redirect is followed, so the
+//! next request has what the last answer set.
 
 const std = @import("std");
 const sys = @import("sys");
@@ -24,8 +29,9 @@ const ulib = @import("ulib");
 const Bounded = @import("lib").bounded.Bounded;
 
 const blocklist_mod = @import("blocklist.zig");
+const cookie = @import("cookie.zig");
 const http = @import("http.zig");
-const url = @import("url");
+const url = @import("url.zig");
 
 const Wire = ulib.wire.Wire;
 
@@ -46,11 +52,16 @@ pub const PICTURE_MAX = 1024 * 1024;
 /// kilobytes; a bundle past a megabyte is left out rather than read.
 pub const SHEET_MAX = 1024 * 1024;
 
+/// The most one script may be. A page's own script is a few kilobytes and
+/// a framework a few hundred; a bundle past a megabyte is left out.
+pub const SCRIPT_MAX = 1024 * 1024;
+
 /// The most an answer may be, for what was asked.
 fn limitOf(wanted: http.Wanted) usize {
     return switch (wanted) {
         .page => PAGE_MAX,
         .style => SHEET_MAX,
+        .script => SCRIPT_MAX,
         .picture => PICTURE_MAX,
     };
 }
@@ -111,13 +122,6 @@ pub const Wait = union(enum) {
     over,
 };
 
-/// A complete response, before a redirect turns this fetch to the next one.
-/// The browser uses it for state that belongs to responses rather than their
-/// bodies, notably Set-Cookie fields.
-pub const ResponseHook = *const fn ([]const u8, *const http.Response) void;
-pub const RedirectHook = *const fn ([]const u8, []const u8) void;
-pub const CookieHook = *const fn ([]const u8) []const u8;
-
 pub const Fetch = struct {
     /// What is asked of the site: a page, a stylesheet or a picture, which
     /// says what the site is told the reader takes and how large its answer
@@ -125,6 +129,9 @@ pub const Fetch = struct {
     asking: http.Asking = .{},
     /// The sites not to be reached, where there are any.
     blocklist: ?blocklist_mod.Blocklist = null,
+    /// The cookies that go with each request and come back with each
+    /// answer, where the reader keeps any.
+    jar: ?*cookie.Jar = null,
     state: State = .idle,
     /// Where the page is: the address asked for, or after a redirect the one
     /// it was sent on to.
@@ -138,9 +145,6 @@ pub const Fetch = struct {
     response: http.Response = .{},
     body: http.Body = .{ .limit = PAGE_MAX },
     redirects: u8 = 0,
-    response_hook: ?ResponseHook = null,
-    redirect_hook: ?RedirectHook = null,
-    cookies_for: ?CookieHook = null,
 
     /// When the fetch began, and when the site last said anything.
     started_us: u64 = 0,
@@ -159,6 +163,13 @@ pub const Fetch = struct {
     /// Whether a page is on its way.
     pub fn busy(self: *const Fetch) bool {
         return self.state == .connecting or self.state == .receiving;
+    }
+
+    /// What to sleep on while a page is arriving: the site's news, by this
+    /// handle. Nothing while there is nothing to wait for that way.
+    pub fn handle(self: *const Fetch) ?u32 {
+        if (self.state != .receiving) return null;
+        return (self.wire orelse return null).waitHandle();
     }
 
     /// Whether the site at `where` is on the blocklist.
@@ -245,19 +256,18 @@ pub const Fetch = struct {
         self.wire = wire;
 
         var stack: [http.REQUEST_MAX]u8 = undefined;
-        // A POST carries its answers behind its head, which is more than a
+        // A POST carries its body behind its head, which is more than a
         // request has room for here, so one that sends any is put together
         // in the heap and let go as soon as it is on the wire.
-        const heap = switch (self.asking.sent) {
-            .nothing => null,
-            .form => |answers| gpa.alloc(u8, stack.len + answers.len) catch return self.fail(error.OutOfMemory),
-        };
+        const heap = if (self.asking.sent) |sent| gpa.alloc(u8, stack.len + sent.bytes.len) catch return self.fail(error.OutOfMemory) else null;
         defer if (heap) |room| gpa.free(room);
-        const request = http.request(heap orelse &stack, where, self.asking) orelse return self.fail(error.BadAddress);
+        var asking = self.asking;
+        asking.jar = self.jar;
+        const request = http.request(heap orelse &stack, where, asking) orelse return self.fail(error.BadAddress);
         if (wire.send(request) != request.len) return self.failOrRetry(error.Unreachable);
-        // The answers are the caller's until they have gone. A fetch asked
-        // for again without being given them again asks by GET.
-        self.asking.sent = .nothing;
+        // What was carried is the caller's until it has gone. A fetch asked
+        // for again without being given it again asks by GET.
+        self.asking.sent = null;
 
         self.state = .receiving;
         self.heard_us = sys.clockMicros();
@@ -301,9 +311,11 @@ pub const Fetch = struct {
         if (self.state == .receiving and now_us -| self.heard_us >= STALL_US) self.fail(error.Stalled);
     }
 
-    /// The answer is complete: the page, or somewhere else to ask.
+    /// The answer is complete: the page, or somewhere else to ask. What the
+    /// site set goes into the jar first, so a redirect is followed with it.
     fn arrived(self: *Fetch, gpa: std.mem.Allocator) void {
-        if (self.response_hook) |heard| heard(self.address(), &self.response);
+        const base = url.parse(self.address()) orelse return self.fail(error.BadAddress);
+        if (self.jar) |jar| jar.takeHead(gpa, base, self.response.head.slice());
         if (!self.response.redirects()) {
             self.keep();
             self.state = .done;
@@ -311,14 +323,8 @@ pub const Fetch = struct {
         }
         if (self.redirects == REDIRECTS_MAX) return self.fail(error.RedirectLoop);
 
-        const base = url.parse(self.address()) orelse return self.fail(error.BadAddress);
         var next: [url.ADDRESS_MAX]u8 = undefined;
         const target = url.resolve(base, self.response.location().?, &next) orelse return self.fail(error.BadAddress);
-        if (self.redirect_hook) |reported| reported(self.address(), target);
-        // A redirect can cross hosts, paths, or both. The first request's
-        // Cookie line is not the next request's: response cookies were just
-        // taken above and the destination chooses which of them belongs.
-        if (self.cookies_for) |cookies| self.asking.cookies = cookies(target);
         self.redirects += 1;
         self.aim(gpa, target);
     }

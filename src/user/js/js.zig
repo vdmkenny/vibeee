@@ -1,79 +1,209 @@
-//! The engine's face, as a program of this system calls it, and the whole
-//! of it. `src/user/js/port/engine.c` is what's behind these calls; `qjs`
-//! and `web` are the two programs that make them.
+//! The engine's face, as a program of this system runs a script: an engine
+//! started once, a context opened for each page, a script run in it, and the
+//! bounds that keep a page from taking the program with it.
 //!
-//! QuickJS is reached through `quickjsport/engine.c` rather than directly:
-//! a `JSValue` is a struct sixteen bytes wide whose shape depends on how
-//! upstream was built, and its helpers are C inline functions, so neither
-//! would survive the crossing. What does cross is a script's bytes and its
-//! answer as a string, which is what a program running a script wants anyway.
+//! QuickJS is reached through the mirror in `quickjs.zig`. A `JSValue` is a
+//! shape that depends on how upstream was built, so a program that only runs
+//! scripts never takes one apart: a script goes in as bytes, and what comes
+//! out is what it said, as text, or the exception it threw.
 //!
-//! `engine.h` says what each call is for; this is the pin, so a signature
-//! changed there fails the build here rather than at a call site.
+//! A page is untrusted input, and a script is the part of it that runs. Three
+//! bounds keep one inside the program: how much it may hold, how deep it may
+//! call, and how long one entry into it may run. Each turns what would be a
+//! fault into an exception the script gets and the program reads. What a
+//! script says out loud, with `print` or `console.log`, goes wherever the
+//! program says.
 
+const std = @import("std");
 const qjs = @import("quickjs");
-/// An engine, which a program starts once and keeps: the runtime every script
-/// it runs hangs off.
-pub const Machine = qjs.Runtime;
 
-/// A script's own world: a context in that runtime, with every intrinsic in
-/// it and the two ways a script has of saying something out loud. One per
-/// page, given back when the page goes.
-pub const Engine = qjs.Context;
+pub const Value = qjs.Value;
+pub const Context = qjs.Context;
 
-extern fn qjs_start() ?*Machine;
-extern fn qjs_open(machine: *Machine) ?*Engine;
-extern fn qjs_run(engine: *Engine, source: [*]const u8, len: usize, name: [*]const u8, module: c_int) ?[*:0]u8;
-extern fn qjs_tell_error(engine: *Engine) void;
-extern fn qjs_loop(engine: *Engine) void;
-extern fn qjs_give_back(engine: *Engine, text: [*:0]u8) void;
-extern fn qjs_close(engine: *Engine) void;
-extern fn qjs_note(what: [*:0]const u8) void;
+/// The most a runtime holds, everything a page's scripts make and keep
+/// included. Past it an allocation fails and the script gets an exception.
+/// Enough for a page that loads a framework and its data; a page wanting more
+/// than this is not one this machine reads.
+pub const MEMORY_MAX = 32 * 1024 * 1024;
 
-/// Start an engine. Once, and kept: a runtime is the expensive half, and one
-/// that is freed while anything is still in it takes the program with it.
-pub fn start() ?*Machine {
-    return qjs_start();
-}
+/// How deep a script may call, in bytes of this program's stack, counted
+/// from where the engine was last entered. A process here has a megabyte of
+/// stack at most, and the rest of the program needs the rest of it.
+pub const STACK_MAX = 256 * 1024;
 
-/// There is no `stop`: see `engine.h`. A program that is ending simply ends.
-/// Open a context in `machine`, for one page.
-pub fn open(machine: *Machine) ?*Engine {
-    return qjs_open(machine);
-}
+/// How long one entry into the engine may run before the script is stopped
+/// where it is: one script, one handler, one timer. A page's scripts run
+/// between passes of a window, and a person waits for each.
+pub const SLICE_US: u64 = 1_000_000;
 
-/// Run `source`, called `name`, as a module where it is one and as a script
-/// where it is not.
+/// The clock the slice is measured on, in microseconds since anything: handed
+/// in, this machine's clock being one thing and the host's, where the engine
+/// is tested, another.
+pub const Clock = *const fn () u64;
+
+/// Where what a script says out loud goes.
+pub const Say = *const fn (text: []const u8) void;
+
+/// An engine: the runtime every script hangs off, started once and kept.
 ///
-/// Answers the value it ended in, as a string to `giveBack`, or nothing:
-/// either the script ended in no value, or it threw, which `tellError` says.
-pub fn run(engine: *Engine, source: []const u8, name: []const u8, module: bool) ?[*:0]u8 {
-    return qjs_run(engine, source.ptr, source.len, name.ptr, @intFromBool(module));
-}
+/// Kept rather than freed: this engine refuses to free a runtime with
+/// anything still in it, and a program that is ending has no need to try. A
+/// context, made for one page and given back with it, is where the giving
+/// back happens.
+pub const Machine = struct {
+    runtime: *qjs.Runtime,
+    clock: Clock,
+    say: Say,
+    /// When the entry being run must be over, on `clock`.
+    deadline: u64 = 0,
+    /// Whether the last entry was stopped for running past its slice.
+    interrupted: bool = false,
 
-/// Say what went wrong with the script just run.
-pub fn tellError(engine: *Engine) void {
-    qjs_tell_error(engine);
-}
+    /// Start an engine, or nothing where the machine has no room for one.
+    fn start(clock: Clock, say: Say) ?*Machine {
+        const runtime = qjs.newRuntime() orelse return null;
+        only = .{ .runtime = runtime, .clock = clock, .say = say };
+        qjs.setMemoryLimit(runtime, MEMORY_MAX);
+        qjs.setMaxStackSize(runtime, STACK_MAX);
+        qjs.setInterruptHandler(runtime, &overdue, &only);
+        return &only;
+    }
 
-/// Run what the script left waiting behind it: the promises it made, the
-/// timers it set.
-pub fn loop(engine: *Engine) void {
-    qjs_loop(engine);
-}
+    /// Open a context in it, for one page: a script's own world, with every
+    /// intrinsic in it and the two ways a script has of saying something.
+    pub fn open(self: *Machine) ?*Context {
+        const ctx = qjs.newContext(self.runtime) orelse return null;
+        const global = qjs.globalOf(ctx);
+        defer qjs.free(ctx, global);
+        _ = qjs.setStr(ctx, global, "print", qjs.newFunction(ctx, "print", 1, &said));
+        const console = qjs.newObject(ctx);
+        for ([_][*:0]const u8{ "log", "info", "warn", "error", "debug" }) |name| {
+            _ = qjs.setStr(ctx, console, name, qjs.newFunction(ctx, name, 1, &said));
+        }
+        _ = qjs.setStr(ctx, global, "console", console);
+        return ctx;
+    }
 
-/// Give back a string `run` answered with.
-pub fn giveBack(engine: *Engine, text: [*:0]u8) void {
-    qjs_give_back(engine, text);
-}
+    /// Close a context, and give back everything it holds.
+    pub fn close(self: *Machine, ctx: *Context) void {
+        _ = self;
+        qjs.freeContext(ctx);
+    }
 
-/// Say that a script reached for something this reader has no answer for, so
-/// that a page which stops is a page that has said why.
-pub fn note(what: [*:0]const u8) void {
-    qjs_note(what);
-}
+    /// Begin an entry into the engine: the slice starts now, and the stack is
+    /// measured from here. Around every script run, handler called and timer
+    /// fired, so that each has the whole slice and the whole depth.
+    pub fn enter(self: *Machine) void {
+        qjs.updateStackTop(self.runtime);
+        self.deadline = self.clock() + SLICE_US;
+        self.interrupted = false;
+    }
 
-/// Stop one, and give back everything it holds.
-pub fn close(engine: *Engine) void {
-    qjs_close(engine);
+    /// Run `source`, called `name`, as a program. What it ended in, or the
+    /// exception it threw, which the caller frees either way.
+    ///
+    /// The engine reads a script's bytes up to a nought after them, so it is
+    /// given a copy with one, on its own heap: what a script's source costs
+    /// while it is read counts against the script's own bound.
+    pub fn run(self: *Machine, ctx: *Context, source: []const u8, name: [*:0]const u8, how: qjs.Eval) Value {
+        self.enter();
+        const copy: [*]u8 = @ptrCast(qjs.alloc(ctx, source.len + 1) orelse return qjs.throwOutOfMemory(ctx));
+        defer qjs.release(ctx, copy);
+        @memcpy(copy[0..source.len], source);
+        copy[source.len] = 0;
+        return qjs.run(ctx, copy, source.len, name, how);
+    }
+
+    /// Run what scripts left waiting: the promises they made. Bounded, so a
+    /// promise that keeps making promises gives the program its turn back.
+    /// True where anything ran.
+    pub fn runJobs(self: *Machine) bool {
+        var ran = false;
+        var left: usize = JOBS_MAX;
+        while (left > 0 and qjs.isJobPending(self.runtime) != 0) : (left -= 1) {
+            var wanting: ?*Context = null;
+            self.enter();
+            const status = qjs.executePendingJob(self.runtime, &wanting);
+            if (status < 0) {
+                if (wanting) |ctx| self.tellError(ctx);
+            }
+            if (status == 0) break;
+            ran = true;
+        }
+        return ran;
+    }
+
+    /// How many promises are kept in one go.
+    const JOBS_MAX = 256;
+
+    /// What the engine asks every few thousand steps: whether to go on.
+    fn overdue(_: *qjs.Runtime, at: ?*anyopaque) callconv(.c) c_int {
+        const self: *Machine = @ptrCast(@alignCast(at orelse return 0));
+        if (self.clock() < self.deadline) return 0;
+        self.interrupted = true;
+        return 1;
+    }
+
+    /// Say the exception the context holds, and let it go.
+    pub fn tellError(self: *Machine, ctx: *Context) void {
+        var buf: [ERROR_MAX]u8 = undefined;
+        self.say(errorText(ctx, &buf));
+    }
+
+    /// The exception the context holds, as words in `buf`: what it says, and
+    /// where it happened where the engine kept that. Letting the exception
+    /// go, as reading one does.
+    pub fn errorText(ctx: *Context, buf: []u8) []const u8 {
+        const exception = qjs.exceptionOf(ctx);
+        defer qjs.free(ctx, exception);
+        var w: std.Io.Writer = .fixed(buf);
+        writeValue(ctx, &w, exception);
+        if (qjs.isObject(exception)) {
+            const stack = qjs.getStr(ctx, exception, "stack");
+            defer qjs.free(ctx, stack);
+            if (!qjs.isUndefined(stack)) {
+                w.writeAll("\n") catch {};
+                writeValue(ctx, &w, stack);
+            }
+        }
+        return w.buffered();
+    }
+
+    /// The most an exception's words come to, as they are said.
+    pub const ERROR_MAX = 1024;
+
+    /// A value as words, cut to what `w` holds.
+    fn writeValue(ctx: *Context, w: *std.Io.Writer, value: Value) void {
+        const text = qjs.sliceOf(ctx, value) orelse return;
+        defer qjs.freeText(ctx, text.ptr);
+        w.writeAll(text[0..@min(text.len, w.buffer.len - w.end)]) catch {};
+    }
+
+    /// `print` and `console.log`: each argument as words, a space between,
+    /// and a line end, said where the program says.
+    fn said(ctx: *Context, _: Value, argc: c_int, argv: [*]const Value) callconv(.c) Value {
+        var buf: [LINE_MAX]u8 = undefined;
+        var w: std.Io.Writer = .fixed(&buf);
+        for (argv[0..@intCast(argc)], 0..) |value, i| {
+            if (i > 0) w.writeByte(' ') catch break;
+            writeValue(ctx, &w, value);
+        }
+        if (held) |machine| machine.say(w.buffered());
+        return qjs.undefinedValue();
+    }
+
+    /// The most of a line a script says that is passed on.
+    const LINE_MAX = 512;
+};
+
+/// The one engine a program has, for the calls the engine makes back with a
+/// context and nothing else: a program starts one engine and keeps it.
+var only: Machine = undefined;
+var held: ?*Machine = null;
+
+/// Start the program's engine, once, and keep it.
+pub fn start(clock: Clock, say: Say) ?*Machine {
+    if (held) |machine| return machine;
+    held = Machine.start(clock, say);
+    return held;
 }

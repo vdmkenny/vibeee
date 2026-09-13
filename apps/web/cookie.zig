@@ -7,7 +7,9 @@
 //! can set a cookie, redirect, fetch again, and receive the one it set.
 
 const std = @import("std");
-const url = @import("url");
+const url = @import("url.zig");
+
+const Writer = std.Io.Writer;
 
 pub const Jar = struct {
     const Cookie = struct {
@@ -29,6 +31,7 @@ pub const Jar = struct {
     pub fn deinit(self: *Jar, gpa: std.mem.Allocator) void {
         for (self.cookies.items) |cookie| free(gpa, cookie);
         self.cookies.deinit(gpa);
+        self.* = .{};
     }
 
     /// Take one `Set-Cookie` field or `document.cookie` assignment. A script
@@ -96,19 +99,34 @@ pub const Jar = struct {
         }) catch {};
     }
 
-    /// The request's `Cookie` value, or the text `document.cookie` exposes.
-    /// HttpOnly cookies go to a site but never to its script.
-    pub fn write(self: *const Jar, from: url.Url, include_http_only: bool, into: []u8) []const u8 {
-        var out: std.Io.Writer = .fixed(into);
+    /// Whether any cookie goes to `from`.
+    pub fn has(self: *const Jar, from: url.Url, include_http_only: bool) bool {
+        for (self.cookies.items) |cookie| {
+            if (matches(cookie, from, include_http_only)) return true;
+        }
+        return false;
+    }
+
+    /// The request's `Cookie` value, or the text `document.cookie` exposes,
+    /// written to `w`: `name=value` pairs apart by `; `. HttpOnly cookies go
+    /// to a site but never to its script.
+    pub fn writeInto(self: *const Jar, w: *Writer, from: url.Url, include_http_only: bool) Writer.Error!void {
         var written: usize = 0;
         for (self.cookies.items) |cookie| {
             if (!matches(cookie, from, include_http_only)) continue;
-            if (written > 0) out.writeAll("; ") catch return "";
-            out.writeAll(cookie.name) catch return "";
-            out.writeByte('=') catch return "";
-            out.writeAll(cookie.value) catch return "";
+            if (written > 0) try w.writeAll("; ");
+            try w.writeAll(cookie.name);
+            try w.writeByte('=');
+            try w.writeAll(cookie.value);
             written += 1;
         }
+    }
+
+    /// The same, into `into`, for a caller with a buffer rather than a
+    /// writer.
+    pub fn write(self: *const Jar, from: url.Url, include_http_only: bool, into: []u8) []const u8 {
+        var out: Writer = .fixed(into);
+        self.writeInto(&out, from, include_http_only) catch return "";
         return out.buffered();
     }
 

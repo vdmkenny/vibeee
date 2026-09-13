@@ -229,19 +229,23 @@ records which.
 Vendored: `quickjs.c`, `libregexp.c`, `libunicode.c` (with
 `libunicode-table.h`), `dtoa.c` and `cutils.c`, which is what upstream's own
 library is built from. Not `quickjs-libc.c`, the helpers it gives a script:
-what they give is a POSIX this system does not have — shared objects to open,
-processes to wait for, a poll to block on — and a stub for each would be a
-promise the machine cannot keep. What a script gets instead is written in
-`apps/qjs/quickjsport/engine.c`, and is only what is true here: the language,
-`print` and `console.log`. Nor `qjs.c`, which is upstream's shell and whose
-job `apps/qjs/qjs.zig` does for itself; nor the standalone compiler, the test
-runner, or `unicode_gen.c`, which is how the tables are made rather than read.
+what they give is a POSIX this system does not have, shared objects to open,
+processes to wait for, a poll to block on, and a stub for each would be a
+promise the machine cannot keep. What a script gets instead is written here:
+`src/user/js/js.zig` starts the engine with bounds on its memory, its stack
+and how long a script runs before it is stopped, and gives a script `print`
+and `console`; the reader's `apps/web/dom.zig` gives a page's script its
+document. Nor `qjs.c`, which is upstream's shell and whose job `apps/qjs`
+does for itself; nor the standalone compiler, the test runner, or
+`unicode_gen.c`, which is how the tables are made rather than read.
 
-The boundary is `apps/qjs/quickjs.zig`, which declares the four calls of
-`engine.h` and nothing else, so a signature changed on either side fails the
-build on its own. Values never cross it: a `JSValue` is a struct sixteen bytes
-wide whose shape depends on how upstream was built and whose helpers are C
-inline functions, so a script goes in as bytes and comes out as a string.
+The boundary is `src/user/js/quickjs.zig`, a mirror of the part of
+`quickjs.h` that is used, with `port/inlines.c` standing in for the header's
+inline functions and `port/pin.c` checking at compile time that the value
+struct and the function list entries are the shape the mirror says. A
+`JSValue` is a struct sixteen bytes wide whose shape depends on how upstream
+was built; the mirror declares it as upstream builds it here, and the pin
+fails the build where an upstream change moves it.
 
 Two things it asks for that this system does not otherwise have are answered
 rather than stubbed in silence: `pthread.h`, whose locks and waits are nothing

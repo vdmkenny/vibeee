@@ -64,30 +64,22 @@ pub const Colours = packed struct(u16) {
     ground: Swatch = .none,
 };
 
-/// A CSS length the reader can retain for a future box layout pass. Values
-/// stay in CSS pixels or viewport shares rather than being resolved while the
-/// page is extracted.
+/// A length as a stylesheet writes one: in the page's pixels, as a share of
+/// the box around it, or as a share of the window. Kept as written, and
+/// resolved when the page is laid out, where the box and the window are
+/// known.
 pub const Unit = union(enum) {
     auto,
-    px: f64,
-    percent: f64,
-    vw: f64,
-    vh: f64,
+    px: f32,
+    percent: f32,
+    vw: f32,
+    vh: f32,
 };
 
-/// The four physical edges of a box.
-pub const Edges = struct {
-    top: Unit = .auto,
-    right: Unit = .auto,
-    bottom: Unit = .auto,
-    left: Unit = .auto,
-};
-
-/// The CSS geometry needed before this reader can lay boxes out. It is kept
-/// separately from the text-block model until box layout replaces that pass.
+/// What a stylesheet says of a box that this reader lays out: whether it is
+/// a flex container, and the room it and its items are given.
 pub const BoxStyle = struct {
     display: Display = .@"inline",
-    position: Position = .static,
     /// Which way a flex container's items run along its main axis.
     direction: Direction = .row,
     /// The room a flex container leaves between its items.
@@ -96,7 +88,6 @@ pub const BoxStyle = struct {
     justify: Justify = .start,
     /// Where they go across it.
     items: Items = .start,
-    edges: Edges = .{},
     width: Unit = .auto,
     height: Unit = .auto,
     min_width: Unit = .auto,
@@ -105,7 +96,6 @@ pub const BoxStyle = struct {
     max_height: Unit = .auto,
 
     pub const Display = enum { block, @"inline", flex };
-    pub const Position = enum { static, absolute, fixed };
     pub const Direction = enum { row, column };
     /// `space-between`: the room left over goes between the items, none of it
     /// outside them.
@@ -126,6 +116,18 @@ pub const ContainerRange = struct { first: u32 = 0, count: u32 = 0 };
 pub const Container = struct {
     style: BoxStyle,
     children: ContainerRange = .{},
+};
+
+/// The parsed node a link, a form or a control came from, for a script to be
+/// told what was done to it. Kept only while the page's tree is, and nothing
+/// where the page was read without one being kept.
+pub const Node = opaque {};
+
+/// Where a link goes, and the anchor it was.
+pub const Link = struct {
+    /// Already resolved against the page's own address.
+    address: Span,
+    node: ?*Node = null,
 };
 
 /// Words in one look, going to one link or to none.
@@ -247,6 +249,7 @@ pub const Form = struct {
     /// Already resolved against the page's own address.
     action: Span,
     method: Method,
+    node: ?*Node = null,
 
     pub const Method = enum {
         /// In the address, as a query: what a search is.
@@ -268,6 +271,7 @@ pub const Control = struct {
     value: Span = .{},
     /// The colours the page gives it, where it gives any.
     colours: Colours = .{},
+    node: ?*Node = null,
 };
 
 pub const ControlKind = union(enum) {
@@ -330,8 +334,7 @@ pub const Page = struct {
     blocks: std.ArrayList(Block) = .empty,
     /// What the page keeps beside its words, one string after another.
     strings: std.ArrayList(u8) = .empty,
-    /// Where each link goes, in `strings`.
-    links: std.ArrayList(Span) = .empty,
+    links: std.ArrayList(Link) = .empty,
     forms: std.ArrayList(Form) = .empty,
     controls: std.ArrayList(Control) = .empty,
     pictures: std.ArrayList(Picture) = .empty,
@@ -403,7 +406,7 @@ pub const Page = struct {
     /// Where a link goes.
     pub fn address(self: *const Page, link: u16) ?[]const u8 {
         if (link >= self.links.items.len) return null;
-        return self.string(self.links.items[link]);
+        return self.string(self.links.items[link].address);
     }
 };
 
@@ -418,6 +421,9 @@ pub const Builder = struct {
     link: ?u16 = null,
     /// The form the walk is inside, where it is inside one.
     form: ?u16 = null,
+    /// The parsed node whatever is added next came from, where the walk
+    /// keeps that: the walk says as it arrives at each element.
+    node: ?*Node = null,
 
     next: Block = .{},
     /// The block being filled. Opened by the first thing put in it, so a
@@ -676,14 +682,14 @@ pub const Builder = struct {
     /// link can have, the words still read and simply go nowhere.
     pub fn addLink(self: *Builder, address: []const u8) Error!?u16 {
         const index = std.math.cast(u16, self.page.links.items.len) orelse return null;
-        try self.page.links.append(self.gpa, try self.keep(address));
+        try self.page.links.append(self.gpa, .{ .address = try self.keep(address), .node = self.node });
         return index;
     }
 
     /// A form, and which one it is.
     pub fn addForm(self: *Builder, action: []const u8, method: Form.Method) Error!?u16 {
         const index = std.math.cast(u16, self.page.forms.items.len) orelse return null;
-        try self.page.forms.append(self.gpa, .{ .action = try self.keep(action), .method = method });
+        try self.page.forms.append(self.gpa, .{ .action = try self.keep(action), .method = method, .node = self.node });
         return index;
     }
 
@@ -710,6 +716,7 @@ pub const Builder = struct {
             .name = try self.keep(name),
             .value = try self.keep(value),
             .colours = colours,
+            .node = self.node,
         });
         if (placed == .hidden) return;
         try self.place(.{ .control = index });

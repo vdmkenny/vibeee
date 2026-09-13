@@ -20,10 +20,11 @@
 
 const std = @import("std");
 const lib = @import("lib");
-const lexbor = @import("lexbor");
+const lexbor = @import("lexbor.zig");
+const links = @import("links.zig");
 const media = @import("media.zig");
 const page_mod = @import("page.zig");
-const url = @import("url");
+const url = @import("url.zig");
 
 const rgb = lib.rgb;
 const Allocator = std.mem.Allocator;
@@ -71,22 +72,16 @@ pub fn flows(node: *const Node) bool {
     };
 }
 
-/// The geometry upstream resolved for `node`, limited to the units the first
-/// box-layout pass will understand. Unsupported CSS values remain `auto`.
+/// What the cascade says of `node` as a box: whether it is a flex container,
+/// and the room it and its items are given, in the units the layout reads. A
+/// length in a unit it does not read is `auto`.
 pub fn boxStyle(node: *const Node, fallback: page_mod.BoxStyle.Display) page_mod.BoxStyle {
     return .{
         .display = displayOf(node) orelse fallback,
-        .position = positionOf(node),
         .direction = directionOf(node),
         .gap = gapOf(node),
         .justify = justifyOf(node),
         .items = itemsOf(node),
-        .edges = .{
-            .top = lengthOf(node, .top),
-            .right = lengthOf(node, .right),
-            .bottom = lengthOf(node, .bottom),
-            .left = lengthOf(node, .left),
-        },
         .width = lengthOf(node, .width),
         .height = lengthOf(node, .height),
         .min_width = lengthOf(node, .min_width),
@@ -107,15 +102,6 @@ fn displayOf(node: *const Node) ?page_mod.BoxStyle.Display {
     return null;
 }
 
-fn positionOf(node: *const Node) page_mod.BoxStyle.Position {
-    const position = valueOf(lexbor.Position, node, .position) orelse return .static;
-    return switch (position.kind) {
-        .absolute => .absolute,
-        .fixed => .fixed,
-        else => .static,
-    };
-}
-
 fn lengthOf(node: *const Node, property: lexbor.Property) page_mod.Unit {
     const length = valueOf(lexbor.LengthPercentage, node, property) orelse return .auto;
     return unitOf(length);
@@ -124,11 +110,11 @@ fn lengthOf(node: *const Node, property: lexbor.Property) page_mod.Unit {
 fn unitOf(length: *const lexbor.LengthPercentage) page_mod.Unit {
     return switch (length.kind) {
         .auto => .auto,
-        .percentage => .{ .percent = length.value.percentage.num },
+        .percentage => .{ .percent = @floatCast(length.value.percentage.num) },
         .length => switch (length.value.length.unit) {
-            .undef, .px => .{ .px = length.value.length.num },
-            .vw => .{ .vw = length.value.length.num },
-            .vh => .{ .vh = length.value.length.num },
+            .undef, .px => .{ .px = @floatCast(length.value.length.num) },
+            .vw => .{ .vw = @floatCast(length.value.length.num) },
+            .vh => .{ .vh = @floatCast(length.value.length.num) },
             else => .auto,
         },
         else => .auto,
@@ -451,48 +437,8 @@ pub const SHEETS_MAX = 16;
 pub const SHEETS_BYTES_MAX = 2 * 1024 * 1024;
 
 /// The stylesheets a page links to, in the order it names them, each with the
-/// media its link names; and how many have been handed out to fetch, and what
-/// those came to.
-pub const Sheets = struct {
-    links: std.ArrayList(Link) = .empty,
-    taken: usize = 0,
-    spent: usize = 0,
-
-    /// A stylesheet to fetch: where it is, and the media its link names,
-    /// which are empty for every medium.
-    pub const Link = struct { address: []const u8, media: []const u8 };
-
-    pub fn deinit(self: *Sheets, gpa: Allocator) void {
-        for (self.links.items) |link| {
-            gpa.free(link.address);
-            gpa.free(link.media);
-        }
-        self.links.deinit(gpa);
-        self.* = .{};
-    }
-
-    fn add(self: *Sheets, gpa: Allocator, address: []const u8, asked: []const u8) Allocator.Error!void {
-        if (self.links.items.len == SHEETS_MAX) return;
-        const kept_address = try gpa.dupe(u8, address);
-        errdefer gpa.free(kept_address);
-        const kept_media = try gpa.dupe(u8, asked);
-        errdefer gpa.free(kept_media);
-        try self.links.append(gpa, .{ .address = kept_address, .media = kept_media });
-    }
-
-    /// The next stylesheet to fetch, or nothing once every one has been, or
-    /// once those that came have used what a page's may come to.
-    pub fn next(self: *Sheets) ?Link {
-        if (self.taken == self.links.items.len or self.spent >= SHEETS_BYTES_MAX) return null;
-        defer self.taken += 1;
-        return self.links.items[self.taken];
-    }
-
-    /// Count one that came against what they may come to.
-    pub fn took(self: *Sheets, bytes: usize) void {
-        self.spent +|= bytes;
-    }
-};
+/// media its link names.
+pub const Sheets = links.Queue(SHEETS_MAX, SHEETS_BYTES_MAX);
 
 /// The stylesheets `document` links to that could be for a window, in the
 /// order it names them, resolved against `base`, each with the media its
@@ -513,10 +459,17 @@ pub fn sheetsOf(gpa: Allocator, document: *lexbor.Document, base: url.Url, into:
     }
 }
 
+/// The rules of a page's stylesheets that this reader honours, in the order
+/// they were applied, which is the order the cascade weighs them in where
+/// two are of the same weight. They live in the document's own memory and
+/// go with it; the list is what is matched again where a script changes
+/// what an element is.
+pub const Rules = std.ArrayList(*lexbor.StyleRule);
+
 /// Apply a stylesheet to `document` as it reads on `screen`: its rules for
 /// the window, and of those only the ones that say something this reader
-/// draws or retains for box layout.
-pub fn apply(gpa: Allocator, document: *lexbor.Document, text: []const u8, screen: ?media.Screen) void {
+/// draws or retains for box layout. The rules applied are added to `rules`.
+pub fn apply(gpa: Allocator, document: *lexbor.Document, text: []const u8, screen: ?media.Screen, rules: *Rules) void {
     const dom = lexbor.domOf(document);
     const cascade = dom.css orelse return;
 
@@ -527,10 +480,10 @@ pub fn apply(gpa: Allocator, document: *lexbor.Document, text: []const u8, scree
     defer gpa.free(flat);
     var w: std.Io.Writer = .fixed(flat);
     media.flatten(text, screen, &w) catch return;
-    const rules = w.buffered();
+    const flattened = w.buffered();
 
     const sheet = lexbor.lxb_css_stylesheet_create(cascade.memory) orelse return;
-    if (lexbor.lxb_css_stylesheet_parse(sheet, cascade.parser, rules.ptr, rules.len) != .ok) return;
+    if (lexbor.lxb_css_stylesheet_parse(sheet, cascade.parser, flattened.ptr, flattened.len) != .ok) return;
     const root = sheet.root orelse return;
     if (root.kind != .list) return;
     const list: *const lexbor.RuleList = @fieldParentPtr("rule", root);
@@ -538,7 +491,26 @@ pub fn apply(gpa: Allocator, document: *lexbor.Document, text: []const u8, scree
     while (at) |rule| : (at = rule.next) {
         if (rule.kind != .style) continue;
         const style: *lexbor.StyleRule = @fieldParentPtr("rule", rule);
-        if (honoured(style)) _ = lexbor.lxb_dom_document_style_attach(dom, style);
+        if (!honoured(style)) continue;
+        _ = lexbor.lxb_dom_document_style_attach(dom, style);
+        rules.append(gpa, style) catch {};
+    }
+}
+
+/// Match the sheets again against `root` and everything under it, as a
+/// browser does where a script has changed what an element is or put one
+/// in: what the sheets gave each element goes, what it wrote on the element
+/// itself stays, and the rules that fit it now are applied in the order
+/// they were first applied in: the sheets the page's own style elements
+/// hold, which the tree keeps and matches for itself, and then `rules`.
+pub fn restyle(document: *lexbor.Document, rules: *const Rules, root: *lexbor.Node) void {
+    const dom = lexbor.domOf(document);
+    var at: ?*lexbor.Node = root;
+    while (at) |node| : (at = lexbor.following(node, root)) {
+        if (node.type != .element) continue;
+        _ = lexbor.lxb_dom_element_style_remove_non_inline(node);
+        _ = lexbor.lxb_dom_document_element_styles_attach(node);
+        for (rules.items) |rule| _ = lexbor.lxb_dom_document_style_attach_by_element(dom, node, rule);
     }
 }
 
@@ -550,7 +522,7 @@ fn honoured(style: *const lexbor.StyleRule) bool {
         if (rule.kind != .declaration) continue;
         const declaration: *const lexbor.Declaration = @fieldParentPtr("rule", rule);
         switch (declaration.property) {
-            .display, .position, .top, .right, .bottom, .left, .width, .height, .min_width, .min_height, .max_width, .max_height, .flex_direction, .justify_content, .align_items, .visibility, .opacity, .color, .background_color, .text_align, .white_space => return true,
+            .display, .width, .height, .min_width, .min_height, .max_width, .max_height, .flex_direction, .justify_content, .align_items, .visibility, .opacity, .color, .background_color, .text_align, .white_space => return true,
             .custom => {
                 const custom = customOf(declaration) orelse continue;
                 const name = custom.name.slice();
