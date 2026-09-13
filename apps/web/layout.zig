@@ -1323,6 +1323,7 @@ const Fixed = struct {
             .line => |line| .{ .w = @as(i32, line.letters) * 6, .h = 24 },
             .submit, .reset => .{ .w = 30, .h = 24 },
             .tick => .{ .w = 24, .h = 24 },
+            .choose => .{ .w = 60, .h = 24 },
             .hidden => .{ .w = 0, .h = 0 },
         };
     }

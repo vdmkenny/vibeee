@@ -168,6 +168,9 @@ var shell = false;
 
 /// How much of the rule under the strip was last painted, in thousandths.
 var drawn_progress: ?u16 = null;
+/// A page was put on screen while a pass was drawing, from what a control
+/// on it did: the next pass is asked for at once, so that it is seen.
+var repaint_wanted = false;
 /// How far down to open the page being fetched: where it was left, when it
 /// is one being gone back to.
 var pending_scroll: i32 = 0;
@@ -601,7 +604,8 @@ fn fileAddress(path: []const u8, buf: []u8) ?[]const u8 {
 // ---------------------------------------------------------------------------
 
 fn tick() bool {
-    const drew = step();
+    const drew = step() or repaint_wanted;
+    repaint_wanted = false;
     plan();
     return drew;
 }
@@ -656,6 +660,7 @@ fn plan() void {
     };
     if (reading != null and !fetch.busy()) soon = true;
     if (pictures.fetching == null and pictures.busy()) soon = true;
+    if (repaint_wanted) soon = true;
     var timer: ?usize = null;
     if (scripts) |doc| {
         if (!script_fetch.busy() and dom.asking(doc)) soon = true;
@@ -1099,6 +1104,7 @@ fn showPage(fresh: *Page) void {
     view.show(gpa, &shown, pending_scroll);
     pending_scroll = 0;
     title_stale = true;
+    repaint_wanted = true;
     // Its pictures from the next chance on, once its words are drawn.
     pictures.show(gpa, &shown, .{
         .widest = widest(),
@@ -1265,11 +1271,21 @@ fn draw() void {
     if (view.run(gpa, ctx, parts.body, &pictures)) |act| switch (act) {
         .follow => |link| follow(link),
         .submit => |by| submit(by),
+        .chose => |pick| chose(pick),
     };
     status(parts.bottom, parts.body);
     // Last, so that it stands over the page it hangs over.
     runMenu(bar.menu);
     plan();
+}
+
+/// An entry of one of the page's lists was chosen: the page's scripts are
+/// told, and what they change is read again.
+fn chose(pick: view_mod.Chose) void {
+    const doc = scripts orelse return;
+    const node = shown.controls.items[pick.control].node orelse return;
+    dom.chose(doc, @ptrCast(@alignCast(node)), pick.index);
+    _ = afterScripts(doc);
 }
 
 /// Send a form's answers where it says: in the address, as its query, for a

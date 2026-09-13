@@ -469,6 +469,57 @@ pub fn click(it: *Document, node: *Node) bool {
     return tell(it, node, "click", true);
 }
 
+/// An entry of a list was chosen by the person reading: the entry is the
+/// one chosen from here on, and the list is told, as a browser tells it.
+pub fn chose(it: *Document, select: *Node, index: usize) void {
+    var count: usize = 0;
+    var at = lexbor.following(select, select);
+    while (at) |here| : (at = lexbor.following(here, select)) {
+        if (!isTag(here, "OPTION")) continue;
+        if (count == index) attributeSet(it, here, "selected", "") else if (attributeOf(here, "selected") != null) attributeRemove(it, here, "selected");
+        count += 1;
+    }
+    it.machine.enter();
+    _ = tell(it, select, "input", true);
+    _ = tell(it, select, "change", true);
+    _ = it.machine.runJobs();
+}
+
+/// The entry of a list that is chosen: the first the page says is, or its
+/// first, as a browser has it. Nothing for a list with no entries.
+fn chosenOption(select: *Node) ?*Node {
+    var first: ?*Node = null;
+    var at = lexbor.following(select, select);
+    while (at) |here| : (at = lexbor.following(here, select)) {
+        if (!isTag(here, "OPTION")) continue;
+        if (attributeOf(here, "selected") != null) return here;
+        if (first == null) first = here;
+    }
+    return first;
+}
+
+/// Which of a list's entries is chosen, counted from nought, or none for a
+/// list with no entries.
+fn chosenIndex(select: *Node) ?usize {
+    const chosen = chosenOption(select) orelse return null;
+    var count: usize = 0;
+    var at = lexbor.following(select, select);
+    while (at) |here| : (at = lexbor.following(here, select)) {
+        if (!isTag(here, "OPTION")) continue;
+        if (here == chosen) return count;
+        count += 1;
+    }
+    return null;
+}
+
+/// What an entry of a list sends: its value, or its words where it has none,
+/// which `buf` then holds.
+fn optionValue(option: *Node, buf: *NodeText) []const u8 {
+    if (attributeOf(option, "value")) |value| return value;
+    buf.* = textOfNode(option);
+    return buf.bytes;
+}
+
 /// A form about to be sent, told to it. True where a script refused it.
 pub fn submitted(it: *Document, form: *Node) bool {
     it.machine.enter();
@@ -2045,7 +2096,21 @@ const reflected = [_]Reflected{
 
 fn jsReflectedGet(ctx: *Context, this: Value, magic: c_int) callconv(.c) Value {
     const node = nodeOf(this) orelse return qjs.undefinedValue();
-    return str(ctx, attributeOf(node, reflected[@intCast(magic)].attribute) orelse "");
+    const which = reflected[@intCast(magic)];
+    // A list's value is its chosen entry's, and a text area's its words.
+    if (std.mem.eql(u8, which.attribute, "value")) {
+        if (isTag(node, "SELECT")) {
+            var text = NodeText{ .node = node, .data = null, .bytes = "" };
+            defer text.deinit();
+            return str(ctx, if (chosenOption(node)) |chosen| optionValue(chosen, &text) else "");
+        }
+        if (isTag(node, "TEXTAREA")) {
+            const text = textOfNode(node);
+            defer text.deinit();
+            return str(ctx, text.bytes);
+        }
+    }
+    return str(ctx, attributeOf(node, which.attribute) orelse "");
 }
 
 fn jsReflectedSet(ctx: *Context, this: Value, value: Value, magic: c_int) callconv(.c) Value {
@@ -2053,8 +2118,59 @@ fn jsReflectedSet(ctx: *Context, this: Value, value: Value, magic: c_int) callco
     const node = nodeOf(this) orelse return qjs.undefinedValue();
     const text = words(ctx, value) orelse return qjs.undefinedValue();
     defer qjs.freeText(ctx, text.ptr);
-    attributeSet(it, node, reflected[@intCast(magic)].attribute, text);
+    const which = reflected[@intCast(magic)];
+    if (std.mem.eql(u8, which.attribute, "value") and isTag(node, "SELECT")) {
+        // The entry with that value is the one chosen, and no other.
+        var at = lexbor.following(node, node);
+        while (at) |here| : (at = lexbor.following(here, node)) {
+            if (!isTag(here, "OPTION")) continue;
+            var held = NodeText{ .node = here, .data = null, .bytes = "" };
+            defer held.deinit();
+            const matches = std.mem.eql(u8, optionValue(here, &held), text);
+            if (matches) attributeSet(it, here, "selected", "") else if (attributeOf(here, "selected") != null) attributeRemove(it, here, "selected");
+        }
+        return qjs.undefinedValue();
+    }
+    attributeSet(it, node, which.attribute, text);
     return qjs.undefinedValue();
+}
+
+/// `select.selectedIndex`: which entry is chosen, counted from nought, or
+/// minus one for a list with none.
+fn jsSelectedIndex(ctx: *Context, this: Value) callconv(.c) Value {
+    const node = nodeOf(this) orelse return qjs.newInt(ctx, -1);
+    return qjs.newInt(ctx, if (chosenIndex(node)) |index| @intCast(index) else -1);
+}
+
+fn jsSetSelectedIndex(ctx: *Context, this: Value, value: Value) callconv(.c) Value {
+    const it = documentOf(ctx) orelse return qjs.undefinedValue();
+    const node = nodeOf(this) orelse return qjs.undefinedValue();
+    var wanted: i32 = 0;
+    _ = qjs.toInt(ctx, &wanted, value);
+    var count: i32 = 0;
+    var at = lexbor.following(node, node);
+    while (at) |here| : (at = lexbor.following(here, node)) {
+        if (!isTag(here, "OPTION")) continue;
+        if (count == wanted) attributeSet(it, here, "selected", "") else if (attributeOf(here, "selected") != null) attributeRemove(it, here, "selected");
+        count += 1;
+    }
+    return qjs.undefinedValue();
+}
+
+/// `select.options`: its entries, in order.
+fn jsOptions(ctx: *Context, this: Value) callconv(.c) Value {
+    const it = documentOf(ctx) orelse return qjs.newArray(ctx);
+    const out = qjs.newArray(ctx);
+    const node = nodeOf(this) orelse return out;
+    var count: u32 = 0;
+    var at = lexbor.following(node, node);
+    while (at) |here| : (at = lexbor.following(here, node)) {
+        if (!isTag(here, "OPTION")) continue;
+        _ = qjs.setAt(ctx, out, count, wrap(it, here));
+        count += 1;
+    }
+    _ = qjs.setStr(ctx, out, "length", qjs.newUint(ctx, count));
+    return out;
 }
 
 /// An attribute that is there or not, read and written as a boolean:
@@ -2252,6 +2368,8 @@ const node_gets = reflectedEntries() ++ flaggedEntries() ++ [_]qjs.ListEntry{
     .accessor("ownerDocument", &jsOwnerDocument, null),
     .accessor("form", &jsForm, null),
     .accessor("elements", &jsElements, null),
+    .accessor("selectedIndex", &jsSelectedIndex, &jsSetSelectedIndex),
+    .accessor("options", &jsOptions, null),
     wayEntry("parentNode", .parent),
     wayEntry("parentElement", .parent),
     wayEntry("firstChild", .first_child),
@@ -2900,11 +3018,18 @@ fn answersIn(node: *Node, w: *std.Io.Writer) void {
             if (ticks and attributeOf(one, "checked") == null) continue;
             if (std.ascii.eqlIgnoreCase(kind, "submit") or std.ascii.eqlIgnoreCase(kind, "button")) continue;
         }
-        const text = if (attributeOf(one, "value") == null and !isTag(one, "INPUT")) textOfNode(one) else NodeText{ .node = one, .data = null, .bytes = "" };
+        var text = NodeText{ .node = one, .data = null, .bytes = "" };
         defer text.deinit();
         // A box ticked, or a radio button chosen, without a value of its own
-        // sends `on`, which is what a form is told.
-        const value = attributeOf(one, "value") orelse if (isTag(one, "INPUT")) "on" else text.bytes;
+        // sends `on`, which is what a form is told; a list sends the entry
+        // chosen on it.
+        const value = if (isTag(one, "SELECT"))
+            optionValue(chosenOption(one) orelse continue, &text)
+        else
+            attributeOf(one, "value") orelse if (isTag(one, "INPUT")) "on" else words: {
+                text = textOfNode(one);
+                break :words text.bytes;
+            };
         form_mod.writeAnswer(w, first, named, value, .utf8) catch return;
         first = false;
     }

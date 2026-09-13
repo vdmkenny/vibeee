@@ -127,6 +127,14 @@ const Metrics = struct {
             .line => |line| .{ .w = @as(i32, line.letters) * self.width(.body, "n") + 2 * t.padding, .h = t.control_height },
             .submit, .reset => |press| .{ .w = self.width(.body, page.string(press.label)) + 4 * t.padding, .h = t.control_height },
             .tick => .{ .w = t.control_height, .h = t.control_height },
+            .choose => |choose| {
+                // As wide as its widest entry, and the mark beside it.
+                var widest: i32 = 0;
+                for (page.options.items[choose.first..][0..choose.count]) |option| {
+                    widest = @max(widest, self.width(.body, page.string(option.label)));
+                }
+                return .{ .w = widest + 2 * t.padding + eui.widget.markWidth(), .h = t.control_height };
+            },
             .hidden => .{ .w = 0, .h = 0 },
         };
     }
@@ -205,6 +213,14 @@ pub const Action = union(enum) {
     follow: u16,
     /// Send a form.
     submit: Submit,
+    /// An entry of one of the page's lists was chosen.
+    chose: Chose,
+};
+
+pub const Chose = struct {
+    /// The control, among the page's, and which of its entries.
+    control: u16,
+    index: u16,
 };
 
 pub const Submit = struct {
@@ -231,6 +247,8 @@ pub const View = struct {
     /// What is typed in the page's lines, and which of its boxes are ticked.
     lines: []Line = &.{},
     ticks: []bool = &.{},
+    /// Which entry each of its lists has chosen.
+    chosen: []u16 = &.{},
     /// The control the keyboard is in, which it stays in when a scroll moves
     /// the control.
     focused: ?u16 = null,
@@ -249,6 +267,7 @@ pub const View = struct {
         // reads; its controls are simply not drawn.
         self.lines = gpa.alloc(Line, page.lines) catch &.{};
         self.ticks = gpa.alloc(bool, page.ticks) catch &.{};
+        self.chosen = gpa.alloc(u16, page.chooses) catch &.{};
         self.restore(page, null);
     }
 
@@ -256,6 +275,7 @@ pub const View = struct {
         self.layout.deinit(gpa);
         gpa.free(self.lines);
         gpa.free(self.ticks);
+        gpa.free(self.chosen);
         // The shade pages are drawn in is a setting, and outlasts the page.
         const shade = self.shade;
         self.* = .{ .shade = shade };
@@ -321,6 +341,10 @@ pub const View = struct {
             .line => |line| if (line.slot < self.lines.len) self.lines[line.slot].slice() else null,
             .hidden => page.string(control.value),
             .tick => |tick| if (tick.slot < self.ticks.len and self.ticks[tick.slot]) page.string(control.value) else null,
+            .choose => |choose| if (choose.slot < self.chosen.len and self.chosen[choose.slot] < choose.count)
+                page.string(page.options.items[choose.first + self.chosen[choose.slot]].value)
+            else
+                null,
             .submit => if (by == index) page.string(control.value) else null,
             .reset => null,
         };
@@ -485,6 +509,19 @@ pub const View = struct {
                 const ticked = ctx.checkbox(rect, "", self.ticks[tick.slot]);
                 if (ticked != self.ticks[tick.slot]) self.tickBox(page, control, ticked);
             },
+            .choose => |choose| {
+                if (choose.slot >= self.chosen.len) return null;
+                // The entries as words, for the list: the page's strings
+                // stay where they are for as long as the page is shown.
+                var labels: [eui.dropdown.ENTRIES_MAX][]const u8 = undefined;
+                const shown = @min(choose.count, labels.len);
+                for (labels[0..shown], page.options.items[choose.first..][0..shown]) |*label, option| label.* = page.string(option.label);
+                const now: u16 = @intCast(eui.dropdown.run(ctx, rect, labels[0..shown], self.chosen[choose.slot]));
+                if (now != self.chosen[choose.slot]) {
+                    self.chosen[choose.slot] = now;
+                    return .{ .chose = .{ .control = index, .index = now } };
+                }
+            },
             .hidden => {},
         }
         return null;
@@ -504,7 +541,7 @@ pub const View = struct {
             .tick => |box| if (box.radio and box.slot < self.ticks.len and other.form == control.form and std.mem.eql(u8, page.string(other.name), name)) {
                 self.ticks[box.slot] = false;
             },
-            .line, .hidden, .submit, .reset => {},
+            .line, .hidden, .submit, .reset, .choose => {},
         };
         self.ticks[tick.slot] = true;
     }
@@ -528,6 +565,9 @@ pub const View = struct {
                 },
                 .tick => |tick| if (tick.slot < self.ticks.len) {
                     self.ticks[tick.slot] = tick.ticked;
+                },
+                .choose => |choose| if (choose.slot < self.chosen.len) {
+                    self.chosen[choose.slot] = choose.chosen;
                 },
                 .hidden, .submit, .reset => {},
             }

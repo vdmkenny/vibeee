@@ -590,18 +590,6 @@ const Walker = struct {
         try self.builder.addPicture(source, alt, width, height);
     }
 
-    /// Words the page gives about something the reader does not show as it
-    /// is, set dim in brackets: a list's chosen entry.
-    fn aside(self: *Walker, text: []const u8) Error!void {
-        if (text.len == 0) return;
-        const look = self.builder.look;
-        defer self.builder.look = look;
-        self.builder.look.ink = .dim;
-        try self.builder.words(" [");
-        try self.builder.words(text);
-        try self.builder.words("] ");
-    }
-
     /// The form an element makes: where its answers go, resolved against the
     /// page, and how they are sent.
     fn formFor(self: *Walker, node: *Node) Error!?u16 {
@@ -669,14 +657,29 @@ const Walker = struct {
         }
     }
 
-    /// A list to choose from sends its chosen entry, which the reader shows
-    /// and does not offer to change: there is no list to pick from in the
-    /// toolkit yet.
+    /// A list to choose from: its entries, and which of them the page had
+    /// chosen, as a control that opens the list. One with nothing in it is
+    /// nothing.
     fn select(self: *Walker, node: *Node) Error!void {
-        const chosen = chosenOption(node) orelse return;
-        const label = textWithin(chosen);
-        try self.builder.addControl(.hidden, lexbor.attribute(node, "name") orelse "", lexbor.attribute(chosen, "value") orelse label.slice(), .{});
-        try self.aside(label.slice());
+        const b = self.builder;
+        const first: u32 = @intCast(b.page.options.items.len);
+        var count: u16 = 0;
+        var chosen: ?u16 = null;
+        var at = lexbor.following(node, node);
+        while (at) |here| : (at = lexbor.following(here, node)) {
+            if (lexbor.tagOf(here) != .option or count == std.math.maxInt(u16)) continue;
+            const label = textWithin(here);
+            try b.addOption(label.slice(), lexbor.attribute(here, "value") orelse label.slice());
+            if (chosen == null and lexbor.hasAttribute(here, "selected")) chosen = count;
+            count += 1;
+        }
+        if (count == 0) return;
+        try b.addControl(
+            .{ .choose = .{ .first = first, .count = count, .chosen = chosen orelse 0 } },
+            lexbor.attribute(node, "name") orelse "",
+            "",
+            try self.coloursOf(node),
+        );
     }
 
     fn textarea(self: *Walker, node: *Node) Error!void {
@@ -799,17 +802,6 @@ fn textWithin(node: *Node) Label {
 
 /// The entry a list to choose from has chosen: the one it marks, or its
 /// first.
-fn chosenOption(select: *Node) ?*Node {
-    var first: ?*Node = null;
-    var at = lexbor.following(select, select);
-    while (at) |here| : (at = lexbor.following(here, select)) {
-        if (lexbor.tagOf(here) != .option) continue;
-        if (lexbor.hasAttribute(here, "selected")) return here;
-        if (first == null) first = here;
-    }
-    return first;
-}
-
 /// Whether the page says an element is not for reading: navigation, or
 /// something it hides, from everyone or from anyone listening to it read,
 /// by an attribute or by its stylesheets.

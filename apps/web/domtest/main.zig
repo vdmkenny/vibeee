@@ -446,6 +446,43 @@ test "a fetch that posts says what it sends, and a request that fails is told so
     try testing.expectEqualStrings("failed 0", got);
 }
 
+test "a list's value is its chosen entry's, a script may choose, and a choice made on it is told" {
+    const it = try opened(
+        "<!DOCTYPE html><html><body><form action=\"/go\"><select name=\"s\" id=\"s\">" ++
+            "<option value=\"a\">Ay</option><option selected>Bee</option><option value=\"c\">Cee</option>" ++
+            "</select></form><script>var told = ''; document.getElementById('s').addEventListener('change', function (ev) { told = ev.target.value; });</script></body></html>",
+        true,
+    );
+    defer it.end();
+    const got = try it.run("var s = document.getElementById('s'); s.value + s.selectedIndex + s.options.length");
+    defer qjs.freeText(it.doc.ctx, got.ptr);
+    try testing.expectEqualStrings("Bee13", got);
+
+    const set = try it.run("s.value = 'c'; s.selectedIndex + '' + s.options[2].selected");
+    defer qjs.freeText(it.doc.ctx, set.ptr);
+    try testing.expectEqualStrings("2true", set);
+
+    // The page's control: the list, its entries, and the one chosen.
+    var page = try it.page();
+    defer page.deinit(heap);
+    try testing.expectEqual(@as(usize, 1), page.controls.items.len);
+    const choose = page.controls.items[0].kind.choose;
+    try testing.expectEqual(@as(u16, 3), choose.count);
+    try testing.expectEqual(@as(u16, 2), choose.chosen);
+    try testing.expectEqualStrings("Ay", page.string(page.options.items[choose.first].label));
+    try testing.expectEqualStrings("Bee", page.string(page.options.items[choose.first + 1].value));
+
+    // The person reading chooses the first: the list is told, and the form
+    // sends what was chosen.
+    dom.chose(it.doc, @ptrCast(@alignCast(page.controls.items[0].node.?)), 0);
+    const told = try it.run("told + '/' + s.selectedIndex");
+    defer qjs.freeText(it.doc.ctx, told.ptr);
+    try testing.expectEqualStrings("a/0", told);
+    _ = try it.run("document.forms[0].submit(); 1");
+    const going = dom.takeGoing(it.doc) orelse return error.Nowhere;
+    try testing.expectEqualStrings("http://example.test/go?s=a", going.address);
+}
+
 test "a script put in the page by its address is asked for and run when it comes" {
     const it = try opened(with("var s = document.createElement('script'); s.src = 'lib.js'; s.onload = function () { window.__loaded = window.__lib; }; document.head.appendChild(s);"), true);
     defer it.end();

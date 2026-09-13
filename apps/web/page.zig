@@ -327,6 +327,8 @@ pub const ControlKind = union(enum) {
     reset: Press,
     /// A box that is ticked or not.
     tick: Tick,
+    /// A list to choose one entry from.
+    choose: Choose,
 
     pub const Line = struct {
         /// About how many letters wide it is drawn.
@@ -351,6 +353,23 @@ pub const ControlKind = union(enum) {
         /// Which of the page's boxes it is.
         slot: u16 = 0,
     };
+
+    pub const Choose = struct {
+        /// Its entries, among the page's options.
+        first: u32 = 0,
+        count: u16 = 0,
+        /// Which of them the page had chosen.
+        chosen: u16 = 0,
+        /// Which of the page's lists it is, for whoever keeps what is
+        /// chosen.
+        slot: u16 = 0,
+    };
+};
+
+/// One entry of a list to choose from: what it says, and what it sends.
+pub const Option = struct {
+    label: Span,
+    value: Span,
 };
 
 /// A picture the page shows among its words.
@@ -390,6 +409,9 @@ pub const Page = struct {
     /// How many of the controls are lines to type in, and boxes to tick.
     lines: u16 = 0,
     ticks: u16 = 0,
+    chooses: u16 = 0,
+    /// The entries of its lists to choose from, each list's together.
+    options: std.ArrayList(Option) = .empty,
     /// The encoding the page arrived in, which is the one its forms answer
     /// in.
     encoding: Charset = .utf8,
@@ -406,6 +428,7 @@ pub const Page = struct {
         self.places.deinit(gpa);
         self.forms.deinit(gpa);
         self.controls.deinit(gpa);
+        self.options.deinit(gpa);
         self.pictures.deinit(gpa);
         self.palette.deinit(gpa);
         self.cells.deinit(gpa);
@@ -768,6 +791,10 @@ pub const Builder = struct {
                 tick.slot = self.page.ticks;
                 self.page.ticks += 1;
             },
+            .choose => |*choose| {
+                choose.slot = self.page.chooses;
+                self.page.chooses += 1;
+            },
             .hidden, .submit, .reset => {},
         }
         try self.page.controls.append(self.gpa, .{
@@ -780,6 +807,11 @@ pub const Builder = struct {
         });
         if (placed == .hidden) return;
         try self.place(.{ .control = index });
+    }
+
+    /// One entry of the list to choose from that the next control is.
+    pub fn addOption(self: *Builder, label: []const u8, value: []const u8) Error!void {
+        try self.page.options.append(self.gpa, .{ .label = try self.keep(label), .value = try self.keep(value) });
     }
 
     /// A picture, placed among the words where the page put it, the way a
@@ -1025,6 +1057,10 @@ fn writeControl(w: *Writer, page: *const Page, control: Control) Writer.Error!vo
         },
         .submit, .reset => |press| try w.print("[{s}]", .{page.string(press.label)}),
         .tick => |tick| try w.writeAll(if (tick.ticked) "[x]" else "[ ]"),
+        .choose => |choose| {
+            const options = page.options.items[choose.first..][0..choose.count];
+            try w.print("[{s}]", .{if (choose.chosen < options.len) page.string(options[choose.chosen].label) else ""});
+        },
         .hidden => {},
     }
 }
