@@ -255,9 +255,20 @@ pub fn interruptLeft(vector: u8) void {
 /// alone because someone beneath this interrupt is mid-line.
 const Render = enum { own, borrow, skip };
 
+/// The interrupt depth the console state was taken at, so that a call from
+/// the same frame borrows it, a fault report's registers no less than a
+/// boot line's words, and one from an interrupt over that frame does not.
+var render_depth: u32 = 0;
+
 fn renderClaim() Render {
     if (!render_busy) return .own;
-    return if (interrupt_depth > 0) .skip else .borrow;
+    return if (interrupt_depth == render_depth) .borrow else .skip;
+}
+
+/// Take the console state for the write that begins here.
+fn takeRender() void {
+    render_busy = true;
+    render_depth = interrupt_depth;
 }
 
 /// The panic path draws over whatever was happening, and must never be the
@@ -690,7 +701,7 @@ pub fn putChar(c: u8) void {
             return;
         },
     }
-    render_busy = true;
+    takeRender();
     defer {
         render_busy = false;
         paint();
@@ -715,7 +726,7 @@ pub fn writeString(s: []const u8) void {
             return;
         },
     }
-    render_busy = true;
+    takeRender();
     defer {
         render_busy = false;
         paint();
@@ -783,7 +794,7 @@ pub fn printf(comptime fmt: []const u8, args: anytype) void {
         },
         .skip => return,
     }
-    render_busy = true;
+    takeRender();
     defer {
         render_busy = false;
         paint();
@@ -834,7 +845,7 @@ fn logLine(key: []const u8, role: style.Role, comptime fmt: []const u8, args: an
     // painting for itself: a line is one write, and the padding between the
     // key and the value is a run of spaces, not a run of screens.
     const owned = !render_busy;
-    render_busy = true;
+    takeRender();
     defer if (owned) {
         render_busy = false;
         paint();
