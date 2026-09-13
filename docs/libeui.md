@@ -214,6 +214,21 @@ The menu a control opens.
 | `area` | `fn (draw.Surface) draw.Rect` |
 | `run` | `fn (*widget.Context) ?context_menu.Chosen` |
 
+### `eui.dropdown`
+
+A list to choose one entry from, closed until it is asked for.
+
+| call | signature |
+|---|---|
+| `isOpen` | `fn () bool` |
+| `openedBy` | `fn (usize) bool` |
+| `close` | `fn () void` |
+| `run` | `fn (*widget.Context, draw.Rect, []const []const u8, usize) usize` |
+| `height` | `fn () i32` |
+| `widthFor` | `fn ([]const []const u8) i32` |
+| `area` | `fn (draw.Surface) draw.Rect` |
+| `finish` | `fn (*widget.Context) void` |
+
 ### `eui.menubar`
 
 A menu bar: named menus along a strip, each dropping a list of commands.

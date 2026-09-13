@@ -33,6 +33,7 @@ const theme = @import("theme.zig");
 const scroll_mod = @import("scroll.zig");
 const tbl = @import("table.zig");
 const context_menu = @import("context_menu.zig");
+const dropdown = @import("dropdown.zig");
 
 const Rect = draw.Rect;
 const Surface = draw.Surface;
@@ -290,7 +291,7 @@ pub const Context = struct {
     /// is left for the focused control to act on, or while the context menu
     /// is open, for the menu.
     pub fn postKey(self: *Context, code: KeyCode, mods: Modifiers) void {
-        if (context_menu.isOpen()) {
+        if (context_menu.isOpen() or dropdown.isOpen()) {
             self.menu_key = code;
             self.key_mods = mods;
             return;
@@ -312,7 +313,7 @@ pub const Context = struct {
     /// Offer a typed character to this pass. None reaches a control behind
     /// the context menu while it is open.
     pub fn postText(self: *Context, codepoint: u32) void {
-        if (context_menu.isOpen()) return;
+        if (context_menu.isOpen() or dropdown.isOpen()) return;
         if (self.tabbed and codepoint == '\t') {
             self.tabbed = false;
             return;
@@ -392,6 +393,10 @@ pub const Context = struct {
 
     /// Finish a pass, releasing state for controls that were not drawn.
     pub fn end(self: *Context) void {
+        // A dropdown's open list is the last thing drawn, over everything
+        // the pass drew, and takes the pointer and the keys before the
+        // slots are settled.
+        dropdown.finish(self);
         for (&self.entries, 0..) |*e, i| {
             if (!e.used or e.seen) continue;
             e.* = .{};
@@ -399,6 +404,7 @@ pub const Context = struct {
             // than staying open where nothing draws it with the keyboard
             // still its.
             if (context_menu.openedBy(i)) context_menu.close();
+            if (dropdown.openedBy(i)) dropdown.close();
         }
 
         // A window with nothing focused gives the keyboard to whatever comes
