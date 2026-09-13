@@ -84,7 +84,7 @@ pub const Url = struct {
     }
 
     /// Where every address on the site starts: the scheme and the host.
-    fn writeOrigin(self: Url, w: *Writer) Writer.Error!void {
+    pub fn writeOrigin(self: Url, w: *Writer) Writer.Error!void {
         try w.print("{s}://", .{@tagName(self.scheme)});
         try self.writeHost(w);
     }

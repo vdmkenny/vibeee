@@ -739,8 +739,7 @@ fn originOf(where: url.Url) []const u8 {
         var buf: [url.ADDRESS_MAX]u8 = undefined;
     };
     var w: std.Io.Writer = .fixed(&S.buf);
-    w.print("{s}://", .{@tagName(where.scheme)}) catch return "";
-    where.writeHost(&w) catch return "";
+    where.writeOrigin(&w) catch return "";
     return w.buffered();
 }
 
