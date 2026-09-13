@@ -565,12 +565,98 @@ pub fn sheetsOf(gpa: Allocator, document: *lexbor.Document, base: url.Url, into:
     }
 }
 
-/// The rules of a page's stylesheets that this reader honours, in the order
-/// they were applied, which is the order the cascade weighs them in where
-/// two are of the same weight. They live in the document's own memory and
-/// go with it; the list is what is matched again where a script changes
-/// what an element is.
-pub const Rules = std.ArrayList(*lexbor.StyleRule);
+/// The rules that give a page's tree its styles, in the order they were
+/// applied, which is the order the cascade weighs them in where two are of
+/// the same weight: the rules of the page's own style elements, which the
+/// tree applied for itself, and then those of its linked sheets that this
+/// reader honours. They live in the document's own memory and go with it.
+/// Beside each rule are the names its selectors read, so that when a script
+/// changes an element's class, id or an attribute, only the rules that read
+/// that name are matched again.
+pub const Rules = struct {
+    list: std.ArrayList(*lexbor.StyleRule) = .empty,
+    /// For each rule, its run of names in `names`.
+    reads: std.ArrayList(Reads) = .empty,
+    /// The names the rules' selectors read, hashed, each rule's together.
+    names: std.ArrayList(u64) = .empty,
+
+    const Reads = struct { first: u32, count: u32 };
+
+    pub fn deinit(self: *Rules, gpa: Allocator) void {
+        self.list.deinit(gpa);
+        self.reads.deinit(gpa);
+        self.names.deinit(gpa);
+        self.* = .{};
+    }
+
+    /// Keep a rule, with the names its selectors read.
+    fn add(self: *Rules, gpa: Allocator, rule: *lexbor.StyleRule) void {
+        const first: u32 = @intCast(self.names.items.len);
+        if (rule.selector) |list| readNames(gpa, &self.names, list, 0);
+        self.list.append(gpa, rule) catch {
+            self.names.shrinkRetainingCapacity(first);
+            return;
+        };
+        self.reads.append(gpa, .{ .first = first, .count = @intCast(self.names.items.len - first) }) catch {
+            _ = self.list.pop();
+            self.names.shrinkRetainingCapacity(first);
+        };
+    }
+
+    /// Whether the rule at `index` reads `name`.
+    fn readsName(self: *const Rules, index: usize, hashed: u64) bool {
+        const reads = self.reads.items[index];
+        for (self.names.items[reads.first..][0..reads.count]) |name| {
+            if (name == hashed) return true;
+        }
+        return false;
+    }
+};
+
+/// The names a selector list reads, into `names`: each class, id and
+/// attribute in it, and in the lists inside its pseudo-class functions,
+/// `:not()` and `:is()` among them, and the `of` an `:nth-child()` names.
+fn readNames(gpa: Allocator, names: *std.ArrayList(u64), list: *const lexbor.SelectorList, depth: u32) void {
+    if (depth > 8) return;
+    var each: ?*const lexbor.SelectorList = list;
+    while (each) |one| : (each = one.next) {
+        var part: ?*const lexbor.Selector = one.first;
+        while (part) |selector| : (part = selector.next) {
+            switch (selector.type) {
+                .id, .class, .attribute => names.append(gpa, std.hash_map.hashString(selector.name.slice())) catch return,
+                .pseudo_class_function => if (selector.u.pseudo.data) |data| switch (selector.function()) {
+                    .current, .has, .is, .not, .where => readNames(gpa, names, @ptrCast(@alignCast(data)), depth + 1),
+                    .nth_child, .nth_col, .nth_last_child, .nth_last_col, .nth_last_of_type, .nth_of_type => {
+                        const anb_of: *const lexbor.AnbOf = @ptrCast(@alignCast(data));
+                        if (anb_of.of) |of| readNames(gpa, names, of, depth + 1);
+                    },
+                    .undef, .dir, .lang, .lexbor_contains, _ => {},
+                },
+                else => {},
+            }
+        }
+    }
+}
+
+/// Keep the rules of the sheets the page's own style elements gave the
+/// tree, which the tree applied for itself as it was parsed, so that they
+/// are matched again beside the linked sheets' where a script changes what
+/// an element is.
+pub fn harvest(gpa: Allocator, document: *lexbor.Document, rules: *Rules) void {
+    const cascade = lexbor.domOf(document).css orelse return;
+    const sheets = cascade.stylesheets orelse return;
+    for (0..lexbor.lexbor_array_length_noi(sheets)) |index| {
+        const sheet: *const lexbor.Stylesheet = @ptrCast(@alignCast(lexbor.lexbor_array_get_noi(sheets, index) orelse continue));
+        const root = sheet.root orelse continue;
+        if (root.kind != .list) continue;
+        const list: *const lexbor.RuleList = @fieldParentPtr("rule", root);
+        var at = list.first;
+        while (at) |rule| : (at = rule.next) {
+            if (rule.kind != .style) continue;
+            rules.add(gpa, @fieldParentPtr("rule", rule));
+        }
+    }
+}
 
 /// Apply a stylesheet to `document` as it reads on `screen`: its rules for
 /// the window, and of those only the ones that say something this reader
@@ -599,24 +685,56 @@ pub fn apply(gpa: Allocator, document: *lexbor.Document, text: []const u8, scree
         const style: *lexbor.StyleRule = @fieldParentPtr("rule", rule);
         if (!honoured(style)) continue;
         _ = lexbor.lxb_dom_document_style_attach(dom, style);
-        rules.append(gpa, style) catch {};
+        rules.add(gpa, style);
     }
 }
 
-/// Match the sheets again against `root` and everything under it, as a
-/// browser does where a script has changed what an element is or put one
-/// in: what the sheets gave each element goes, what it wrote on the element
-/// itself stays, and the rules that fit it now are applied in the order
-/// they were first applied in: the sheets the page's own style elements
-/// hold, which the tree keeps and matches for itself, and then `rules`.
+/// Match every rule again against `root` and everything under it, as a
+/// browser does where a script has put a piece of page in: what the sheets
+/// gave each element goes, what it wrote on the element itself stays, and
+/// the rules that fit now are applied in their order, each with the
+/// tree's own matching walk.
 pub fn restyle(document: *lexbor.Document, rules: *const Rules, root: *lexbor.Node) void {
-    const dom = lexbor.domOf(document);
+    const cascade = lexbor.domOf(document).css orelse return;
+    const engine = cascade.selectors orelse return;
     var at: ?*lexbor.Node = root;
     while (at) |node| : (at = lexbor.following(node, root)) {
-        if (node.type != .element) continue;
-        _ = lexbor.lxb_dom_element_style_remove_non_inline(node);
-        _ = lexbor.lxb_dom_document_element_styles_attach(node);
-        for (rules.items) |rule| _ = lexbor.lxb_dom_document_style_attach_by_element(dom, node, rule);
+        if (node.type == .element) _ = lexbor.lxb_dom_element_style_remove_non_inline(node);
+    }
+    // The root is one of the elements matched again, not only what is
+    // under it: a piece of page put in is matched from its own top.
+    lexbor.lxb_selectors_opt_set_noi(engine, lexbor.SELECTORS_MATCH_ROOT);
+    for (rules.list.items) |rule| {
+        const selector = rule.selector orelse continue;
+        _ = lexbor.lxb_selectors_find(engine, root, @ptrCast(selector), &attachTo, rule);
+    }
+}
+
+/// Give a matched element what a rule declares, as the tree does when it
+/// applies a sheet.
+fn attachTo(node: *lexbor.Node, specificity: u32, taken: ?*anyopaque) callconv(.c) lexbor.Status {
+    const rule: *lexbor.StyleRule = @ptrCast(@alignCast(taken));
+    const declarations = rule.declarations orelse return .ok;
+    return lexbor.lxb_dom_element_style_list_append(node, declarations, specificity);
+}
+
+/// What a script is about to change or has changed an element's `name` to
+/// or from: the rules that read it are unmatched while the old value still
+/// holds, and matched again once the new one does, and no other rule is
+/// touched. `unmatch` goes before the change and `rematch` after it.
+pub fn unmatch(document: *lexbor.Document, rules: *const Rules, name: []const u8) void {
+    const dom = lexbor.domOf(document);
+    const hashed = std.hash_map.hashString(name);
+    for (rules.list.items, 0..) |rule, index| {
+        if (rules.readsName(index, hashed)) _ = lexbor.lxb_dom_document_style_remove(dom, rule);
+    }
+}
+
+pub fn rematch(document: *lexbor.Document, rules: *const Rules, name: []const u8) void {
+    const dom = lexbor.domOf(document);
+    const hashed = std.hash_map.hashString(name);
+    for (rules.list.items, 0..) |rule, index| {
+        if (rules.readsName(index, hashed)) _ = lexbor.lxb_dom_document_style_attach(dom, rule);
     }
 }
 

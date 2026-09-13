@@ -114,7 +114,7 @@ pub const Tree = struct {
     encoding: charset.Charset,
     /// The rules of its stylesheets that were applied, for a script's
     /// changes to be matched against.
-    rules: css.Rules = .empty,
+    rules: css.Rules = .{},
 
     pub fn parse(gpa: Allocator, source: *const Source) Error!Tree {
         // The parser reads UTF-8 and nothing else, and neither does the page.
@@ -160,6 +160,7 @@ pub const Tree = struct {
     /// Apply `source`'s stylesheets as they read in `screen`. Once: a rule
     /// applied twice is a rule the tree holds twice.
     pub fn style(self: *Tree, gpa: Allocator, source: *const Source, screen: ?media.Screen) void {
+        css.harvest(gpa, self.document, &self.rules);
         for (source.sheets.items) |sheet| {
             if (media.matches(sheet.media, screen)) css.apply(gpa, self.document, sheet.text, screen, &self.rules);
         }

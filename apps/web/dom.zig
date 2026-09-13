@@ -44,6 +44,7 @@ const storage = @import("storage.zig");
 const url = @import("url.zig");
 
 const Allocator = std.mem.Allocator;
+const Bounded = @import("lib").bounded.Bounded;
 const Context = qjs.Context;
 const Value = qjs.Value;
 const Node = lexbor.Node;
@@ -850,24 +851,70 @@ fn attributeOf(node: *Node, name: []const u8) ?[]const u8 {
 
 fn attributeSet(it: *Document, node: *Node, name: []const u8, value: []const u8) void {
     if (node.type != .element) return;
+    var change = Change.of(it, node, name, value);
+    change.before();
     _ = lexbor.lxb_dom_element_set_attribute(node, name.ptr, name.len, value.ptr, value.len);
-    attributeChanged(it, node, name);
+    change.after();
+    markChanged(it);
 }
 
 fn attributeRemove(it: *Document, node: *Node, name: []const u8) void {
     if (node.type != .element) return;
+    var change = Change.of(it, node, name, "");
+    change.before();
     _ = lexbor.lxb_dom_element_remove_attribute(node, name.ptr, name.len);
-    attributeChanged(it, node, name);
+    change.after();
+    markChanged(it);
 }
 
 /// An attribute is what a selector reads, and one changed on an element can
 /// change what the rules say of it, of what is under it and of what stands
-/// beside it. The `style` attribute the cascade reads for itself.
-fn attributeChanged(it: *Document, node: *Node, name: []const u8) void {
-    markChanged(it);
-    if (std.ascii.eqlIgnoreCase(name, "style")) return;
-    noteRestyle(it, node.parent orelse node);
-}
+/// beside it. Only the rules that read the names changing are matched
+/// again: unmatched before the change, while the old value still holds,
+/// and matched again after it. A class token the element keeps is not a
+/// change; the `style` attribute the cascade reads for itself.
+const Change = struct {
+    it: *Document,
+    /// The names changing: an attribute's own, an id's old and new, or the
+    /// class tokens gained and lost.
+    names: Bounded([]const u8, 16) = .{},
+
+    fn of(it: *Document, node: *Node, name: []const u8, value: []const u8) Change {
+        var change = Change{ .it = it };
+        if (std.ascii.eqlIgnoreCase(name, "style")) return change;
+        const old = attributeOf(node, name) orelse "";
+        if (std.ascii.eqlIgnoreCase(name, "class")) {
+            change.tokens(old, value);
+            change.tokens(value, old);
+        } else if (std.ascii.eqlIgnoreCase(name, "id")) {
+            if (old.len > 0) change.names.append(old) catch {};
+            if (value.len > 0 and !std.mem.eql(u8, old, value)) change.names.append(value) catch {};
+        } else {
+            change.names.append(name) catch {};
+        }
+        return change;
+    }
+
+    /// The tokens in `these` that are not in `those`.
+    fn tokens(self: *Change, these: []const u8, those: []const u8) void {
+        var each = std.mem.tokenizeAny(u8, these, &std.ascii.whitespace);
+        while (each.next()) |token| {
+            var other = std.mem.tokenizeAny(u8, those, &std.ascii.whitespace);
+            const kept = while (other.next()) |had| {
+                if (std.mem.eql(u8, had, token)) break true;
+            } else false;
+            if (!kept) self.names.append(token) catch return;
+        }
+    }
+
+    fn before(self: *Change) void {
+        for (self.names.slice()) |name| css.unmatch(self.it.tree, self.it.rules, name);
+    }
+
+    fn after(self: *Change) void {
+        for (self.names.slice()) |name| css.rematch(self.it.tree, self.it.rules, name);
+    }
+};
 
 /// Text lexbor allocated for a caller, given back to its document once read.
 const NodeText = struct {

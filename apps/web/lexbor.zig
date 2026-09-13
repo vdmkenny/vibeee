@@ -292,6 +292,11 @@ pub extern fn lxb_selectors_init(engine: *Selectors) Status;
 pub extern fn lxb_selectors_find(engine: *Selectors, root: *Node, list: *const CssSelectorList, found: *const fn (*Node, u32, ?*anyopaque) callconv(.c) Status, taken: ?*anyopaque) Status;
 pub extern fn lxb_selectors_match_node(engine: *Selectors, node: *Node, list: *const CssSelectorList, found: *const fn (*Node, u32, ?*anyopaque) callconv(.c) Status, taken: ?*anyopaque) Status;
 pub extern fn lxb_selectors_destroy(engine: *Selectors, itself: bool) ?*Selectors;
+pub extern fn lxb_selectors_opt_set_noi(engine: *Selectors, options: c_uint) void;
+
+/// The engine's option to match the root a find starts from as well as what
+/// is under it; without it, a find matches only what is under the root.
+pub const SELECTORS_MATCH_ROOT: c_uint = 1 << 1;
 pub extern fn lxb_css_memory_create() ?*CssMemory;
 pub extern fn lxb_css_memory_destroy(memory: *CssMemory, itself: bool) ?*CssMemory;
 pub extern fn lxb_css_parser_create() ?*CssParser;
@@ -412,12 +417,97 @@ pub extern fn lxb_css_declaration_list_parse(parser: *CssParser, data: [*]const 
 /// Apply one rule to every element its selectors match.
 pub extern fn lxb_dom_document_style_attach(document: *DomDocument, rule: *StyleRule) Status;
 pub extern fn lxb_dom_document_style_attach_by_element(document: *DomDocument, element: *Node, rule: *StyleRule) Status;
+pub extern fn lxb_dom_document_style_remove(document: *DomDocument, rule: *StyleRule) Status;
+pub extern fn lxb_dom_element_style_list_append(element: *Node, list: *DeclarationList, specificity: u32) Status;
+pub extern fn lexbor_array_length_noi(array: *Array) usize;
+pub extern fn lexbor_array_get_noi(array: *Array, index: usize) ?*anyopaque;
 pub extern fn lxb_dom_element_style_remove_non_inline(element: *Node) Status;
 pub extern fn lxb_dom_document_element_styles_attach(element: *Node) Status;
 
 pub const CssMemory = opaque {};
 pub const CssParser = opaque {};
-pub const SelectorList = opaque {};
+/// Upstream's growable array, read through its calls.
+pub const Array = opaque {};
+
+/// What one part of a selector matches on: a tag, an id, a class, an
+/// attribute, or a pseudo-class, which may hold a list of its own.
+pub const SelectorType = enum(c_uint) {
+    undef = 0,
+    any,
+    element,
+    id,
+    class,
+    attribute,
+    pseudo_class,
+    pseudo_class_function,
+    pseudo_element,
+    pseudo_element_function,
+    _,
+};
+
+/// One part of a selector, field for field in upstream's order. The parts
+/// of one selector are chained by `next`; the selectors a rule lists apart
+/// by commas are chained by their lists' `next`.
+pub const Selector = extern struct {
+    type: SelectorType,
+    combinator: c_uint,
+    name: Str,
+    ns: Str,
+    u: extern union {
+        attribute: extern struct { match: c_uint, modifier: c_uint, value: Str },
+        pseudo: extern struct { type: c_uint, data: ?*anyopaque },
+    },
+    next: ?*Selector,
+    prev: ?*Selector,
+    list: ?*SelectorList,
+
+    /// Which pseudo-class function this part is, for one that is one, which
+    /// says what its data holds.
+    pub fn function(self: *const Selector) PseudoClassFunction {
+        return @enumFromInt(self.u.pseudo.type);
+    }
+};
+
+/// The pseudo-class functions, numbered as upstream numbers them. What one
+/// holds in its data goes by which it is: a selector list for `:is()`,
+/// `:not()`, `:where()`, `:has()` and `:current()`, an `an+b` with the list
+/// its `of` names for the `:nth-*()` ones, and text for the rest.
+pub const PseudoClassFunction = enum(c_uint) {
+    undef = 0x0000,
+    current = 0x0001,
+    dir = 0x0002,
+    has = 0x0003,
+    is = 0x0004,
+    lang = 0x0005,
+    lexbor_contains = 0x0006,
+    not = 0x0007,
+    nth_child = 0x0008,
+    nth_col = 0x0009,
+    nth_last_child = 0x000a,
+    nth_last_col = 0x000b,
+    nth_last_of_type = 0x000c,
+    nth_of_type = 0x000d,
+    where = 0x000e,
+    _,
+};
+
+/// An `an+b`, and the selector list an `of` names after it, where one does.
+pub const AnbOf = extern struct {
+    a: c_long,
+    b: c_long,
+    of: ?*SelectorList,
+};
+
+/// A selector, and the ones a rule lists beside it.
+pub const SelectorList = extern struct {
+    first: ?*Selector,
+    last: ?*Selector,
+    parent: ?*Selector,
+    next: ?*SelectorList,
+    prev: ?*SelectorList,
+    memory: ?*CssMemory,
+    specificity: u32,
+};
 
 /// The properties this reader acts on, numbered as upstream numbers them.
 pub const Property = enum(usize) {
@@ -563,6 +653,14 @@ pub const DocumentCss = extern struct {
     memory: *CssMemory,
     css_selectors: ?*anyopaque,
     parser: *CssParser,
+    /// The engine upstream matches rules with.
+    selectors: ?*Selectors,
+    styles: ?*anyopaque,
+    /// The sheets the page's own style elements gave the document.
+    stylesheets: ?*Array,
+    weak: ?*anyopaque,
+    customs: ?*anyopaque,
+    customs_id: usize,
 };
 
 pub const RuleKind = enum(c_uint) {

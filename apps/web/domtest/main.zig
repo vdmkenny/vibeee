@@ -47,7 +47,7 @@ fn with(script: []const u8) []const u8 {
 var jar: cookie.Jar = .{};
 var store: storage.Storage = .{};
 /// The rules a test's stylesheet gave the page.
-var rules: css.Rules = .empty;
+var rules: css.Rules = .{};
 
 /// A page, parsed, with a document bound into it and its scripts run.
 const Opened = struct {
@@ -63,7 +63,6 @@ const Opened = struct {
         jar.deinit(testing.allocator);
         store.deinit(testing.allocator);
         rules.deinit(heap);
-        rules = .empty;
     }
 
     /// Run `script` on the page, and give back what it ended in, as words.
@@ -118,6 +117,9 @@ fn opened(text: []const u8, load: bool) !Opened {
     const tree = lexbor.lxb_html_document_create() orelse return error.NoPage;
     if (lexbor.lxb_style_init(tree) != .ok) return error.NoPage;
     if (lexbor.lxb_html_document_parse(tree, text.ptr, text.len) != .ok) return error.NoPage;
+    // The rules of the page's own style elements, which the tree applied
+    // as it parsed, kept as the reader keeps them.
+    css.harvest(heap, tree, &rules);
     const doc = dom.open(machineOf(), tree, &rules, ADDRESS, .{
         .gpa = testing.allocator,
         .jar = &jar,
@@ -594,6 +596,40 @@ test "what a stylesheet says of an element follows the classes a script gives an
     try testing.expect(std.mem.findScalar(rgb.Colour, after.palette.items, .hex(0x123456)) != null);
     try testing.expect(std.mem.findScalar(rgb.Colour, after.palette.items, .hex(0x654321)) != null);
     try testing.expect(std.mem.findScalar(rgb.Colour, after.palette.items, .hex(0xabcdef)) != null);
+}
+
+test "a rule's pseudo-class functions are read for the names inside them, and an nth is left as an an+b" {
+    const it = try opened(
+        "<!DOCTYPE html><html><head><style>p:nth-child(2n+1) { color: #111111; }</style></head><body>" ++
+            "<p id=\"one\">first</p><p class=\"noted\">second</p><p class=\"noted\" id=\"two\">third</p>" ++
+            "<script>document.getElementById('two').classList.add('picked');" ++
+            "document.getElementById('one').classList.add('gone');</script></body></html>",
+        false,
+    );
+    defer it.end();
+    // The an+b of an nth is not a list; the list its `of` names is one,
+    // and so are the lists inside `:is()`, `:not()` and `:where()`.
+    css.apply(heap, it.tree,
+        \\p:nth-child(1 of .picked) { color: #222222; }
+        \\p:not(.gone):nth-last-of-type(1) { color: #333333; }
+        \\:is(#none, .gone) { visibility: hidden; }
+        \\:where(.noted):lang(en) { color: #444444; }
+    , null, &rules);
+    var before = try it.page();
+    defer before.deinit(heap);
+    try testing.expect(std.mem.findScalar(rgb.Colour, before.palette.items, .hex(0x111111)) != null);
+    try testing.expect(std.mem.findScalar(rgb.Colour, before.palette.items, .hex(0x222222)) == null);
+    try testing.expect(std.mem.findScalar(rgb.Colour, before.palette.items, .hex(0x333333)) != null);
+    try testing.expect(std.mem.containsAtLeast(u8, before.text.items, 1, "first"));
+
+    dom.load(it.doc, &.{});
+    try testing.expect(dom.changed(it.doc));
+    var after = try it.page();
+    defer after.deinit(heap);
+    // The class the script gave the third paragraph is read through the
+    // nth's `of`, and the one it gave the first through `:is()`.
+    try testing.expect(std.mem.findScalar(rgb.Colour, after.palette.items, .hex(0x222222)) != null);
+    try testing.expect(!std.mem.containsAtLeast(u8, after.text.items, 1, "first"));
 }
 
 test "a box with room and a ground of its own is kept as a block with both, for the layout to set" {
