@@ -82,6 +82,44 @@ const Kept = struct {
 /// The longest a host's name can be.
 const HOST_MAX = 255;
 
+/// How many connections are kept between them, one a site: a page's
+/// stylesheets, scripts and pictures come from where the page came and from
+/// a site or two beside it, and its next page from one of those.
+const KEPT_MAX = 4;
+
+/// The connections kept after answers, for the next request to the same
+/// site from any fetch: reaching a site and sealing the connection is the
+/// step that blocks, and a site is reached once for a page rather than once
+/// for each thing on it.
+var pool: Bounded(Kept, KEPT_MAX) = .{};
+
+/// The kept connection that goes to `where`, taken out of the pool.
+fn takeFromPool(where: url.Url) ?Kept {
+    for (pool.slice(), 0..) |kept, index| {
+        if (!kept.goesTo(where)) continue;
+        const taken = kept;
+        pool.remove(index);
+        return taken;
+    }
+    return null;
+}
+
+/// Keep a connection, in place of one to the same site, and in place of
+/// the oldest where there is no more room.
+fn putInPool(kept: Kept) void {
+    for (pool.slice(), 0..) |old, index| {
+        if (!old.goesTo(.{ .scheme = kept.scheme, .host = kept.host.slice(), .port = kept.port, .path = "" })) continue;
+        old.wire.close();
+        pool.remove(index);
+        break;
+    }
+    if (pool.isFull()) {
+        pool.slice()[0].wire.close();
+        pool.remove(0);
+    }
+    pool.append(kept) catch kept.wire.close();
+}
+
 /// How many times one request may be sent on to somewhere else.
 const REDIRECTS_MAX = 5;
 
@@ -138,9 +176,7 @@ pub const Fetch = struct {
     target: url.Address = .{},
 
     wire: ?Wire = null,
-    /// A connection an earlier answer came on, kept for the next request to
-    /// the same site, and whether the connection in use is that one.
-    kept: ?Kept = null,
+    /// Whether the connection in use is one kept from an earlier answer.
     reused: bool = false,
     response: http.Response = .{},
     body: http.Body = .{ .limit = PAGE_MAX },
@@ -148,6 +184,9 @@ pub const Fetch = struct {
 
     /// When the fetch began, and when the site last said anything.
     started_us: u64 = 0,
+    /// When the site was reached: the connection open and sealed, or a
+    /// kept one taken up.
+    reached_us: u64 = 0,
     heard_us: u64 = 0,
 
     pub fn address(self: *const Fetch) []const u8 {
@@ -213,8 +252,6 @@ pub const Fetch = struct {
     /// Stop, and give back everything held.
     pub fn cancel(self: *Fetch, gpa: std.mem.Allocator) void {
         self.release(gpa);
-        if (self.kept) |kept| kept.wire.close();
-        self.kept = null;
     }
 
     /// How much of the body has arrived, and how much there will be where
@@ -254,6 +291,7 @@ pub const Fetch = struct {
         self.reused = false;
         const wire = if (self.takeKept(where)) |kept| kept else ulib.wire.open(where.host, where.port, kind) catch |err| return self.fail(err);
         self.wire = wire;
+        self.reached_us = sys.clockMicros();
 
         var stack: [http.REQUEST_MAX]u8 = undefined;
         // A POST carries its body behind its head, which is more than a
@@ -276,9 +314,8 @@ pub const Fetch = struct {
     /// The connection kept from the last answer, where it goes to `where`
     /// and the site has not closed it since. One that does not is closed.
     fn takeKept(self: *Fetch, where: url.Url) ?Wire {
-        const kept = self.kept orelse return null;
-        self.kept = null;
-        if (!kept.goesTo(where) or kept.wire.finished()) {
+        const kept = takeFromPool(where) orelse return null;
+        if (kept.wire.finished()) {
             kept.wire.close();
             return null;
         }
@@ -348,8 +385,7 @@ pub const Fetch = struct {
         if (!self.response.reusable() or wire.finished()) return wire.close();
         var kept = Kept{ .wire = wire, .scheme = where.scheme, .port = where.port };
         if (!kept.host.set(where.host)) return wire.close();
-        if (self.kept) |old| old.wire.close();
-        self.kept = kept;
+        putInPool(kept);
     }
 
     fn fail(self: *Fetch, why: Failure) void {
