@@ -185,8 +185,10 @@ pub const Fetch = struct {
     /// When the fetch began, and when the site last said anything.
     started_us: u64 = 0,
     /// When the site was reached: the connection open and sealed, or a
-    /// kept one taken up.
+    /// kept one taken up; and how long each step of reaching it took where
+    /// a connection was opened.
     reached_us: u64 = 0,
+    reach: ulib.wire.Reach = .{},
     heard_us: u64 = 0,
 
     pub fn address(self: *const Fetch) []const u8 {
@@ -289,7 +291,12 @@ pub const Fetch = struct {
         };
         if (self.refuses(where)) return self.fail(error.Blocked);
         self.reused = false;
-        const wire = if (self.takeKept(where)) |kept| kept else ulib.wire.open(where.host, where.port, kind) catch |err| return self.fail(err);
+        self.reach = .{};
+        const wire = if (self.takeKept(where)) |kept| kept else opened: {
+            const opened = ulib.wire.open(where.host, where.port, kind) catch |err| return self.fail(err);
+            self.reach = ulib.wire.last_reach;
+            break :opened opened;
+        };
         self.wire = wire;
         self.reached_us = sys.clockMicros();
 

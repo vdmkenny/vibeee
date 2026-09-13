@@ -15,6 +15,7 @@
 const std = @import("std");
 const heap = @import("heap.zig");
 const sock = @import("sock.zig");
+const sys = @import("sys");
 const time = @import("time.zig");
 const tls = @import("tls.zig");
 
@@ -87,18 +88,41 @@ pub const Kind = std.meta.Tag(Wire);
 /// the name, because a certificate is issued for the name that was asked for
 /// rather than for the address it resolved to.
 pub fn open(host: []const u8, port: u16, kind: Kind) Error!Wire {
+    const started = sys.clockMicros();
     const address = sock.addressOf(host) catch return error.NoName;
+    last_reach.named_us = sys.clockMicros() -| started;
     switch (kind) {
-        .plain => return .{ .plain = sock.Sock.connect(address, port) catch return error.Unreachable },
+        .plain => {
+            const plain = sock.Sock.connect(address, port) catch return error.Unreachable;
+            last_reach.connected_us = sys.clockMicros() -| started -| last_reach.named_us;
+            last_reach.sealed_us = 0;
+            return .{ .plain = plain };
+        },
         .secure => {
             // A clock that is not set reads as zero, and a certificate's
             // dates checked against nothing say nothing.
             const when = time.now();
             if (when <= 0) return error.NoClock;
-            return .{ .secure = try tls.Stream.connect(heap.allocator, try authorities(when), address, port, host, when) };
+            const before = sys.clockMicros();
+            const secure = try tls.Stream.connect(heap.allocator, try authorities(when), address, port, host, when);
+            last_reach.connected_us = 0;
+            last_reach.sealed_us = sys.clockMicros() -| before;
+            return .{ .secure = secure };
         },
     }
 }
+
+/// How long the last `open` spent on each of its steps: finding the
+/// address, reaching the host, and sealing the connection, which for a
+/// sealed one includes reaching it. For a program saying where its time
+/// goes.
+pub var last_reach: Reach = .{};
+
+pub const Reach = struct {
+    named_us: u64 = 0,
+    connected_us: u64 = 0,
+    sealed_us: u64 = 0,
+};
 
 /// What the protocol called the last sealed connection it refused, for
 /// saying why.

@@ -354,6 +354,14 @@ fn usage() noreturn {
     sys.exit(2);
 }
 
+/// Say how long a step of the reader's own took, where `-v` asked for it.
+fn took(what: []const u8, started_us: u64) void {
+    if (!verbose) return;
+    var buf: [96]u8 = undefined;
+    const ms = (sys.clockMicros() -| started_us) / std.time.us_per_ms;
+    out.trouble(std.fmt.bufPrint(&buf, "{d:>6} ms           {s}\n", .{ ms, what }) catch return);
+}
+
 /// Say what came and how long it took, where `-v` asked for it.
 fn timed(what: []const u8, where: []const u8, bytes: usize, from: *const fetch_mod.Fetch) void {
     if (!verbose) return;
@@ -362,7 +370,10 @@ fn timed(what: []const u8, where: []const u8, bytes: usize, from: *const fetch_m
     const ms = (now -| from.started_us) / std.time.us_per_ms;
     // How much of it was reaching the site, where it was reached at all.
     const reach = if (from.reached_us >= from.started_us) (from.reached_us -| from.started_us) / std.time.us_per_ms else 0;
-    out.trouble(std.fmt.bufPrint(&buf, "{d:>6} ms {d:>8} B  {s} {s} (reached in {d} ms)\n", .{ ms, bytes, what, where, reach }) catch return);
+    out.trouble(std.fmt.bufPrint(&buf, "{d:>6} ms {d:>8} B  {s} {s} (reached in {d} ms: name {d}, reach {d}, seal {d})\n", .{
+        ms,    bytes,                                    what,                                         where,
+        reach, from.reach.named_us / std.time.us_per_ms, from.reach.connected_us / std.time.us_per_ms, from.reach.sealed_us / std.time.us_per_ms,
+    }) catch return);
 }
 
 // ---------------------------------------------------------------------------
@@ -900,7 +911,9 @@ fn finish() void {
         from.deinit(gpa);
         return failed(error.NotAnAddress, from.base.slice());
     };
+    const styling = sys.clockMicros();
     tree.style(gpa, &from, window);
+    took("cascade", styling);
     // The tree is the page's from here on, and its scripts point into it.
     document = tree;
     const held = &document.?;
@@ -911,6 +924,7 @@ fn finish() void {
     } else null;
 
     var fresh: Page = .{};
+    const reading_words = sys.clockMicros();
     held.read(gpa, &from, window, &fresh) catch |err| {
         fresh.deinit(gpa);
         if (doc) |it| dom.close(it);
@@ -919,6 +933,7 @@ fn finish() void {
         from.deinit(gpa);
         return failed(err, base.host);
     };
+    took("read", reading_words);
     source.deinit(gpa);
     source = from;
     scripts = doc;
@@ -1013,10 +1028,12 @@ fn forget() void {
 fn readAgain() void {
     const tree = &(document orelse return);
     var fresh: Page = .{};
+    const started = sys.clockMicros();
     tree.read(gpa, &source, window, &fresh) catch {
         fresh.deinit(gpa);
         return;
     };
+    took("read again", started);
     pending_scroll = view.scroll;
     showPage(&fresh);
 }
@@ -1259,7 +1276,10 @@ fn afterScripts(doc: *dom.Document) bool {
         visitNew(going.address);
         return true;
     }
-    if (dom.changed(doc)) readAgain();
+    const settling = sys.clockMicros();
+    const changed = dom.changed(doc);
+    if (changed) took("restyle", settling);
+    if (changed) readAgain();
     return false;
 }
 
