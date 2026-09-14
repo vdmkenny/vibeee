@@ -591,7 +591,7 @@ const Walker = struct {
         const alt = std.mem.trim(u8, lexbor.attribute(node, "alt") orelse "", &std.ascii.whitespace);
         var buf: [url.ADDRESS_MAX]u8 = undefined;
         const source = url.resolve(self.base, sourceOf(node, self.width) orelse "", &buf) orelse "";
-        try self.builder.addPicture(source, alt, width, height);
+        try self.builder.addPicture(source, alt, width, height, styled.fluid);
     }
 
     /// The form an element makes: where its answers go, resolved against the

@@ -108,13 +108,16 @@ pub fn flows(node: *const Node) bool {
 /// length in a unit it does not read is `auto`.
 /// The size a stylesheet gives a picture, in pixels where it gives one in
 /// pixels or ems: its width and height, each held under the most it says.
-/// Nothing for a side it leaves to the picture, or gives as a share.
-pub const PictureSize = struct { width: ?u16 = null, height: ?u16 = null };
+/// Nothing for a side it leaves to the picture, or gives as a share; a
+/// share for the width, or for the most width, makes the picture fluid,
+/// narrower than it is where its room is.
+pub const PictureSize = struct { width: ?u16 = null, height: ?u16 = null, fluid: bool = false };
 
 pub fn pictureSize(node: *const Node) PictureSize {
     return .{
         .width = pixelsOf(node, .width, .max_width),
         .height = pixelsOf(node, .height, .max_height),
+        .fluid = lengthOf(node, .width) == .percent or lengthOf(node, .max_width) == .percent,
     };
 }
 

@@ -963,7 +963,13 @@ fn Placer(comptime Metrics: type) type {
                 },
                 .control, .picture => {
                     const size = self.sizeOf(run, room);
-                    out.least = @max(out.least, size.w);
+                    // A picture the page lets be narrower than it is asks
+                    // for nothing at the least; any other keeps its width.
+                    const fluid = switch (run) {
+                        .picture => |which| self.page.pictures.items[which].fluid,
+                        else => false,
+                    };
+                    if (!fluid) out.least = @max(out.least, size.w);
                     line += size.w;
                 },
                 .line_break => {
@@ -2019,9 +2025,9 @@ test "a picture stands on the line as a word does, fitted to the column" {
     defer b.deinit();
     var builder = page_mod.Builder{ .gpa = testing.allocator, .page = &b.page };
     try builder.words("see ");
-    try builder.addPicture("https://a.org/a.png", "", 60, 40);
+    try builder.addPicture("https://a.org/a.png", "", 60, 40, false);
     try builder.words(" wide");
-    try builder.addPicture("https://a.org/b.png", "", 1200, 600);
+    try builder.addPicture("https://a.org/b.png", "", 1200, 600, false);
     try builder.finish();
     b.layout = try build(testing.allocator, &b.page, 600, eighteen, Fixed{});
 
@@ -2775,4 +2781,26 @@ test "boxes that float are set as a row, the ones floating right at its end, and
     try testing.expectEqual(@as(i32, 0), crowded.layout.fragsOf(under)[0].x);
     try testing.expect(under.y >= 18);
     try testing.expect(crowded.layout.height >= under.y + 18);
+}
+
+test "an item holding a wide picture the page lets shrink shrinks with its row" {
+    var b = Built{};
+    defer b.deinit();
+    var builder = page_mod.Builder{ .gpa = testing.allocator, .page = &b.page };
+    try b.page.containers.append(testing.allocator, .{ .style = flex });
+    try b.page.containers.append(testing.allocator, .{ .style = .{}, .parent = 0, .end = 2 });
+    try b.page.containers.append(testing.allocator, .{ .style = .{}, .parent = 0, .end = 3 });
+    b.page.containers.items[0].end = 3;
+    builder.owner = 1;
+    try builder.boundary(.{});
+    try builder.addPicture("https://a.org/wide.png", "", 700, 350, true);
+    builder.owner = 2;
+    try builder.boundary(.{});
+    try builder.words("aside words");
+    try builder.finish();
+    b.layout = try build(testing.allocator, &b.page, 400, eighteen, Fixed{});
+    const placed = b.layout.placed.items;
+    try testing.expectEqual(@as(usize, 2), placed.len);
+    try testing.expect(placed[0].area.w + placed[1].area.w <= 400);
+    try testing.expect(placed[1].area.x + placed[1].area.w <= 400);
 }

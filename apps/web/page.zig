@@ -456,6 +456,10 @@ pub const Picture = struct {
     /// one.
     width: ?u16 = null,
     height: ?u16 = null,
+    /// Whether the page lets it be narrower than it is, its width or its
+    /// most width a share of the room around it: such a picture asks for
+    /// no room at the least, and one that is not asks for its own width.
+    fluid: bool = false,
     /// Where it goes when it is clicked, where it sits inside a link.
     link: ?u16 = null,
 };
@@ -888,13 +892,14 @@ pub const Builder = struct {
 
     /// A picture, placed among the words where the page put it, the way a
     /// control is.
-    pub fn addPicture(self: *Builder, source: []const u8, alt: []const u8, width: ?u16, height: ?u16) Error!void {
+    pub fn addPicture(self: *Builder, source: []const u8, alt: []const u8, width: ?u16, height: ?u16, fluid: bool) Error!void {
         const index = std.math.cast(u16, self.page.pictures.items.len) orelse return;
         try self.page.pictures.append(self.gpa, .{
             .source = try self.keep(source),
             .alt = try self.keep(alt),
             .width = width,
             .height = height,
+            .fluid = fluid,
             .link = self.link,
         });
         try self.place(.{ .picture = index });
@@ -1333,9 +1338,9 @@ test "a picture sits among the words, and reads as what the page says it shows" 
     f.init();
     defer f.deinit();
     try f.builder.words("Look ");
-    try f.builder.addPicture("https://a.org/eee.jpg", "the machine", 400, null);
+    try f.builder.addPicture("https://a.org/eee.jpg", "the machine", 400, null, false);
     try f.builder.words(" here");
-    try f.builder.addPicture("", "", null, null);
+    try f.builder.addPicture("", "", null, null, false);
     try f.builder.finish();
 
     const page = &f.page;
