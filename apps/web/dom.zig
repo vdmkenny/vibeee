@@ -2313,6 +2313,62 @@ fn jsTagName(ctx: *Context, this: Value) callconv(.c) Value {
     };
 }
 
+/// `attributes`: the element's attributes as a list, by index and by name,
+/// each an object with its name and its value. What the element has when
+/// asked, as a list of its own.
+fn jsAttributes(ctx: *Context, this: Value) callconv(.c) Value {
+    const node = nodeOf(this) orelse return qjs.undefinedValue();
+    const list = qjs.newObject(ctx);
+    var count: u32 = 0;
+    if (node.type == .element) {
+        var at = lexbor.lxb_dom_element_first_attribute_noi(node);
+        while (at) |attr| : (at = lexbor.lxb_dom_element_next_attribute_noi(attr)) {
+            var name_len: usize = 0;
+            const name_ptr = lexbor.lxb_dom_attr_qualified_name(attr, &name_len) orelse continue;
+            var value_len: usize = 0;
+            const value_ptr = lexbor.lxb_dom_attr_value_noi(attr, &value_len);
+            const name = name_ptr[0..name_len];
+            const value: []const u8 = if (value_ptr) |held| held[0..value_len] else "";
+            const one = qjs.newObject(ctx);
+            _ = qjs.setStr(ctx, one, "name", str(ctx, name));
+            _ = qjs.setStr(ctx, one, "nodeName", str(ctx, name));
+            _ = qjs.setStr(ctx, one, "value", str(ctx, value));
+            _ = qjs.setStr(ctx, one, "nodeValue", str(ctx, value));
+            _ = qjs.setStr(ctx, one, "specified", qjs.newBool(ctx, 1));
+            var buf: [256]u8 = undefined;
+            if (std.fmt.bufPrintZ(&buf, "{s}", .{name})) |key| {
+                _ = qjs.setStr(ctx, list, key, qjs.dup(ctx, one));
+            } else |_| {}
+            _ = qjs.setAt(ctx, list, count, one);
+            count += 1;
+        }
+    }
+    _ = qjs.setStr(ctx, list, "length", qjs.newInt(ctx, @intCast(count)));
+    give(ctx, list, "getNamedItem", 1, &jsNamedItem);
+    give(ctx, list, "item", 1, &jsItemAt);
+    return list;
+}
+
+/// The attribute under the name given, or null.
+fn jsNamedItem(ctx: *Context, this: Value, argc: c_int, argv: [*]const Value) callconv(.c) Value {
+    const name = argument(ctx, argc, argv, 0) orelse return qjs.nullValue();
+    defer qjs.freeText(ctx, name.ptr);
+    const found = qjs.getStr(ctx, this, name.ptr);
+    if (qjs.isUndefined(found)) return qjs.nullValue();
+    return found;
+}
+
+/// The entry at the index given, or null.
+fn jsItemAt(ctx: *Context, this: Value, argc: c_int, argv: [*]const Value) callconv(.c) Value {
+    if (argc == 0) return qjs.nullValue();
+    var index: i32 = 0;
+    _ = qjs.toInt(ctx, &index, argv[0]);
+    if (index < 0) return qjs.nullValue();
+    const found = qjs.getAt(ctx, this, @intCast(index));
+    if (qjs.isUndefined(found)) return qjs.nullValue();
+    return found;
+}
+
 fn jsNodeType(ctx: *Context, this: Value) callconv(.c) Value {
     const node = nodeOf(this) orelse return qjs.undefinedValue();
     return qjs.newInt(ctx, @intFromEnum(node.type));
@@ -2464,6 +2520,7 @@ const node_gets = reflectedEntries() ++ flaggedEntries() ++ [_]qjs.ListEntry{
     .accessor("tagName", &jsTagName, null),
     .accessor("nodeName", &jsTagName, null),
     .accessor("nodeType", &jsNodeType, null),
+    .accessor("attributes", &jsAttributes, null),
     .accessor("isConnected", &jsConnected, null),
     .accessor("ownerDocument", &jsOwnerDocument, null),
     .accessor("form", &jsForm, null),
@@ -3523,6 +3580,12 @@ fn furnish(it: *Document) void {
     const implementation = qjs.newObject(ctx);
     give(ctx, implementation, "hasFeature", 2, &jsYes);
     _ = qjs.setStr(ctx, document, "implementation", implementation);
+    // The document is a node of its own kind, which a library that keeps
+    // a document of its own tells by these before it uses it.
+    _ = qjs.setStr(ctx, document, "nodeType", qjs.newInt(ctx, @intFromEnum(lexbor.NodeType.document)));
+    _ = qjs.setStr(ctx, document, "nodeName", str(ctx, "#document"));
+    _ = qjs.setStr(ctx, document, "ownerDocument", qjs.nullValue());
+    _ = qjs.setStr(ctx, document, "parentNode", qjs.nullValue());
     _ = qjs.setStr(ctx, global, "document", document);
 
     // The window is the world a script stands in, which is the one the

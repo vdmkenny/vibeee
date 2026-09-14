@@ -242,6 +242,26 @@ test "what a page puts by is read back, and is the browser's to keep for the sit
     try testing.expectEqualStrings("v", site.get("k").?);
 }
 
+test "an element's attributes are a list, by index and by name" {
+    const it = try opened("<!DOCTYPE html><html><body><p id=\"a\" class=\"x\" data-k=\"v\">a</p></body></html>", true);
+    defer it.end();
+    try testing.expectEqualStrings("3", try it.run("String(document.getElementById('a').attributes.length)"));
+    try testing.expectEqualStrings("class", try it.run("document.getElementById('a').attributes[1].name"));
+    try testing.expectEqualStrings("v", try it.run("document.getElementById('a').attributes['data-k'].value"));
+    try testing.expectEqualStrings("a", try it.run("document.getElementById('a').attributes.getNamedItem('id').value"));
+    try testing.expectEqualStrings("null", try it.run("String(document.getElementById('a').attributes.getNamedItem('nope'))"));
+    try testing.expectEqualStrings("true", try it.run("String(document.getElementById('a').attributes.item(0).specified)"));
+}
+
+test "the document is a node of its own kind, as a library keeping one tells" {
+    const it = try opened(with(""), true);
+    defer it.end();
+    try testing.expectEqualStrings("9", try it.run("String(document.nodeType)"));
+    try testing.expectEqualStrings("#document", try it.run("document.nodeName"));
+    try testing.expectEqualStrings("true", try it.run("String(document.ownerDocument === null && document.parentNode === null)"));
+    try testing.expectEqualStrings("HTML", try it.run("document.documentElement.nodeName"));
+}
+
 test "the page says where it is, and what the browser is called" {
     try says("", "location.href", ADDRESS);
     try says("", "location.hostname + location.pathname + location.protocol", "example.test/onehttp:");
