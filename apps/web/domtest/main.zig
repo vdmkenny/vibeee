@@ -92,7 +92,7 @@ const Opened = struct {
         const base = url.parse(ADDRESS) orelse return error.NoBase;
         var read: page_mod.Page = .{};
         errdefer read.deinit(heap);
-        try extract.extract(heap, self.tree, base, &read);
+        try extract.extract(heap, self.tree, base, null, &read);
         return read;
     }
 };
@@ -117,9 +117,8 @@ fn opened(text: []const u8, load: bool) !Opened {
     const tree = lexbor.lxb_html_document_create() orelse return error.NoPage;
     if (lexbor.lxb_style_init(tree) != .ok) return error.NoPage;
     if (lexbor.lxb_html_document_parse(tree, text.ptr, text.len) != .ok) return error.NoPage;
-    // The rules of the page's own style elements, which the tree applied
-    // as it parsed, kept as the browser keeps them.
-    css.harvest(heap, tree, &rules);
+    // The page's own style elements, applied as the browser applies them.
+    css.reapply(heap, tree, null, &rules);
     const doc = dom.open(machineOf(), tree, &rules, ADDRESS, .{
         .gpa = testing.allocator,
         .jar = &jar,
@@ -704,6 +703,48 @@ test "a sheet's variables stand for what its root sets, or the fallback, and a p
     try testing.expect(std.mem.findScalar(rgb.Colour, page.palette.items, .hex(0x123456)) != null);
     try testing.expect(!a.out_of_flow);
     try testing.expect(boxes[at + 1].style.out_of_flow);
+}
+
+test "a picture is fetched from the source its page gives for a window this wide, and a stand-in is passed over" {
+    const it = try opened(
+        "<!DOCTYPE html><html><body>" ++
+            "<img id=\"a\" src=\"data:image/gif;base64,R0lGOD\" srcset=\"a-480.jpg 480w, a-1200.jpg 1200w, a-800.jpg 800w\" width=\"200\" height=\"100\">" ++
+            "<img id=\"b\" data-src=\"lazy.jpg\" width=\"200\" height=\"100\">" ++
+            "<picture><source srcset=\"p.webp 1x, p2.webp 2x\"><img id=\"c\" alt=\"c\" width=\"200\" height=\"100\"></picture>" ++
+            "<img id=\"d\" src=\"plain.jpg\" srcset=\"big.jpg 2000w\" width=\"200\" height=\"100\">" ++
+            "</body></html>",
+        false,
+    );
+    defer it.end();
+    var page = try it.page();
+    defer page.deinit(heap);
+    try testing.expectEqual(@as(usize, 4), page.pictures.items.len);
+    try testing.expectEqualStrings("http://example.test/a-800.jpg", page.string(page.pictures.items[0].source));
+    try testing.expectEqualStrings("http://example.test/lazy.jpg", page.string(page.pictures.items[1].source));
+    try testing.expectEqualStrings("http://example.test/p.webp", page.string(page.pictures.items[2].source));
+    try testing.expectEqualStrings("http://example.test/plain.jpg", page.string(page.pictures.items[3].source));
+}
+
+test "words a page hides from sight but not from a screen reader are not drawn" {
+    const it = try opened(
+        "<!DOCTYPE html><html><body><a class=\"skip\">Skip to content</a><span class=\"cut\">Cut away</span>" ++
+            "<span class=\"small\">Small</span><span class=\"spilling\">Spilling</span><p>Shown</p></body></html>",
+        false,
+    );
+    defer it.end();
+    css.apply(heap, it.tree,
+        \\.skip { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); }
+        \\.cut { clip-path: inset(50%); }
+        \\.small { position: absolute; width: 1px; height: 1px; overflow: hidden; }
+        \\.spilling { position: absolute; width: 1px; height: 1px; }
+    , null, &rules);
+    var page = try it.page();
+    defer page.deinit(heap);
+    try testing.expect(!std.mem.containsAtLeast(u8, page.text.items, 1, "Skip"));
+    try testing.expect(!std.mem.containsAtLeast(u8, page.text.items, 1, "Cut"));
+    try testing.expect(!std.mem.containsAtLeast(u8, page.text.items, 1, "Small"));
+    try testing.expect(std.mem.containsAtLeast(u8, page.text.items, 1, "Spilling"));
+    try testing.expect(std.mem.containsAtLeast(u8, page.text.items, 1, "Shown"));
 }
 
 test "a box with room and a ground of its own is kept as a block with both, for the layout to set" {

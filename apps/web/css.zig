@@ -55,7 +55,38 @@ pub fn shows(node: *const Node) bool {
     if (valueOf(lexbor.Channel, node, .opacity)) |alpha| {
         if (opacity(alpha.*) == 0) return false;
     }
-    return true;
+    return !clippedAway(node);
+}
+
+/// Whether a page has hidden an element from sight while leaving it for
+/// anyone listening to the page read, the way pages do: clipped to
+/// nothing, or a pixel across with what spills over it cut off.
+fn clippedAway(node: *const Node) bool {
+    if (customValue(node, "clip")) |clip| {
+        if (std.ascii.startsWithIgnoreCase(std.mem.trimStart(u8, clip, &std.ascii.whitespace), "rect(")) return true;
+    }
+    if (customValue(node, "clip-path")) |path| {
+        if (std.ascii.startsWithIgnoreCase(std.mem.trimStart(u8, path, &std.ascii.whitespace), "inset(")) return true;
+    }
+    if (!atMost(node, .width, 1) or !atMost(node, .height, 1)) return false;
+    if (customValue(node, "overflow")) |overflow| {
+        if (std.ascii.indexOfIgnoreCase(overflow, "hidden") != null or std.ascii.indexOfIgnoreCase(overflow, "clip") != null) return true;
+    }
+    for ([_]lexbor.Property{ .overflow_x, .overflow_y }) |property| {
+        if (valueOf(lexbor.Single, node, property)) |overflow| {
+            if (overflow.kind == .hidden or overflow.kind == .clip) return true;
+        }
+    }
+    return false;
+}
+
+/// Whether a length is written in pixels and no more than `most` of them.
+fn atMost(node: *const Node, property: lexbor.Property, most: f32) bool {
+    const unit = lengthMaybe(node, property) orelse return false;
+    return switch (unit) {
+        .px => |px| px <= most,
+        else => false,
+    };
 }
 
 /// Whether an element's words belong to the block they stand in rather than
@@ -844,24 +875,30 @@ fn readNames(gpa: Allocator, names: *std.ArrayList(u64), list: *const lexbor.Sel
     }
 }
 
-/// Keep the rules of the sheets the page's own style elements gave the
-/// tree, which the tree applied for itself as it was parsed, so that they
-/// are matched again beside the linked sheets' where a script changes what
-/// an element is.
-pub fn harvest(gpa: Allocator, document: *lexbor.Document, rules: *Rules) void {
-    const cascade = lexbor.domOf(document).css orelse return;
+/// Take the page's own style elements back from the tree, which applied
+/// them whole as it parsed, and apply each as a linked sheet is applied:
+/// with its media blocks resolved for the window, its variables written
+/// out, and only the rules that say something this browser draws. The
+/// sheets go in the order the page has them, and their rules join `rules`.
+pub fn reapply(gpa: Allocator, document: *lexbor.Document, screen: ?media.Screen, rules: *Rules) void {
+    const dom = lexbor.domOf(document);
+    const cascade = dom.css orelse return;
     const sheets = cascade.stylesheets orelse return;
-    for (0..lexbor.lexbor_array_length_noi(sheets)) |index| {
-        const sheet: *const lexbor.Stylesheet = @ptrCast(@alignCast(lexbor.lexbor_array_get_noi(sheets, index) orelse continue));
-        const root = sheet.root orelse continue;
-        if (root.kind != .list) continue;
-        const list: *const lexbor.RuleList = @fieldParentPtr("rule", root);
-        var at = list.first;
-        while (at) |rule| : (at = rule.next) {
-            if (rule.kind != .style) continue;
-            rules.add(gpa, @fieldParentPtr("rule", rule));
+    var texts: std.ArrayList([]const u8) = .empty;
+    defer texts.deinit(gpa);
+    // Taking a sheet back shortens the list, so the first is taken until
+    // none is left. The text stays the tree's, in the element's own node.
+    while (lexbor.lexbor_array_length_noi(sheets) > 0) {
+        const sheet: *lexbor.Stylesheet = @ptrCast(@alignCast(lexbor.lexbor_array_get_noi(sheets, 0) orelse break));
+        const element: ?*lexbor.Node = @ptrCast(@alignCast(sheet.element));
+        _ = lexbor.lxb_dom_document_stylesheet_remove(dom, sheet);
+        const node = element orelse continue;
+        var child = node.first_child;
+        while (child) |text| : (child = text.next) {
+            if (text.type == .text) texts.append(gpa, lexbor.wordsOf(text)) catch return;
         }
     }
+    for (texts.items) |text| apply(gpa, document, text, screen, rules);
 }
 
 /// Apply a stylesheet to `document` as it reads on `screen`: its rules for
@@ -1061,7 +1098,7 @@ fn honoured(style: *const lexbor.StyleRule) bool {
         if (rule.kind != .declaration) continue;
         const declaration: *const lexbor.Declaration = @fieldParentPtr("rule", rule);
         switch (declaration.property) {
-            .display, .position, .width, .height, .min_width, .min_height, .max_width, .max_height, .flex, .flex_basis, .flex_direction, .flex_flow, .flex_grow, .flex_shrink, .flex_wrap, .justify_content, .align_items, .align_self, .visibility, .opacity, .color, .background_color, .text_align, .white_space, .margin, .margin_top, .margin_right, .margin_bottom, .margin_left, .padding, .padding_top, .padding_right, .padding_bottom, .padding_left, .border, .border_top, .border_right, .border_bottom, .border_left, .border_top_color, .border_right_color, .border_bottom_color, .border_left_color => return true,
+            .display, .position, .overflow_x, .overflow_y, .width, .height, .min_width, .min_height, .max_width, .max_height, .flex, .flex_basis, .flex_direction, .flex_flow, .flex_grow, .flex_shrink, .flex_wrap, .justify_content, .align_items, .align_self, .visibility, .opacity, .color, .background_color, .text_align, .white_space, .margin, .margin_top, .margin_right, .margin_bottom, .margin_left, .padding, .padding_top, .padding_right, .padding_bottom, .padding_left, .border, .border_top, .border_right, .border_bottom, .border_left, .border_top_color, .border_right_color, .border_bottom_color, .border_left_color => return true,
             .custom => {
                 const custom = customOf(declaration) orelse continue;
                 const name = custom.name.slice();
@@ -1071,6 +1108,9 @@ fn honoured(style: *const lexbor.StyleRule) bool {
                     std.ascii.eqlIgnoreCase(name, "border-radius") or
                     std.ascii.eqlIgnoreCase(name, "grid-template-columns") or
                     std.ascii.eqlIgnoreCase(name, "grid-column") or
+                    std.ascii.eqlIgnoreCase(name, "overflow") or
+                    std.ascii.eqlIgnoreCase(name, "clip") or
+                    std.ascii.eqlIgnoreCase(name, "clip-path") or
                     isGap(name)) return true;
             },
             else => {},

@@ -226,6 +226,9 @@ const TABLES_MAX = 16;
 const Walker = struct {
     builder: *Builder,
     base: url.Url,
+    /// How wide the window is, which is what a picture with several sources
+    /// is chosen for.
+    width: u32 = 800,
 
     /// How many elements of each counted role the walk is inside.
     inside: std.EnumArray(Role, u16) = .initFill(0),
@@ -584,7 +587,7 @@ const Walker = struct {
 
         const alt = std.mem.trim(u8, lexbor.attribute(node, "alt") orelse "", &std.ascii.whitespace);
         var buf: [url.ADDRESS_MAX]u8 = undefined;
-        const source = url.resolve(self.base, lexbor.attribute(node, "src") orelse "", &buf) orelse "";
+        const source = url.resolve(self.base, sourceOf(node, self.width) orelse "", &buf) orelse "";
         try self.builder.addPicture(source, alt, width, height);
     }
 
@@ -758,6 +761,74 @@ fn startOf(node: *Node) u32 {
     return std.fmt.parseInt(u32, std.mem.trim(u8, start, &std.ascii.whitespace), 10) catch 1;
 }
 
+/// Where a picture is fetched from: its `src`, unless that is nothing or a
+/// stand-in the page fills in later; then the candidate of its `srcset` for
+/// a window `width` wide; then what a page that fetches pictures late keeps
+/// in `data-src` or `data-srcset`; then the first source of the `picture`
+/// around it.
+fn sourceOf(node: *Node, width: u32) ?[]const u8 {
+    if (usable(lexbor.attribute(node, "src"))) |src| return src;
+    if (candidateOf(lexbor.attribute(node, "srcset"), width)) |candidate| return candidate;
+    if (usable(lexbor.attribute(node, "data-src"))) |src| return src;
+    if (candidateOf(lexbor.attribute(node, "data-srcset"), width)) |candidate| return candidate;
+    if (node.parent) |parent| {
+        if (lexbor.tagOf(parent) == .picture) {
+            var child = parent.first_child;
+            while (child) |source| : (child = source.next) {
+                if (lexbor.tagOf(source) != .source) continue;
+                const set = lexbor.attribute(source, "srcset") orelse lexbor.attribute(source, "data-srcset");
+                if (candidateOf(set, width)) |candidate| return candidate;
+            }
+        }
+    }
+    return lexbor.attribute(node, "src");
+}
+
+/// An address a picture can be fetched from: not nothing, and not the
+/// data a page puts in place of one until it fetches the real one.
+fn usable(src: ?[]const u8) ?[]const u8 {
+    const address = std.mem.trim(u8, src orelse return null, &std.ascii.whitespace);
+    if (address.len == 0 or std.ascii.startsWithIgnoreCase(address, "data:")) return null;
+    return address;
+}
+
+/// The candidate of a `srcset` for a window `width` wide: the narrowest of
+/// those at least as wide, or the widest where none is; the first where
+/// they are told apart by density rather than width. A candidate is an
+/// address and then, after a space, its descriptor; a comma ends it.
+fn candidateOf(srcset: ?[]const u8, width: u32) ?[]const u8 {
+    var narrowest: ?[]const u8 = null;
+    var narrowest_width: u32 = std.math.maxInt(u32);
+    var widest: ?[]const u8 = null;
+    var widest_width: u32 = 0;
+    var words = std.mem.tokenizeAny(u8, srcset orelse return null, &std.ascii.whitespace);
+    while (words.next()) |word| {
+        var address = word;
+        var descriptor: []const u8 = "";
+        if (address[address.len - 1] == ',') {
+            address = address[0 .. address.len - 1];
+        } else if (words.peek()) |next| {
+            descriptor = std.mem.trimEnd(u8, next, ",");
+            _ = words.next();
+        }
+        if (address.len == 0) continue;
+        if (descriptor.len < 2 or descriptor[descriptor.len - 1] != 'w') {
+            if (narrowest == null and widest == null) return address;
+            continue;
+        }
+        const w = std.fmt.parseInt(u32, descriptor[0 .. descriptor.len - 1], 10) catch continue;
+        if (w >= width and w < narrowest_width) {
+            narrowest = address;
+            narrowest_width = w;
+        }
+        if (w > widest_width) {
+            widest = address;
+            widest_width = w;
+        }
+    }
+    return narrowest orelse widest;
+}
+
 /// Smaller than this a side, a picture is a counter or a spacer rather than
 /// something to look at.
 const SEEN_MIN = 3;
@@ -834,11 +905,12 @@ pub fn versionFor(document: *lexbor.Document, base: url.Url, screen: ?media.Scre
 
 /// Walk `document` into `page`. Links are resolved against `base`, which is
 /// the address the page came from.
-pub fn extract(gpa: std.mem.Allocator, document: *lexbor.Document, base: url.Url, page: *page_mod.Page) Builder.Error!void {
+pub fn extract(gpa: std.mem.Allocator, document: *lexbor.Document, base: url.Url, screen: ?media.Screen, page: *page_mod.Page) Builder.Error!void {
     var builder = Builder{ .gpa = gpa, .page = page };
     if (lexbor.titleOf(document)) |title| try builder.title(title);
 
     var walker = Walker{ .builder = &builder, .base = base };
+    if (screen) |window| walker.width = @intFromFloat(window.width);
     defer walker.containers.deinit(gpa);
     const top = lexbor.nodeOf(document);
     page.ground = try walker.pageGround(top);

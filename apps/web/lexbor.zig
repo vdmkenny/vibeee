@@ -102,6 +102,8 @@ pub const Tag = enum(usize) {
     i = 0x0067,
     iframe = 0x0068,
     img = 0x006a,
+    picture = 0x0095,
+    source = 0x00a9,
     input = 0x006b,
     kbd = 0x006e,
     li = 0x0072,
@@ -418,6 +420,7 @@ pub extern fn lxb_css_declaration_list_parse(parser: *CssParser, data: [*]const 
 pub extern fn lxb_dom_document_style_attach(document: *DomDocument, rule: *StyleRule) Status;
 pub extern fn lxb_dom_document_style_attach_by_element(document: *DomDocument, element: *Node, rule: *StyleRule) Status;
 pub extern fn lxb_dom_document_style_remove(document: *DomDocument, rule: *StyleRule) Status;
+pub extern fn lxb_dom_document_stylesheet_remove(document: *DomDocument, sheet: *Stylesheet) Status;
 pub extern fn lxb_dom_element_style_list_append(element: *Node, list: *DeclarationList, specificity: u32) Status;
 pub extern fn lexbor_array_length_noi(array: *Array) usize;
 pub extern fn lexbor_array_get_noi(array: *Array, index: usize) ?*anyopaque;
@@ -546,6 +549,8 @@ pub const Property = enum(usize) {
     min_height = 0x003c,
     min_width = 0x003d,
     opacity = 0x003e,
+    overflow_x = 0x0043,
+    overflow_y = 0x0044,
     padding = 0x0045,
     padding_bottom = 0x0046,
     padding_left = 0x0047,
@@ -618,6 +623,7 @@ pub const Keyword = enum(c_uint) {
     absolute = 0x0147,
     sticky = 0x0148,
     fixed = 0x0149,
+    clip = 0x0142,
     justify = 0x014a,
     collapse = 0x0165,
     pre = 0x0166,

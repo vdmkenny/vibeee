@@ -160,7 +160,7 @@ pub const Tree = struct {
     /// Apply `source`'s stylesheets as they read in `screen`. Once: a rule
     /// applied twice is a rule the tree holds twice.
     pub fn style(self: *Tree, gpa: Allocator, source: *const Source, screen: ?media.Screen) void {
-        css.harvest(gpa, self.document, &self.rules);
+        css.reapply(gpa, self.document, screen, &self.rules);
         for (source.sheets.items) |sheet| {
             if (media.matches(sheet.media, screen)) css.apply(gpa, self.document, sheet.text, screen, &self.rules);
         }
@@ -169,10 +169,9 @@ pub const Tree = struct {
     /// Its words, read into `page`, links resolved against `source`'s
     /// address.
     pub fn read(self: *Tree, gpa: Allocator, source: *const Source, screen: ?media.Screen, page: *Page) Error!void {
-        _ = screen;
         const base = url.parse(source.base.slice()) orelse return error.Unparsable;
         page.encoding = self.encoding;
-        try extract.extract(gpa, self.document, base, page);
+        try extract.extract(gpa, self.document, base, screen, page);
     }
 };
 
