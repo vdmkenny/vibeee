@@ -6,12 +6,11 @@
 //! nothing a reader should see. The answer is `Role`, and the walk is that
 //! table applied in document order.
 //!
-//! Only the page's own content is walked, and only what the page itself says
-//! is for reading. A page marks its content with `main` and its navigation
-//! with `nav` or a role, and hides what it hides with an attribute or with its
-//! stylesheets. Those are the page's own words about its parts, which is why
-//! they are what decides, rather than guesses from class names that differ on
-//! every site.
+//! The whole page is walked, its menus and its footer with its content, and
+//! only what the page itself hides is left out: what it hides with an
+//! attribute or with its stylesheets. Those are the page's own words about
+//! its parts, which is why they are what decides, rather than guesses from
+//! class names that differ on every site.
 //!
 //! What a page's stylesheets say is asked of each element as the walk arrives
 //! at it: whether it shows at all, the colour of its words, what is painted
@@ -45,8 +44,7 @@ const Swatch = page_mod.Swatch;
 
 /// What an element does to the words inside it.
 const Role = enum {
-    /// Nothing a reader sees: a script, a stylesheet, the head, and the
-    /// page's navigation.
+    /// Nothing a reader sees: a script, a stylesheet, the head.
     hidden,
     /// Starts a block of body text and ends it.
     block,
@@ -86,8 +84,8 @@ const Role = enum {
 
 fn roleOf(tag: Tag) Role {
     return switch (tag) {
-        .script, .style, .head, .template, .svg, .math, .iframe, .title, .base, .nav, .option => .hidden,
-        .p, .div, .section, .article, .header, .footer, .main, .aside, .figure, .figcaption, .address, .center, .fieldset, .details, .summary, .dl, .dt, .dd => .block,
+        .script, .style, .head, .template, .svg, .math, .iframe, .title, .base, .option => .hidden,
+        .p, .div, .section, .article, .header, .footer, .main, .nav, .aside, .figure, .figcaption, .address, .center, .fieldset, .details, .summary, .dl, .dt, .dd => .block,
         .table => .table,
         .tr => .row,
         .td, .th => .cell,
@@ -802,28 +800,13 @@ fn textWithin(node: *Node) Label {
 
 /// The entry a list to choose from has chosen: the one it marks, or its
 /// first.
-/// Whether the page says an element is not for reading: navigation, or
-/// something it hides, from everyone or from anyone listening to it read,
-/// by an attribute or by its stylesheets.
+/// Whether the page says an element is not to be seen: something it hides,
+/// from everyone or from anyone listening to it read, by an attribute or by
+/// its stylesheets.
 fn unread(node: *Node) bool {
     return lexbor.hasAttribute(node, "hidden") or
         lexbor.attributeIs(node, "aria-hidden", "true") or
-        lexbor.attributeIs(node, "role", "navigation") or
         !css.shows(node);
-}
-
-/// Where a page's own content is: the `main` element it marks, and otherwise
-/// the whole of it. What is outside a page's main is the site around it,
-/// its menus, its search, its footer, and a reader that showed all of that
-/// would open every article on the site's furniture.
-fn contentOf(root: *Node) *Node {
-    var at = lexbor.following(root, root);
-    while (at) |node| : (at = lexbor.following(node, root)) {
-        if (node.type != .element) continue;
-        const main = lexbor.tagOf(node) == .main or lexbor.attributeIs(node, "role", "main");
-        if (main and !unread(node)) return node;
-    }
-    return root;
 }
 
 /// Where the page says its version for a window like `screen` is, written
@@ -859,7 +842,7 @@ pub fn extract(gpa: std.mem.Allocator, document: *lexbor.Document, base: url.Url
     defer walker.containers.deinit(gpa);
     const top = lexbor.nodeOf(document);
     page.ground = try walker.pageGround(top);
-    const root = contentOf(top);
+    const root = top;
     try walker.inherit(root);
     walker.restyle();
     try walker.beginContainer(root, .block);

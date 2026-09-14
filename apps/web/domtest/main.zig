@@ -743,8 +743,9 @@ test "the boxes a stylesheet sets side by side are kept for the layout" {
 
     try testing.expectEqualStrings("onetwo", page.text.items);
     try testing.expectEqual(@as(usize, 2), page.blocks.items.len);
-    try testing.expectEqual(@as(usize, 3), page.containers.items.len);
-    const main = page.containers.items[0].style;
+    // The document, the html and body elements, the main and its two.
+    try testing.expectEqual(@as(usize, 6), page.containers.items.len);
+    const main = page.containers.items[3].style;
     try testing.expectEqual(page_mod.BoxStyle.Display.flex, main.display);
     try testing.expectEqual(page_mod.BoxStyle.Direction.column, main.direction);
     try testing.expectEqualDeep(page_mod.Unit{ .px = 8 }, main.gap);
@@ -752,13 +753,13 @@ test "the boxes a stylesheet sets side by side are kept for the layout" {
     try testing.expectEqualDeep(page_mod.Unit{ .vh = 12 }, main.min_height);
     try testing.expectEqual(page_mod.BoxStyle.Justify.between, main.justify);
     try testing.expectEqual(page_mod.BoxStyle.Items.center, main.items);
-    const p = page.containers.items[1].style;
+    const p = page.containers.items[4].style;
     try testing.expectEqualDeep(page_mod.Unit{ .percent = 50 }, p.width);
     try testing.expectEqualDeep(page_mod.Unit{ .px = 400 }, p.max_width);
     // Each paragraph is held by the container, and owns the block it made.
-    var kids = page.childrenOf(0);
-    try testing.expectEqual(@as(?u32, 1), kids.next());
-    try testing.expectEqual(@as(?u32, 2), kids.next());
+    var kids = page.childrenOf(3);
+    try testing.expectEqual(@as(?u32, 4), kids.next());
+    try testing.expectEqual(@as(?u32, 5), kids.next());
     try testing.expectEqual(@as(?u32, null), kids.next());
-    for (page.blocks.items, 1..) |block, index| try testing.expectEqual(@as(u32, @intCast(index)), block.owner);
+    for (page.blocks.items, 4..) |block, index| try testing.expectEqual(@as(u32, @intCast(index)), block.owner);
 }
