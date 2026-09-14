@@ -842,6 +842,19 @@ test "a picture is as large as the stylesheet says, in pixels or ems, under the 
     try testing.expectEqual(@as(?u16, 400), pictures[3].width);
 }
 
+test "Headers is a class with its methods on its prototype, keeping names whatever their case" {
+    const it = try opened(with(""), true);
+    defer it.end();
+    try testing.expectEqualStrings("function", try it.run("typeof Headers.prototype.has"));
+    try testing.expectEqualStrings("x", try it.run("new Headers({'Content-Type': 'x'}).get('content-type')"));
+    try testing.expectEqualStrings("true", try it.run("String(new Headers([['A', '1']]).has('a'))"));
+    try testing.expectEqualStrings("1, 2", try it.run("var h = new Headers(); h.append('a', '1'); h.append('a', '2'); h.get('A')"));
+    try testing.expectEqualStrings("null", try it.run("var g = new Headers({a: '1'}); g.delete('a'); String(g.get('a'))"));
+    try testing.expectEqualStrings("a=1;b=2;", try it.run("var s = ''; new Headers({a: '1', B: '2'}).forEach(function (v, k) { s += k + '=' + v + ';' }); s"));
+    try testing.expectEqualStrings("a,b", try it.run("new Headers({a: '1', b: '2'}).keys().join(',')"));
+    try testing.expectEqualStrings("2", try it.run("String(new Headers(new Headers({a: '1', b: '2'})).entries().length)"));
+}
+
 test "a box with room and a ground of its own is kept as a block with both, for the layout to set" {
     const it = try opened(
         "<!DOCTYPE html><html><body><p>plain</p><div class=\"card\"><p>inside</p></div>" ++

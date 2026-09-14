@@ -187,6 +187,9 @@ pub const Document = struct {
     wrappers: std.AutoHashMapUnmanaged(*Node, Value) = .empty,
     /// What every element object inherits.
     node_proto: Value,
+    /// What every `Headers` a script makes inherits: the methods a page's
+    /// scripts read off the class before they use it.
+    headers_proto: Value,
     watches: std.ArrayList(Watch) = .empty,
     timers: std.ArrayList(Timer) = .empty,
     next_timer: u32 = 0,
@@ -300,6 +303,7 @@ pub fn open(machine: *js.Machine, tree: *lexbor.Document, rules: *const css.Rule
         .address = "",
         .store = null,
         .node_proto = qjs.undefinedValue(),
+        .headers_proto = qjs.undefinedValue(),
     };
     it.gpa = it.heap.allocator();
     it.address = keep(it, address);
@@ -357,6 +361,7 @@ pub fn close(it: *Document) void {
     it.noted.deinit(it.gpa);
     if (it.report.error_last.len > 0) it.gpa.free(it.report.error_last);
     qjs.free(ctx, it.node_proto);
+    qjs.free(ctx, it.headers_proto);
     if (it.selectors) |engine| _ = lexbor.lxb_selectors_destroy(engine, true);
     if (it.parser) |parser| {
         lexbor.lxb_css_parser_selectors_destroy(parser);
@@ -2624,7 +2629,7 @@ fn response(it: *Document, address: []const u8, got: Answer) Value {
     _ = qjs.setStr(ctx, out, "statusText", str(ctx, ""));
     _ = qjs.setStr(ctx, out, "url", str(ctx, address));
     _ = qjs.setStr(ctx, out, "redirected", qjs.newBool(ctx, 0));
-    _ = qjs.setStr(ctx, out, "headers", headersObject(ctx));
+    _ = qjs.setStr(ctx, out, "headers", headersOf(it, null));
     _ = qjs.setStr(ctx, out, "__body", str(ctx, got.body));
     return out;
 }
@@ -2656,18 +2661,217 @@ const answer_methods = [_]qjs.ListEntry{
     .method("clone", 0, &jsAnswerClone),
 };
 
-/// `Headers`, as far as a page reads them: a shape with nothing in it.
-fn headersObject(ctx: *Context) Value {
-    const headers = qjs.newObject(ctx);
-    give(ctx, headers, "get", 1, &jsNone);
-    give(ctx, headers, "has", 1, &jsNo);
-    inline for (.{ "set", "append", "delete", "forEach" }) |name| give(ctx, headers, name, 2, &jsNothing);
+/// `Headers`: names to values, as a page reads and writes them. A name
+/// reads as one whatever its case, so the names are kept lowered, in an
+/// object of the instance's own that the methods on the prototype read.
+/// Made from nothing, from another `Headers`, from a list of pairs, or from
+/// an object of names to values.
+fn headersOf(it: *Document, init: ?Value) Value {
+    const ctx = it.ctx;
+    const headers = qjs.newObjectProto(ctx, it.headers_proto);
+    _ = qjs.setStr(ctx, headers, "__h", qjs.newObject(ctx));
+    if (init) |given| {
+        if (!qjs.isObject(given)) return headers;
+        const kept = qjs.getStr(ctx, given, "__h");
+        defer qjs.free(ctx, kept);
+        const pairs = pairsOf(ctx, if (qjs.isObject(kept)) kept else given);
+        defer qjs.free(ctx, pairs);
+        var count: i32 = 0;
+        const length = qjs.getStr(ctx, pairs, "length");
+        defer qjs.free(ctx, length);
+        _ = qjs.toInt(ctx, &count, length);
+        var index: u32 = 0;
+        while (index < @as(u32, @intCast(@max(count, 0)))) : (index += 1) {
+            const pair = qjs.getAt(ctx, pairs, index);
+            defer qjs.free(ctx, pair);
+            const name = qjs.getAt(ctx, pair, 0);
+            defer qjs.free(ctx, name);
+            const value = qjs.getAt(ctx, pair, 1);
+            defer qjs.free(ctx, value);
+            setHeader(ctx, headers, name, value, false);
+        }
+    }
     return headers;
 }
 
-fn jsNewHeaders(ctx: *Context, _: Value, _: c_int, _: [*]const Value) callconv(.c) Value {
-    return headersObject(ctx);
+/// The name and value pairs of `given`: the list it is, or the entries of
+/// the object it is, read by the engine's own `Object.entries`.
+fn pairsOf(ctx: *Context, given: Value) Value {
+    const first = qjs.getAt(ctx, given, 0);
+    defer qjs.free(ctx, first);
+    if (qjs.isObject(first)) return qjs.dup(ctx, given);
+    const global = qjs.globalOf(ctx);
+    defer qjs.free(ctx, global);
+    const object = qjs.getStr(ctx, global, "Object");
+    defer qjs.free(ctx, object);
+    const entries = qjs.getStr(ctx, object, "entries");
+    defer qjs.free(ctx, entries);
+    return qjs.call(ctx, entries, object, 1, &[_]Value{given});
 }
+
+/// A header's name as it is kept: lowered, since names read as one
+/// whatever their case.
+fn headerName(name: []const u8, buf: []u8) []const u8 {
+    const len = @min(name.len, buf.len);
+    return std.ascii.lowerString(buf[0..len], name[0..len]);
+}
+
+/// Set a header, or add to one where `append` and there is one.
+fn setHeader(ctx: *Context, headers: Value, name: Value, value: Value, append: bool) void {
+    const given = words(ctx, name) orelse return;
+    defer qjs.freeText(ctx, given.ptr);
+    var buf: [128]u8 = undefined;
+    const key = headerName(given, &buf);
+    const map = qjs.getStr(ctx, headers, "__h");
+    defer qjs.free(ctx, map);
+    var buf_key: [129]u8 = undefined;
+    const key_z = std.fmt.bufPrintZ(&buf_key, "{s}", .{key}) catch return;
+    // Nothing for a value takes the header away.
+    if (qjs.isUndefined(value)) {
+        _ = qjs.setStr(ctx, map, key_z, qjs.undefinedValue());
+        return;
+    }
+    const text = words(ctx, value) orelse return;
+    defer qjs.freeText(ctx, text.ptr);
+    if (append) {
+        const had = qjs.getStr(ctx, map, key_z);
+        defer qjs.free(ctx, had);
+        if (!qjs.isUndefined(had)) {
+            if (words(ctx, had)) |before| {
+                defer qjs.freeText(ctx, before.ptr);
+                // Joined as one value, the way a site sends a header set
+                // twice; one that would not fit the room is left as it was.
+                var joined: [HEADER_MAX]u8 = undefined;
+                const both = std.fmt.bufPrint(&joined, "{s}, {s}", .{ before, text }) catch return;
+                _ = qjs.setStr(ctx, map, key_z, str(ctx, both));
+                return;
+            }
+        }
+    }
+    _ = qjs.setStr(ctx, map, key_z, str(ctx, text));
+}
+
+fn jsNewHeaders(ctx: *Context, _: Value, argc: c_int, argv: [*]const Value) callconv(.c) Value {
+    const it = documentOf(ctx) orelse return qjs.undefinedValue();
+    return headersOf(it, if (argc > 0) argv[0] else null);
+}
+
+/// The value kept under the name the first argument gives, or nothing.
+fn headerValue(ctx: *Context, this: Value, argc: c_int, argv: [*]const Value) Value {
+    const given = argument(ctx, argc, argv, 0) orelse return qjs.undefinedValue();
+    defer qjs.freeText(ctx, given.ptr);
+    var buf: [129]u8 = undefined;
+    var lowered: [128]u8 = undefined;
+    const key_z = std.fmt.bufPrintZ(&buf, "{s}", .{headerName(given, &lowered)}) catch return qjs.undefinedValue();
+    const map = qjs.getStr(ctx, this, "__h");
+    defer qjs.free(ctx, map);
+    return qjs.getStr(ctx, map, key_z);
+}
+
+fn jsHeadersGet(ctx: *Context, this: Value, argc: c_int, argv: [*]const Value) callconv(.c) Value {
+    const value = headerValue(ctx, this, argc, argv);
+    if (qjs.isUndefined(value)) return qjs.nullValue();
+    return value;
+}
+
+fn jsHeadersHas(ctx: *Context, this: Value, argc: c_int, argv: [*]const Value) callconv(.c) Value {
+    const value = headerValue(ctx, this, argc, argv);
+    defer qjs.free(ctx, value);
+    return qjs.newBool(ctx, @intFromBool(!qjs.isUndefined(value)));
+}
+
+fn jsHeadersSet(ctx: *Context, this: Value, argc: c_int, argv: [*]const Value) callconv(.c) Value {
+    if (argc > 1) setHeader(ctx, this, argv[0], argv[1], false);
+    return qjs.undefinedValue();
+}
+
+fn jsHeadersAppend(ctx: *Context, this: Value, argc: c_int, argv: [*]const Value) callconv(.c) Value {
+    if (argc > 1) setHeader(ctx, this, argv[0], argv[1], true);
+    return qjs.undefinedValue();
+}
+
+fn jsHeadersDelete(ctx: *Context, this: Value, argc: c_int, argv: [*]const Value) callconv(.c) Value {
+    if (argc > 0) setHeader(ctx, this, argv[0], qjs.undefinedValue(), false);
+    return qjs.undefinedValue();
+}
+
+/// The longest a header's value comes to when one is added to another.
+const HEADER_MAX = 4096;
+
+/// The pairs kept, as `Object.entries` gives them: what `entries` hands
+/// back, and what `forEach` walks.
+fn headerPairs(ctx: *Context, this: Value) Value {
+    const map = qjs.getStr(ctx, this, "__h");
+    defer qjs.free(ctx, map);
+    return pairsOf(ctx, map);
+}
+
+fn jsHeadersEntries(ctx: *Context, this: Value, _: c_int, _: [*]const Value) callconv(.c) Value {
+    return headerPairs(ctx, this);
+}
+
+/// Every name, or every value, as an array: `which` is the side of each
+/// pair, the name being the first.
+fn headersSide(comptime which: u32) qjs.Method {
+    const S = struct {
+        fn call(ctx: *Context, this: Value, argc: c_int, argv: [*]const Value) callconv(.c) Value {
+            return jsHeadersSide(ctx, this, argc, argv, which);
+        }
+    };
+    return &S.call;
+}
+
+fn jsHeadersSide(ctx: *Context, this: Value, _: c_int, _: [*]const Value, which: u32) Value {
+    const pairs = headerPairs(ctx, this);
+    defer qjs.free(ctx, pairs);
+    const out = qjs.newArray(ctx);
+    var count: i32 = 0;
+    const length = qjs.getStr(ctx, pairs, "length");
+    defer qjs.free(ctx, length);
+    _ = qjs.toInt(ctx, &count, length);
+    var index: u32 = 0;
+    while (index < @as(u32, @intCast(@max(count, 0)))) : (index += 1) {
+        const pair = qjs.getAt(ctx, pairs, index);
+        defer qjs.free(ctx, pair);
+        _ = qjs.setAt(ctx, out, index, qjs.getAt(ctx, pair, which));
+    }
+    return out;
+}
+
+fn jsHeadersForEach(ctx: *Context, this: Value, argc: c_int, argv: [*]const Value) callconv(.c) Value {
+    if (argc == 0 or qjs.isFunction(ctx, argv[0]) == 0) return qjs.undefinedValue();
+    const pairs = headerPairs(ctx, this);
+    defer qjs.free(ctx, pairs);
+    var count: i32 = 0;
+    const length = qjs.getStr(ctx, pairs, "length");
+    defer qjs.free(ctx, length);
+    _ = qjs.toInt(ctx, &count, length);
+    var index: u32 = 0;
+    while (index < @as(u32, @intCast(@max(count, 0)))) : (index += 1) {
+        const pair = qjs.getAt(ctx, pairs, index);
+        defer qjs.free(ctx, pair);
+        const name = qjs.getAt(ctx, pair, 0);
+        defer qjs.free(ctx, name);
+        const value = qjs.getAt(ctx, pair, 1);
+        defer qjs.free(ctx, value);
+        if (qjs.isUndefined(value)) continue;
+        const told = qjs.call(ctx, argv[0], qjs.undefinedValue(), 3, &[_]Value{ value, name, this });
+        qjs.free(ctx, told);
+    }
+    return qjs.undefinedValue();
+}
+
+const headers_methods = [_]qjs.ListEntry{
+    .method("get", 1, &jsHeadersGet),
+    .method("has", 1, &jsHeadersHas),
+    .method("set", 2, &jsHeadersSet),
+    .method("append", 2, &jsHeadersAppend),
+    .method("delete", 1, &jsHeadersDelete),
+    .method("forEach", 1, &jsHeadersForEach),
+    .method("entries", 0, &jsHeadersEntries),
+    .method("keys", 0, headersSide(0)),
+    .method("values", 0, headersSide(1)),
+};
 
 /// `fetch`: ask the browser for a page, and promise its answer, which comes
 /// on a later pass.
@@ -3387,6 +3591,13 @@ fn furnish(it: *Document) void {
 
     _ = qjs.addList(ctx, global, &window_methods, window_methods.len);
     _ = qjs.addList(ctx, global, &window_constructors, window_constructors.len);
+    // `Headers` is a class: its methods sit on a prototype, which the
+    // scripts of many sites read before they use or patch it.
+    it.headers_proto = qjs.newObject(ctx);
+    _ = qjs.addList(ctx, it.headers_proto, &headers_methods, headers_methods.len);
+    const headers_class = qjs.getStr(ctx, global, "Headers");
+    defer qjs.free(ctx, headers_class);
+    qjs.setConstructor(ctx, headers_class, it.headers_proto);
     inline for (.{ "MutationObserver", "IntersectionObserver", "ResizeObserver", "PerformanceObserver" }) |one| {
         _ = qjs.setStr(ctx, global, one, qjs.newConstructor(ctx, one, 1, &jsWatcher));
     }

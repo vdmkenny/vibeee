@@ -295,6 +295,8 @@ extern fn JS_ExecutePendingJob(rt: *Runtime, pctx: *?*Context) c_int;
 
 extern fn JS_GetGlobalObject(ctx: *Context) Value;
 extern fn JS_NewObject(ctx: *Context) Value;
+extern fn JS_NewObjectProto(ctx: *Context, proto: Value) Value;
+extern fn JS_SetConstructor(ctx: *Context, function: Value, proto: Value) void;
 extern fn JS_NewObjectClass(ctx: *Context, class_id: c_int) Value;
 extern fn JS_NewArray(ctx: *Context) Value;
 extern fn JS_NewStringLen(ctx: *Context, text: [*]const u8, len: usize) Value;
@@ -352,6 +354,11 @@ pub const executePendingJob = JS_ExecutePendingJob;
 
 pub const globalOf = JS_GetGlobalObject;
 pub const newObject = JS_NewObject;
+/// An object whose prototype is `proto`: an instance of the class the
+/// prototype's methods make.
+pub const newObjectProto = JS_NewObjectProto;
+/// Give a constructor its prototype, and the prototype its constructor.
+pub const setConstructor = JS_SetConstructor;
 pub const newObjectIn = JS_NewObjectClass;
 pub const newArray = JS_NewArray;
 pub const newString = JS_NewStringLen;
