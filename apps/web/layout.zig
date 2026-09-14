@@ -1083,10 +1083,10 @@ fn Placer(comptime Metrics: type) type {
                     item.x = x + (if (down) self.offsetOf(how, wide, width) else item.along);
                     try self.lay(item, y, width);
                     if (down) {
-                        if (item.main == null) item.main = self.held(item.tall, item.style.min_height, item.style.max_height, wide);
+                        if (item.main == null) item.main = self.heldTall(item.tall, item.style.min_height, item.style.max_height);
                         across = @max(across, item.main.?);
                     } else {
-                        item.tall = self.held(item.tall, item.style.min_height, item.style.max_height, wide);
+                        item.tall = self.heldTall(item.tall, item.style.min_height, item.style.max_height);
                         across = @max(across, item.cross orelse item.tall);
                     }
                 }
@@ -1114,9 +1114,9 @@ fn Placer(comptime Metrics: type) type {
             // The container is as long as its rows come to, or as it says.
             var tall = y - top;
             for ([_]page_mod.Unit{ style.min_height, style.height }) |unit| {
-                if (self.resolved(unit, self.viewport.h)) |least| tall = @max(tall, least);
+                if (self.upright(unit)) |least| tall = @max(tall, least);
             }
-            if (self.resolved(style.max_height, self.viewport.h)) |most| tall = @min(tall, most);
+            if (self.upright(style.max_height)) |most| tall = @min(tall, most);
             // A column with room to spare puts its items where it says.
             if (down and tall > y - top) {
                 const left = tall - (y - top);
@@ -1187,13 +1187,15 @@ fn Placer(comptime Metrics: type) type {
             item.cross = if (down)
                 self.sized(style.width, style.min_width, style.max_width, wide)
             else
-                self.sized(style.height, style.min_height, style.max_height, wide);
+                self.sizedTall(style.height, style.min_height, style.max_height);
             const words = if (item.container) |which| try self.extentOf(which) else self.blockExtent(self.page.blocks.items[item.block.?]);
             item.least = words.least;
             item.most = words.most;
-            if (self.resolved(main_unit, wide)) |given| {
+            if (down) {
+                if (self.upright(main_unit)) |given| item.main = self.heldTall(given, least_unit, most_unit);
+            } else if (self.resolved(main_unit, wide)) |given| {
                 item.main = self.held(given, least_unit, most_unit, wide);
-            } else if (!down) {
+            } else {
                 item.main = self.held(@min(words.most, wide), least_unit, most_unit, wide);
             }
         }
@@ -1448,6 +1450,32 @@ fn Placer(comptime Metrics: type) type {
                 .vh => |share| share / 100 * @as(f32, @floatFromInt(self.viewport.h)),
             };
             return @intFromFloat(@round(value));
+        }
+
+        /// What a length down the page says in pixels: as `resolved`, but a
+        /// share of a height not known is nothing, as a browser reads a
+        /// share of a box that is as tall as its words.
+        fn upright(self: *const Self, unit: page_mod.Unit) ?i32 {
+            return switch (unit) {
+                .percent => null,
+                else => self.resolved(unit, self.viewport.h),
+            };
+        }
+
+        /// `size` held between the least and most a box says down the page.
+        fn heldTall(self: *const Self, size: i32, least: page_mod.Unit, most: page_mod.Unit) i32 {
+            var value = size;
+            if (self.upright(least)) |low| value = @max(value, low);
+            if (self.upright(most)) |high| value = @min(value, high);
+            return value;
+        }
+
+        /// What a box is given down the page: the height it says, held
+        /// between the least and most it says. Nothing where it says
+        /// nothing, or says a share of a height not known.
+        fn sizedTall(self: *const Self, unit: page_mod.Unit, least: page_mod.Unit, most: page_mod.Unit) ?i32 {
+            const size = self.upright(unit) orelse return self.upright(least);
+            return self.heldTall(size, least, most);
         }
 
         /// `size` held between the least and most a box says, where it says.
@@ -2529,4 +2557,20 @@ test "a box out of the flow is set where it is and takes no room, in a column an
         if (frags.len > 0 and std.mem.eql(u8, row.fragText(frags[0]), "cc")) lifted = line.y == 0 and frags[0].x == 0;
     }
     try testing.expect(lifted);
+}
+
+test "a height that is a share of a height not known is no height at all" {
+    // A box a hundred per cent tall in a row is as tall as its words, as it
+    // is in a browser; one a share of the window's height is that share.
+    var b = try flexed(200, flex, &.{
+        .{ .words = "aa", .style = .{ .height = .{ .percent = 100 } } },
+        .{ .words = "bb", .style = .{ .height = .{ .vh = 50 } } },
+    });
+    defer b.deinit();
+    try testing.expectEqual(@as(i32, 100), b.layout.placed.items[1].area.h);
+    try testing.expectEqual(@as(i32, 100), b.layout.placed.items[0].area.h);
+    try testing.expectEqual(@as(i32, 100), b.layout.height);
+    var alone = try flexed(200, flex, &.{.{ .words = "aa", .style = .{ .height = .{ .percent = 100 } } }});
+    defer alone.deinit();
+    try testing.expectEqual(@as(i32, 18), alone.layout.height);
 }

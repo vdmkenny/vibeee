@@ -234,6 +234,8 @@ pub const View = struct {
     /// or gave up, and the room it takes changed with it.
     stale: bool = false,
     scroll: i32 = 0,
+    /// The scrollbar's own state: the thumb being dragged, while it is.
+    bar: eui.scroll.State = .{},
     /// Where the page was last painted, at what scroll and in what tint: what
     /// a pass compares against to know how little it can paint.
     painted: ?Painted = null,
@@ -349,13 +351,18 @@ pub const View = struct {
 
     /// Draw the page into `area` and take what the pointer and the keyboard
     /// did to it and to its controls.
-    pub fn run(self: *View, gpa: std.mem.Allocator, ctx: *eui.Context, area: Rect, pictures: *const Pictures) ?Action {
+    pub fn run(self: *View, gpa: std.mem.Allocator, ctx: *eui.Context, whole: Rect, pictures: *const Pictures) ?Action {
         const page = self.page orelse return null;
         // The page and every control on it in the shade pages are drawn in,
         // whatever the interface's is.
         const tint = eui.theme.tintFor(self.shade);
         const outside = eui.theme.wear(tint);
         defer eui.theme.unwear(outside);
+        // The scrollbar's strip at the right is kept whether the page
+        // scrolls or not, so the column is one width and the page is not
+        // laid out again as it grows past the window.
+        const bar = Rect{ .x = whole.x + whole.w - eui.scroll.WIDTH, .y = whole.y, .w = eui.scroll.WIDTH, .h = whole.h };
+        const area = Rect{ .x = whole.x, .y = whole.y, .w = @max(whole.w - eui.scroll.WIDTH, 0), .h = whole.h };
         const metrics = Metrics{ .scale = eui.theme.textScale(), .pictures = pictures };
         const column = columnOf(area, metrics.scale);
         const spacing = Spacing.forLine(metrics.height(.body));
@@ -386,7 +393,7 @@ pub const View = struct {
 
         const line = metrics.height(.body);
         var scroll = self.scroll;
-        if (it.over) scroll -= @as(i32, ctx.takeWheel()) * line * WHEEL_LINES;
+        if (it.over or bar.contains(ctx.pointer_x, ctx.pointer_y)) scroll -= @as(i32, ctx.takeWheel()) * line * WHEEL_LINES;
         if (ctx.takeKeyFor(entry)) |key| {
             const leaf = area.h - line;
             scroll = switch (key) {
@@ -403,6 +410,9 @@ pub const View = struct {
         // does not sit on the status bar.
         const reach = @max(self.layout.height + line - area.h, 0);
         scroll = std.math.clamp(scroll, 0, reach);
+        // The scrollbar says where the page stands, and a drag on its thumb
+        // or a click on its track moves it.
+        scroll = @intCast(eui.scroll.vertical(ctx, bar, &self.bar, @intCast(scroll), @intCast(self.layout.height + line), @intCast(area.h)));
 
         self.hover = if (it.over) self.linkAt(page, column, area, ctx.pointer_x, ctx.pointer_y) else null;
 
