@@ -679,6 +679,33 @@ test "a stylesheet's flex and grid words are read: the shorthand, wrapping, the 
     try testing.expectEqual(page_mod.Unit{ .px = 150 }, boxes[at + 5].style.columns.fit);
 }
 
+test "a sheet's variables stand for what its root sets, or the fallback, and a positioned box is out of the flow" {
+    const it = try opened("<!DOCTYPE html><html><body><p id=\"a\">a</p><p id=\"b\">b</p></body></html>", false);
+    defer it.end();
+    css.apply(heap, it.tree,
+        \\:root { --gap: 12px; --ink: #123456; --room: var(--gap); }
+        \\html { --gap: 20px; }
+        \\@supports (display: grid) { :root { --wide: 300px; } }
+        \\#a { display: flex; gap: var(--gap); color: var(--ink); padding: var(--room); margin: var(--nowhere, 4px); width: var(--wide); }
+        \\#b { position: absolute; }
+    , null, &rules);
+    var page = try it.page();
+    defer page.deinit(heap);
+    const boxes = page.containers.items;
+    var at: usize = 0;
+    while (at < boxes.len and boxes[at].style.display != .flex) at += 1;
+    try testing.expect(at + 1 < boxes.len);
+    const a = boxes[at].style;
+    // The later setting of the gap, on html, is the one read.
+    try testing.expectEqual(page_mod.Unit{ .px = 20 }, a.gap);
+    try testing.expectEqual(page_mod.Unit{ .px = 20 }, a.padding.left);
+    try testing.expectEqual(page_mod.Unit{ .px = 4 }, a.margin.top);
+    try testing.expectEqual(page_mod.Unit{ .px = 300 }, a.width);
+    try testing.expect(std.mem.findScalar(rgb.Colour, page.palette.items, .hex(0x123456)) != null);
+    try testing.expect(!a.out_of_flow);
+    try testing.expect(boxes[at + 1].style.out_of_flow);
+}
+
 test "a box with room and a ground of its own is kept as a block with both, for the layout to set" {
     const it = try opened(
         "<!DOCTYPE html><html><body><p>plain</p><div class=\"card\"><p>inside</p></div>" ++

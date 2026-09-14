@@ -755,6 +755,11 @@ fn walk(text: []const u8, screen: ?Screen, to: anytype, depth: usize) @TypeOf(to
                         break :kept yes;
                     },
                     .layer => true,
+                    // What a page asks whether the browser supports, it is
+                    // taken to support, unless the block is for when it
+                    // does not: the rules inside are the ones written for
+                    // browsers of today, which this one draws as best it can.
+                    .supports => !std.ascii.startsWithIgnoreCase(std.mem.trimStart(u8, rule.prelude, &std.ascii.whitespace), "not"),
                     .other => false,
                 };
                 if (kept) try walk(inner, screen, to, depth + 1);
@@ -796,7 +801,7 @@ const AtRule = struct {
     /// Where the text after it starts.
     end: usize,
 
-    const Kind = enum { media, layer, other };
+    const Kind = enum { media, layer, supports, other };
 
     fn at(text: []const u8, start: usize) AtRule {
         var i = start + 1;
@@ -806,6 +811,8 @@ const AtRule = struct {
             .media
         else if (std.ascii.eqlIgnoreCase(name, "layer"))
             .layer
+        else if (std.ascii.eqlIgnoreCase(name, "supports"))
+            .supports
         else
             .other;
 
@@ -1004,8 +1011,8 @@ test "a block for the window is put in place, and one that is not is left out" {
     try expectFlat("@media screen{@media (min-width:640px){a{}}@media (min-width:1200px){b{}}}", "a{}");
 }
 
-test "a layer's rules stay, and every other at-rule goes" {
-    try expectFlat("@layer base{a{}}@layer x;@supports (display:grid){b{}}@import url(x.css);@font-face{font-family:x}c{}", "a{}c{}");
+test "a layer's rules stay, a supports block's do unless it is for what is not supported, and every other at-rule goes" {
+    try expectFlat("@layer base{a{}}@layer x;@supports (display:grid){b{}}@supports not (display:grid){z{}}@import url(x.css);@font-face{font-family:x}c{}", "a{}b{}c{}");
 }
 
 test "strings, comments and escapes keep their brackets to themselves" {

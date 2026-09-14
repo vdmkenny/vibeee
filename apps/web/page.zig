@@ -129,6 +129,10 @@ pub const BoxStyle = struct {
     columns: Tracks = .{},
     /// How many of a grid's columns this box spans.
     span: u8 = 1,
+    /// Whether the box is out of the flow, positioned absolutely or fixed
+    /// to the window: laid out where it is, but taking no room, so what
+    /// follows it goes where it would have gone without it.
+    out_of_flow: bool = false,
     width: Unit = .auto,
     height: Unit = .auto,
     min_width: Unit = .auto,

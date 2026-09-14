@@ -90,6 +90,7 @@ pub fn boxStyle(node: *const Node, fallback: page_mod.BoxStyle.Display) page_mod
         .basis = flexing.basis,
         .columns = tracksOf(node),
         .span = spanOf(node),
+        .out_of_flow = outOfFlow(node),
         .width = lengthOf(node, .width),
         .height = lengthOf(node, .height),
         .min_width = lengthOf(node, .min_width),
@@ -258,6 +259,14 @@ fn directionOf(node: *const Node) page_mod.BoxStyle.Direction {
         .column, .column_reverse => .column,
         else => .row,
     };
+}
+
+/// Whether a box is taken out of the flow: `position: absolute`, or `fixed`,
+/// which this browser lays out where the box is rather than where the
+/// window's edge is, but without room in the flow either way.
+fn outOfFlow(node: *const Node) bool {
+    const position = valueOf(lexbor.Single, node, .position) orelse return false;
+    return position.kind == .absolute or position.kind == .fixed;
 }
 
 /// Whether a flex container's items go on to another row when they do not
@@ -870,9 +879,14 @@ pub fn apply(gpa: Allocator, document: *lexbor.Document, text: []const u8, scree
     var w: std.Io.Writer = .fixed(flat);
     media.flatten(text, screen, &w) catch return;
     const flattened = w.buffered();
+    // And with what its variables stand for written where they are used,
+    // since upstream reads `var()` as nothing.
+    var replaced = substituted(gpa, flattened) catch return;
+    defer replaced.deinit(gpa);
+    const written = if (replaced.items.len > 0) replaced.items else flattened;
 
     const sheet = lexbor.lxb_css_stylesheet_create(cascade.memory) orelse return;
-    if (lexbor.lxb_css_stylesheet_parse(sheet, cascade.parser, flattened.ptr, flattened.len) != .ok) return;
+    if (lexbor.lxb_css_stylesheet_parse(sheet, cascade.parser, written.ptr, written.len) != .ok) return;
     const root = sheet.root orelse return;
     if (root.kind != .list) return;
     const list: *const lexbor.RuleList = @fieldParentPtr("rule", root);
@@ -885,6 +899,110 @@ pub fn apply(gpa: Allocator, document: *lexbor.Document, text: []const u8, scree
         rules.add(gpa, style);
     }
 }
+
+/// The sheet with every `var()` replaced by what the variable stands for:
+/// what the sheet's `:root` and `html` rules set it to, the last setting
+/// winning, or the fallback the `var()` names where they set nothing. A
+/// variable set on any other element is not read, so a theme a page keeps
+/// on a class reads as the page's first. Empty where the sheet uses no
+/// variable, which leaves it as it is.
+fn substituted(gpa: Allocator, sheet: []const u8) Allocator.Error!std.ArrayList(u8) {
+    var out: std.ArrayList(u8) = .empty;
+    if (std.mem.indexOf(u8, sheet, "var(") == null) return out;
+    var variables = Variables{};
+    defer variables.deinit(gpa);
+    try variables.gather(gpa, sheet);
+    errdefer out.deinit(gpa);
+    try out.ensureTotalCapacity(gpa, sheet.len);
+    try variables.write(gpa, sheet, &out, 0);
+    return out;
+}
+
+/// What a sheet's variables stand for, by name.
+const Variables = struct {
+    values: std.StringHashMapUnmanaged([]const u8) = .empty,
+
+    /// How deep a variable may stand for another before it is left unread.
+    const DEPTH_MAX = 8;
+
+    fn deinit(self: *Variables, gpa: Allocator) void {
+        self.values.deinit(gpa);
+    }
+
+    /// Read the `--name: value` declarations of every `:root` and `html`
+    /// rule, into the blocks an `@supports` or `@layer` holds, the later
+    /// setting of a name replacing the earlier.
+    fn gather(self: *Variables, gpa: Allocator, sheet: []const u8) Allocator.Error!void {
+        var at: usize = 0;
+        while (std.mem.indexOfScalarPos(u8, sheet, at, '{')) |open| {
+            const close = closing(sheet, open) orelse return;
+            const selector = std.mem.trim(u8, sheet[at..open], &std.ascii.whitespace);
+            const inside = sheet[open + 1 .. close];
+            if (selector.len > 0 and selector[0] == '@') {
+                if (std.ascii.startsWithIgnoreCase(selector, "@supports") or std.ascii.startsWithIgnoreCase(selector, "@layer")) try self.gather(gpa, inside);
+            } else if (isRoot(selector)) {
+                var declarations = std.mem.splitScalar(u8, inside, ';');
+                while (declarations.next()) |declaration| {
+                    const colon = std.mem.indexOfScalar(u8, declaration, ':') orelse continue;
+                    const name = std.mem.trim(u8, declaration[0..colon], &std.ascii.whitespace);
+                    if (!std.mem.startsWith(u8, name, "--")) continue;
+                    try self.values.put(gpa, name, std.mem.trim(u8, declaration[colon + 1 ..], &std.ascii.whitespace));
+                }
+            }
+            at = close + 1;
+        }
+    }
+
+    /// Whether a rule's selectors name the root, alone or among others.
+    fn isRoot(selector: []const u8) bool {
+        var each = std.mem.splitScalar(u8, selector, ',');
+        while (each.next()) |one| {
+            const name = std.mem.trim(u8, one, &std.ascii.whitespace);
+            if (std.mem.eql(u8, name, ":root") or std.ascii.eqlIgnoreCase(name, "html")) return true;
+        }
+        return false;
+    }
+
+    /// Write `text` into `out` with each `var()` in it replaced, as deep as
+    /// a variable stands for another.
+    fn write(self: *const Variables, gpa: Allocator, text: []const u8, out: *std.ArrayList(u8), depth: usize) Allocator.Error!void {
+        var at: usize = 0;
+        while (std.mem.indexOfPos(u8, text, at, "var(")) |found| {
+            try out.appendSlice(gpa, text[at..found]);
+            const close = closing(text, found + 3) orelse {
+                at = found;
+                break;
+            };
+            const inside = text[found + 4 .. close];
+            const comma = std.mem.indexOfScalar(u8, inside, ',');
+            const name = std.mem.trim(u8, if (comma) |c| inside[0..c] else inside, &std.ascii.whitespace);
+            if (self.values.get(name)) |value| {
+                if (depth < DEPTH_MAX) try self.write(gpa, value, out, depth + 1) else try out.appendSlice(gpa, value);
+            } else if (comma) |c| {
+                try self.write(gpa, std.mem.trim(u8, inside[c + 1 ..], &std.ascii.whitespace), out, depth + 1);
+            } else {
+                try out.appendSlice(gpa, text[found .. close + 1]);
+            }
+            at = close + 1;
+        }
+        try out.appendSlice(gpa, text[at..]);
+    }
+
+    /// Where the parenthesis or brace opened at `open` closes, counting the
+    /// ones inside it, or nothing where it never does.
+    fn closing(text: []const u8, open: usize) ?usize {
+        const shut: u8 = if (text[open] == '{') '}' else ')';
+        var depth: usize = 0;
+        for (text[open..], open..) |c, index| {
+            if (c == '{' or c == '(') depth += 1;
+            if (c == '}' or c == ')') {
+                depth -= 1;
+                if (depth == 0) return if (c == shut) index else null;
+            }
+        }
+        return null;
+    }
+};
 
 /// Match every rule again against `root` and everything under it, as a
 /// browser does where a script has put a piece of page in: what the sheets
@@ -943,7 +1061,7 @@ fn honoured(style: *const lexbor.StyleRule) bool {
         if (rule.kind != .declaration) continue;
         const declaration: *const lexbor.Declaration = @fieldParentPtr("rule", rule);
         switch (declaration.property) {
-            .display, .width, .height, .min_width, .min_height, .max_width, .max_height, .flex, .flex_basis, .flex_direction, .flex_flow, .flex_grow, .flex_shrink, .flex_wrap, .justify_content, .align_items, .align_self, .visibility, .opacity, .color, .background_color, .text_align, .white_space, .margin, .margin_top, .margin_right, .margin_bottom, .margin_left, .padding, .padding_top, .padding_right, .padding_bottom, .padding_left, .border, .border_top, .border_right, .border_bottom, .border_left, .border_top_color, .border_right_color, .border_bottom_color, .border_left_color => return true,
+            .display, .position, .width, .height, .min_width, .min_height, .max_width, .max_height, .flex, .flex_basis, .flex_direction, .flex_flow, .flex_grow, .flex_shrink, .flex_wrap, .justify_content, .align_items, .align_self, .visibility, .opacity, .color, .background_color, .text_align, .white_space, .margin, .margin_top, .margin_right, .margin_bottom, .margin_left, .padding, .padding_top, .padding_right, .padding_bottom, .padding_left, .border, .border_top, .border_right, .border_bottom, .border_left, .border_top_color, .border_right_color, .border_bottom_color, .border_left_color => return true,
             .custom => {
                 const custom = customOf(declaration) orelse continue;
                 const name = custom.name.slice();

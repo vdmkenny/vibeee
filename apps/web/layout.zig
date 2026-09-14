@@ -265,6 +265,10 @@ pub fn buildIn(gpa: std.mem.Allocator, page: *const Page, viewport: Viewport, sp
     var p = Placer(@TypeOf(metrics)){ .gpa = gpa, .page = page, .out = &out, .metrics = metrics, .spacing = spacing, .viewport = viewport };
     try p.whole();
 
+    // A box out of the flow leaves its lines where what follows it goes
+    // too, so the lines are put in the order of their tops, which is the
+    // order a view reads them in.
+    if (p.lifted) std.sort.block(Line, out.lines.items, {}, topAbove);
     // A table's cells' lines stand side by side, and one may reach below the
     // next, so how far down any has reached is carried along.
     var reach: i32 = 0;
@@ -283,7 +287,7 @@ pub fn buildIn(gpa: std.mem.Allocator, page: *const Page, viewport: Viewport, sp
 /// paint or leave. One set inline among words is its words' line's.
 fn wantsBox(box: page_mod.Container) bool {
     const style = box.style;
-    if (style.display == .flex or style.display == .grid) return true;
+    if (style.display == .flex or style.display == .grid or style.out_of_flow) return true;
     if (style.display == .@"inline") return false;
     if (box.ground != .none) return true;
     const edges = [_]page_mod.Unit{
@@ -350,6 +354,8 @@ fn Placer(comptime Metrics: type) type {
         /// What each box's words would take at the least and at the most,
         /// once it has been asked.
         extents: []?Extent = &.{},
+        /// Whether any box was set out of the flow.
+        lifted: bool = false,
         /// Which way the block's lines lean.
         alignment: page_mod.Alignment = .start,
         /// The table cell being set, among the page's, while one is.
@@ -481,6 +487,18 @@ fn Placer(comptime Metrics: type) type {
             const padding = if (boxed) self.roomOf(style.padding, room) else Room{};
             const edges = if (boxed) self.edgesOf(style.border, room) else Fill.Edges{};
             const lined = edges.top.width > 0 or edges.right.width > 0 or edges.bottom.width > 0 or edges.left.width > 0;
+
+            // A box out of the flow is set where it is and then stepped
+            // back over, so what follows it goes where it would have gone.
+            const before_y = self.y;
+            const before_owed = self.owed;
+            const before_previous = self.previous;
+            defer if (style.out_of_flow) {
+                self.y = before_y;
+                self.owed = before_owed;
+                self.previous = before_previous;
+                self.lifted = true;
+            };
 
             if (self.previous) |before| self.leave(gap(self.spacing, before, self.page.blocks.items[span.first]));
             self.leave(margin.top);
@@ -1034,14 +1052,23 @@ fn Placer(comptime Metrics: type) type {
             const first_line = self.out.lines.items.len;
 
             for (items.items) |*item| try self.measure(item, down, wide);
+            // The items in the flow are the rows'; the ones out of it are
+            // set over the container's start, taking no room.
+            var flowing: usize = items.items.len;
+            while (flowing > 0 and items.items[flowing - 1].style.out_of_flow) flowing -= 1;
+            for (items.items[flowing..]) |*item| {
+                item.x = x;
+                try self.lay(item, top, item.main orelse wide);
+                self.y = top;
+            }
             var rows: std.ArrayList(Row) = .empty;
             defer rows.deinit(self.gpa);
             if (down) {
-                for (items.items, 0..) |_, at| try rows.append(self.gpa, .{ .first = at, .end = at + 1 });
+                for (0..flowing) |at| try rows.append(self.gpa, .{ .first = at, .end = at + 1 });
             } else if (style.display == .grid) {
-                try self.gridRows(&rows, items.items, style.columns, wide, between);
+                try self.gridRows(&rows, items.items[0..flowing], style.columns, wide, between);
             } else {
-                try self.flexRows(&rows, items.items, style.wrap, style.justify, wide, between);
+                try self.flexRows(&rows, items.items[0..flowing], style.wrap, style.justify, wide, between);
             }
 
             // Each row's items are set where they go along it, then
@@ -1098,8 +1125,8 @@ fn Placer(comptime Metrics: type) type {
                     .center => @divTrunc(left, 2),
                     .end => left,
                 };
-                const extra: i32 = if (style.justify == .between and items.items.len > 1) @divTrunc(left, @as(i32, @intCast(items.items.len - 1))) else 0;
-                for (items.items, self.out.placed.items[self.out.placed.items.len - items.items.len ..]) |item, *placed| {
+                const extra: i32 = if (style.justify == .between and flowing > 1) @divTrunc(left, @as(i32, @intCast(flowing - 1))) else 0;
+                for (items.items[0..flowing], self.out.placed.items[self.out.placed.items.len - flowing ..]) |item, *placed| {
                     placed.area.y += along;
                     self.shift(item, 0, along);
                     along += extra;
@@ -1345,6 +1372,10 @@ fn Placer(comptime Metrics: type) type {
         fn gather(self: *Self, index: u32) Error!std.ArrayList(Item) {
             var items: std.ArrayList(Item) = .empty;
             errdefer items.deinit(self.gpa);
+            // The boxes out of the flow go last, since they are no items of
+            // a row but are set over its start.
+            var lifted: std.ArrayList(Item) = .empty;
+            defer lifted.deinit(self.gpa);
             const span = self.owns(index);
             var kids = self.page.childrenOf(index);
             var kid = kids.next();
@@ -1363,13 +1394,15 @@ fn Placer(comptime Metrics: type) type {
                     break;
                 }
                 if (which) |next| {
-                    try items.append(self.gpa, .{ .container = next, .style = self.page.containers.items[next].style });
+                    const style = self.page.containers.items[next].style;
+                    try (if (style.out_of_flow) &lifted else &items).append(self.gpa, .{ .container = next, .style = style });
                     at = @max(at, self.owns(next).end);
                     continue;
                 }
                 try items.append(self.gpa, .{ .block = at });
                 at += 1;
             }
+            try items.appendSlice(self.gpa, lifted.items);
             return items;
         }
 
@@ -2463,4 +2496,37 @@ test "an em is sixteen pixels" {
     var b = try flexed(200, .{ .display = .flex, .gap = .{ .em = 1 } }, &.{ .{ .words = "aa" }, .{ .words = "bb" } });
     defer b.deinit();
     try testing.expectEqual(@as(i32, 28), b.layout.placed.items[1].area.x);
+}
+
+test "a box out of the flow is set where it is and takes no room, in a column and in a row" {
+    var column = try flexed(200, .{ .display = .block }, &.{
+        .{ .words = "aa", .style = .{ .display = .block, .out_of_flow = true } },
+        .{ .words = "bb", .style = .{ .display = .block } },
+    });
+    defer column.deinit();
+    // Both words begin at the top: the lifted one, and the one after it,
+    // which goes where it would have gone without it.
+    try testing.expectEqual(@as(usize, 2), column.layout.lines.items.len);
+    try testing.expectEqual(@as(i32, 0), column.layout.lines.items[0].y);
+    try testing.expectEqual(@as(i32, 0), column.layout.lines.items[1].y);
+    try testing.expectEqual(@as(i32, 18), column.layout.height);
+
+    var row = try flexed(200, flex, &.{
+        .{ .words = "aa" },
+        .{ .words = "cc", .style = .{ .out_of_flow = true } },
+        .{ .words = "bb" },
+    });
+    defer row.deinit();
+    // The lifted box is no item of the row: the two others stand side by
+    // side as if it were not there, and it is set over the row's start.
+    const placed = row.layout.placed.items;
+    try testing.expectEqual(@as(usize, 2), placed.len);
+    try testing.expectEqual(@as(i32, 12), placed[1].area.x);
+    try testing.expectEqual(@as(i32, 18), row.layout.height);
+    var lifted = false;
+    for (row.layout.lines.items) |line| {
+        const frags = row.layout.fragsOf(line);
+        if (frags.len > 0 and std.mem.eql(u8, row.fragText(frags[0]), "cc")) lifted = line.y == 0 and frags[0].x == 0;
+    }
+    try testing.expect(lifted);
 }
