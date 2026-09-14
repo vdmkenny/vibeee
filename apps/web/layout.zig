@@ -1131,8 +1131,10 @@ fn Placer(comptime Metrics: type) type {
         /// their widest word.
         fn flex(self: *Self, index: u32, x: i32, room: i32) Error!void {
             const style = self.page.containers.items[index].style;
-            // The room its items share is what it is given, where it says.
-            const wide = @max(self.sized(style.width, style.min_width, style.max_width, room) orelse room, 0);
+            // The room its items share is what it is given, where it says,
+            // and the room there is otherwise, held to the least and most
+            // it says.
+            const wide = @max(self.sized(style.width, style.min_width, style.max_width, room) orelse self.held(room, style.min_width, style.max_width, room), 0);
             var items = try self.gather(index);
             defer items.deinit(self.gpa);
             try self.layRows(items.items, style, x, wide);
@@ -1594,10 +1596,10 @@ fn Placer(comptime Metrics: type) type {
         }
 
         /// What a box is given down the page: the height it says, held
-        /// between the least and most it says. Nothing where it says
-        /// nothing, or says a share of a height not known.
+        /// between the least and most it says. Nothing where it says no
+        /// height, or says a share of a height not known.
         fn sizedTall(self: *const Self, unit: page_mod.Unit, least: page_mod.Unit, most: page_mod.Unit) ?i32 {
-            const size = self.upright(unit) orelse return self.upright(least);
+            const size = self.upright(unit) orelse return null;
             return self.heldTall(size, least, most);
         }
 
@@ -1610,9 +1612,10 @@ fn Placer(comptime Metrics: type) type {
         }
 
         /// What a box is given on one axis: the length it says, held between
-        /// the least and most it says. Nothing where it says nothing.
+        /// the least and most it says. Nothing where it says no length,
+        /// whatever least or most it says: those hold what it comes to.
         fn sized(self: *const Self, unit: page_mod.Unit, least: page_mod.Unit, most: page_mod.Unit, base: i32) ?i32 {
-            const size = self.resolved(unit, base) orelse return self.resolved(least, base);
+            const size = self.resolved(unit, base) orelse return null;
             return self.held(size, least, most, base);
         }
 
@@ -2803,4 +2806,29 @@ test "an item holding a wide picture the page lets shrink shrinks with its row" 
     try testing.expectEqual(@as(usize, 2), placed.len);
     try testing.expect(placed[0].area.w + placed[1].area.w <= 400);
     try testing.expect(placed[1].area.x + placed[1].area.w <= 400);
+}
+
+test "a least width or height holds what a box comes to, and gives it no size of its own" {
+    // A grid that may be no narrower than nought is as wide as its room,
+    // and its columns share that.
+    var columns = page_mod.Tracks{};
+    try columns.named.append(.{ .share = 1 });
+    try columns.named.append(.{ .share = 1 });
+    var grid = try flexed(300, .{ .display = .grid, .columns = columns, .min_width = .{ .px = 0 } }, &.{
+        .{ .words = "aa", .style = .{ .min_width = .{ .px = 0 } } },
+        .{ .words = "bb", .style = .{ .min_height = .{ .px = 0 } } },
+    });
+    defer grid.deinit();
+    try testing.expectEqual(@as(i32, 150), grid.layout.placed.items[0].area.w);
+    try testing.expectEqual(@as(i32, 150), grid.layout.placed.items[1].area.x);
+    // An item that may be no shorter than forty is forty tall with one line
+    // of words, and one that may be no narrower than a hundred is a hundred
+    // wide with two letters.
+    var row = try flexed(300, flex, &.{
+        .{ .words = "aa", .style = .{ .min_height = .{ .px = 40 } } },
+        .{ .words = "bb", .style = .{ .min_width = .{ .px = 100 } } },
+    });
+    defer row.deinit();
+    try testing.expectEqual(@as(i32, 40), row.layout.placed.items[0].area.h);
+    try testing.expectEqual(@as(i32, 100), row.layout.placed.items[1].area.w);
 }
