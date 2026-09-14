@@ -1,9 +1,9 @@
-//! A parsed page, walked into what this reader keeps.
+//! A parsed page, walked into what this browser keeps.
 //!
 //! Each element is asked one question: what does it do to the words inside
 //! it? Most do nothing, and their words read as the text around them. A few
 //! start a block, a few change the face or make a link, and a few hold
-//! nothing a reader should see. The answer is `Role`, and the walk is that
+//! nothing a browser should see. The answer is `Role`, and the walk is that
 //! table applied in document order.
 //!
 //! The whole page is walked, its menus and its footer with its content, and
@@ -44,7 +44,7 @@ const Swatch = page_mod.Swatch;
 
 /// What an element does to the words inside it.
 const Role = enum {
-    /// Nothing a reader sees: a script, a stylesheet, the head.
+    /// Nothing a browser sees: a script, a stylesheet, the head.
     hidden,
     /// Starts a block of body text and ends it.
     block,
@@ -74,9 +74,9 @@ const Role = enum {
     input,
     /// A button, whose label is the words inside it.
     button,
-    /// A list to choose from, of which the reader shows the chosen entry.
+    /// A list to choose from, of which the browser shows the chosen entry.
     select,
-    /// Room to type more than a line in, of which the reader offers a line.
+    /// Room to type more than a line in, of which the browser offers a line.
     textarea,
     /// Nothing: the words read as the text around them.
     none,
@@ -113,7 +113,7 @@ fn roleOf(tag: Tag) Role {
 /// What a role asks of the walk besides its own step. Three answers, packed
 /// into one small value for each role.
 const Traits = packed struct(u3) {
-    /// The walk goes inside it. One whose inside a reader never sees, or
+    /// The walk goes inside it. One whose inside a browser never sees, or
     /// whose inside is its own step, is passed over whole.
     walks: bool = true,
     /// It ends a block where it ends.
@@ -375,7 +375,7 @@ const Walker = struct {
             // A page that says an element is inline, or is no more than its
             // contents, means its words read where they stand, in the block
             // around them: `display` says as much whatever the element is
-            // called, and a block a piece would be the reader's shape and
+            // called, and a block a piece would be the browser's shape and
             // not the page's.
             .block, .quote => if (!css.flows(node)) try self.boundary(.paragraph),
             .heading => try self.boundary(.heading),
@@ -562,7 +562,7 @@ const Walker = struct {
     }
 
     /// The link an anchor makes: to an address, to a place on this page, or
-    /// to a script it runs. None for one that goes nowhere this reader
+    /// to a script it runs. None for one that goes nowhere this browser
     /// follows: no address, or another scheme.
     fn linkFor(self: *Walker, node: *Node) Error!?u16 {
         const href = lexbor.attribute(node, "href") orelse return null;
@@ -575,7 +575,7 @@ const Walker = struct {
 
     /// A picture: where it is, what the page says it shows, and the size the
     /// page gives it. One the page makes too small to see is a counter or a
-    /// spacer, and is not kept; one with nowhere this reader can fetch it
+    /// spacer, and is not kept; one with nowhere this browser can fetch it
     /// from is kept all the same, for what the page says it shows.
     fn picture(self: *Walker, node: *Node) Error!void {
         const width = pixelsOf(node, "width");
@@ -620,7 +620,7 @@ const Walker = struct {
             },
             .image => {
                 // An image button says where on the picture it was pressed,
-                // which a reader without the picture cannot, so it sends
+                // which a browser without the picture cannot, so it sends
                 // nothing of its own.
                 const label = lexbor.attribute(node, "alt") orelse "Submit";
                 try b.addControl(.{ .submit = .{ .label = try b.keep(label) } }, "", label, colours);
@@ -634,7 +634,7 @@ const Walker = struct {
                 .radio = kind == .radio,
             } }, name, value orelse "on", colours),
             // A button for a script, and a file to send, which is not
-            // something this reader does.
+            // something this browser does.
             .inert => {},
         }
     }
@@ -724,7 +724,7 @@ fn dataTable(table: *Node) bool {
     // has rows to speak of: a list of results, a glossary, a timetable, the
     // like. A table that lays a page out puts a column of the page in a cell,
     // and that cell holds blocks, so it is read a row at a time instead. A
-    // grid is what a browser makes of a table, and this reader has one.
+    // grid is what a browser makes of a table, and this browser has one.
     return data or (rows >= 2 and !blocky);
 }
 

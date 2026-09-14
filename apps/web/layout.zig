@@ -337,7 +337,7 @@ fn Placer(comptime Metrics: type) type {
         previous: ?Block = null,
         /// The room already left below what was set last, which the room
         /// the next thing asks for above itself stands on rather than adds
-        /// to: a box's margin and the reader's own room between blocks meet
+        /// to: a box's margin and the browser's own room between blocks meet
         /// as two margins do, the larger of them the room there is.
         owed: i32 = 0,
         /// Where the box being set starts from the column's edge, and where
@@ -457,7 +457,7 @@ fn Placer(comptime Metrics: type) type {
         /// What the box `index` holds, set in a box `room` wide from `x`: its
         /// own blocks, and the boxes it holds among them, in the order they
         /// come. The room the box keeps outside itself, its margin, is left
-        /// around it, the room above standing in for the reader's own room
+        /// around it, the room above standing in for the browser's own room
         /// between blocks where it is the larger, as one margin does for
         /// another; the room it keeps inside itself, its padding, steps its
         /// content in and is what its own ground is painted over. A box set
@@ -1404,7 +1404,7 @@ fn Placer(comptime Metrics: type) type {
         }
 
         /// What a length says in pixels, where it says: nothing where a page
-        /// says `auto`, or a unit this reader does not read.
+        /// says `auto`, or a unit this browser does not read.
         fn resolved(self: *const Self, unit: page_mod.Unit, base: i32) ?i32 {
             const value: f32 = switch (unit) {
                 .auto => return null,
@@ -2127,20 +2127,20 @@ test "a box steps its words in by the room it keeps at its side, and is taller b
     try testing.expectEqual(@as(i32, 10 + 18 + 10), b.layout.height);
 }
 
-test "the room a box keeps above it stands in place of the reader's own, not on top of it" {
+test "the room a box keeps above it stands in place of the browser's own, not on top of it" {
     var b = try flexed(200, .{ .display = .block }, &.{
         .{ .words = "aa" },
         .{ .words = "bb", .style = .{ .display = .block, .margin = .{ .top = .{ .px = 30 } } } },
     });
     defer b.deinit();
     // The first box's line, then the second's, a plain thirty below it: the
-    // reader's own room between blocks does not land there as well.
+    // browser's own room between blocks does not land there as well.
     try testing.expectEqual(@as(usize, 2), b.layout.lines.items.len);
     try testing.expectEqual(@as(i32, 0), b.layout.lines.items[0].y);
     try testing.expectEqual(@as(i32, 18 + 30), b.layout.lines.items[1].y);
 }
 
-test "the room a box keeps below it stands in place of the reader's own too, and its padding does not" {
+test "the room a box keeps below it stands in place of the browser's own too, and its padding does not" {
     var spaced = try flexed(200, .{ .display = .block }, &.{
         .{ .words = "aa", .style = .{ .display = .block, .margin = .{ .bottom = .{ .px = 30 } } } },
         .{ .words = "bb" },
@@ -2148,7 +2148,7 @@ test "the room a box keeps below it stands in place of the reader's own too, and
     defer spaced.deinit();
     try testing.expectEqual(@as(i32, 18 + 30), spaced.layout.lines.items[1].y);
 
-    // A margin smaller than the reader's own room leaves the reader's.
+    // A margin smaller than the browser's own room leaves the browser's.
     var slight = try flexed(200, .{ .display = .block }, &.{
         .{ .words = "aa", .style = .{ .display = .block, .margin = .{ .bottom = .{ .px = 2 } } } },
         .{ .words = "bb" },
@@ -2156,7 +2156,7 @@ test "the room a box keeps below it stands in place of the reader's own too, and
     defer slight.deinit();
     try testing.expectEqual(@as(i32, 18 + eighteen.paragraph), slight.layout.lines.items[1].y);
 
-    // Padding is inside the box: the reader's room comes after it in full.
+    // Padding is inside the box: the browser's room comes after it in full.
     var padded = try flexed(200, .{ .display = .block }, &.{
         .{ .words = "aa", .style = .{ .display = .block, .padding = .{ .bottom = .{ .px = 30 } } } },
         .{ .words = "bb" },

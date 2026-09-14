@@ -1,8 +1,8 @@
-//! A page as this reader keeps it: the words in order, and what each run of
+//! A page as this browser keeps it: the words in order, and what each run of
 //! them is.
 //!
 //! The parser builds a tree of every element and attribute a page had, which
-//! is far more than a reader draws and, on a large page, several times the
+//! is far more than a browser draws and, on a large page, several times the
 //! page's own size. So the tree is walked once into this and let go: one
 //! buffer of text, runs over it, blocks over the runs, the strings, links,
 //! forms, controls and pictures the runs refer to beside them, and a compact
@@ -19,7 +19,7 @@ const Charset = @import("charset.zig").Charset;
 
 const Writer = std.Io.Writer;
 
-/// Which face words are set in. The reader has the interface family's two
+/// Which face words are set in. The browser has the interface family's two
 /// sizes and its monospaced face, and every element maps onto one of the
 /// three. There is no bold and no italic to map onto, so emphasis a page asks
 /// for reads as plain text rather than as a guess at it.
@@ -102,7 +102,7 @@ pub const Track = union(enum) {
     share: f32,
 };
 
-/// What a stylesheet says of a box that this reader lays out: whether it is
+/// What a stylesheet says of a box that this browser lays out: whether it is
 /// a flex or grid container, and the room it and its items are given.
 pub const BoxStyle = struct {
     display: Display = .@"inline",
@@ -436,7 +436,7 @@ pub const Option = struct {
 /// A picture the page shows among its words.
 pub const Picture = struct {
     /// Where it is, resolved against the page's own address, or empty where
-    /// the page gave nowhere this reader can fetch it from.
+    /// the page gave nowhere this browser can fetch it from.
     source: Span,
     /// What the page says it shows. It stands in for the picture until the
     /// picture arrives, and wherever it cannot.
@@ -734,7 +734,7 @@ pub const Builder = struct {
 
     /// A space is owed before whatever comes next, where it is not the start
     /// of a block: what two cells of a row read as one line have between
-    /// them, the column between them being nothing this reader draws.
+    /// them, the column between them being nothing this browser draws.
     pub fn oweSpace(self: *Builder) void {
         self.space = true;
     }
@@ -765,7 +765,7 @@ pub const Builder = struct {
     /// The spaces a page may write that are not ASCII: `&nbsp;`, the figure
     /// and narrow no-break spaces, and the ideographic one, as the bytes they
     /// arrive in. A page writes them to keep a line from breaking there, and
-    /// this reader breaks a line where it must, so they are read as the
+    /// this browser breaks a line where it must, so they are read as the
     /// spaces they are rather than as words of their own.
     const wide_spaces = [_][]const u8{ "\u{a0}", "\u{2007}", "\u{202f}", "\u{3000}" };
 

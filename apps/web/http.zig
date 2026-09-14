@@ -17,7 +17,7 @@ const rgb = @import("lib").rgb;
 const cookie = @import("cookie.zig");
 const url_mod = @import("url.zig");
 
-/// The largest request the reader puts together. Modern consent and sign-in
+/// The largest request the browser puts together. Modern consent and sign-in
 /// flows legitimately carry several kilobytes of cookies; a one-kilobyte
 /// header turns a received session into no session on the very next redirect.
 pub const REQUEST_MAX = url_mod.ADDRESS_MAX + 10 * 1024;
@@ -25,14 +25,14 @@ pub const REQUEST_MAX = url_mod.ADDRESS_MAX + 10 * 1024;
 const Url = url_mod.Url;
 const Writer = std.Io.Writer;
 
-/// What the reader calls itself to a site: the program and its version, the
+/// What the browser calls itself to a site: the program and its version, the
 /// system it runs on, and the kind of machine that is.
 pub const USER_AGENT = "vibeee-web/1.0 (vibeee; " ++ @tagName(builtin.cpu.arch) ++ ")";
 
 /// What a request is for, which says what the site is told.
 pub const Wanted = enum { page, style, script, picture };
 
-/// What a request tells the site the reader takes: a page as markup or as
+/// What a request tells the site the browser takes: a page as markup or as
 /// words, a stylesheet, a script, and a picture in a format its decoder
 /// reads, so that a site able to answer in several answers in one of those.
 const accepts = std.EnumArray(Wanted, []const u8).init(.{
@@ -70,7 +70,7 @@ pub const Asking = struct {
     width: ?u16 = null,
     /// What it carries, as the body of a POST, where it carries anything.
     sent: ?Payload = null,
-    /// The cookies the reader keeps, of which those for the site go with the
+    /// The cookies the browser keeps, of which those for the site go with the
     /// request as its `Cookie` line.
     jar: ?*const cookie.Jar = null,
 };
@@ -101,7 +101,7 @@ fn writeRequest(w: *Writer, url: Url, asking: Asking) Writer.Error!void {
             try w.writeAll("\r\n");
         }
     }
-    // The hints a reader sends only on a sealed connection: which shade the
+    // The hints a browser sends only on a sealed connection: which shade the
     // page is drawn in, and how wide a picture is drawn.
     if (url.scheme == .https) {
         try w.print("Sec-CH-Prefers-Color-Scheme: \"{t}\"\r\n", .{asking.shade});
@@ -109,7 +109,7 @@ fn writeRequest(w: *Writer, url: Url, asking: Asking) Writer.Error!void {
             if (asking.width) |width| try w.print("Sec-CH-Width: {d}\r\n", .{width});
         }
     }
-    // Identity, because the one thing a reader must not do with a page is
+    // Identity, because the one thing a browser must not do with a page is
     // fail to decompress it, and the saving on a small page is not worth a
     // second decoder in the image.
     try w.writeAll("Accept-Encoding: identity\r\nConnection: keep-alive\r\n");
@@ -180,7 +180,7 @@ pub const Chunked = struct {
     const Part = enum {
         /// The hexadecimal size, up to the end of its line.
         size,
-        /// Past a `;`: an extension, which says nothing a reader needs.
+        /// Past a `;`: an extension, which says nothing a browser needs.
         extension,
         data,
         /// The line end every chunk's data is followed by.
@@ -207,7 +207,7 @@ const Span = struct {
     }
 };
 
-/// The headers a reader acts on. Every other one is passed over.
+/// The headers a browser acts on. Every other one is passed over.
 const Header = enum { content_length, transfer_encoding, location, content_type, connection };
 
 const headers = std.StaticStringMapWithEql(Header, std.static_string_map.eqlAsciiIgnoreCase).initComptime(.{
@@ -316,7 +316,7 @@ pub const Response = struct {
         return after;
     }
 
-    /// Read the status and the headers a reader acts on, and say how the
+    /// Read the status and the headers a browser acts on, and say how the
     /// body is framed.
     fn parseHead(self: *Response) Error!Framing {
         const head = self.head.slice();

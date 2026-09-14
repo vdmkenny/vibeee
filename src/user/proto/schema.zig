@@ -202,22 +202,22 @@ pub const Program = Text(16, "a program's name, or empty for whichever will take
 /// A page's address, written as it would be typed.
 pub const Address = Text(80, "an address, or empty for none");
 
-/// The web reader's choices.
+/// The browser's choices.
 pub const Web = struct {
-    /// The page the reader opens when it is started without an address, and
-    /// the one its home key goes to. Empty opens nothing, and the reader
+    /// The page the browser opens when it is started without an address, and
+    /// the one its home key goes to. Empty opens nothing, and the browser
     /// waits for an address.
     homepage: Address = Address.of("https://lite.duckduckgo.com/lite/"),
     /// Whether a page's pictures are fetched and shown in it. Off, a page is
     /// its words, with a picture's description where the picture would be,
     /// which is quicker over a slow connection and lighter on memory.
     images: bool = true,
-    /// Whether the reader asks sites for the version of a page made for
+    /// Whether the browser asks sites for the version of a page made for
     /// small screens and slow connections. It says so with every request,
     /// and goes on to the version a page names as its alternate for a window
     /// as wide as the column it sets words in, which is how a page names its
-    /// version for small screens. A site whose version sends the reader on to
-    /// another site is not gone on to again while the reader runs. Off, it
+    /// version for small screens. A site whose version sends the browser on to
+    /// another site is not gone on to again while the browser runs. Off, it
     /// asks for pages without saying either.
     mobile: bool = true,
     /// Whether a page is drawn as its stylesheets ask, as far as a column of
@@ -231,15 +231,15 @@ pub const Web = struct {
     /// stylesheets, and a page that comes in the other shade all the same
     /// has its own colours turned over to sit in this one.
     theme: Shade = .auto,
-    /// Whether the reader keeps away from the sites on its blocklist: those
+    /// Whether the browser keeps away from the sites on its blocklist: those
     /// that serve ads, and those that count and follow the people reading.
     /// On, a page's pictures and stylesheets from them are not fetched, and
-    /// a page on one is not gone to. The list is fetched when the reader is
+    /// a page on one is not gone to. The list is fetched when the browser is
     /// built.
     ad_protection: bool = true,
     /// Whether a page's scripts are run. Off, a page reads as it was
     /// written, which is what a site that can do without them sends for a
-    /// reader that does not run any, and a page comes sooner for it. On,
+    /// browser that does not run any, and a page comes sooner for it. On,
     /// what a script makes of a page is what is drawn, under bounds on how
     /// much it may hold and how long it may run.
     scripts: bool = true,

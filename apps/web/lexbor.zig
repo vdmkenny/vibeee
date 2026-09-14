@@ -54,13 +54,13 @@ pub const Selectors = opaque {};
 /// One attribute of an element.
 pub const Attr = opaque {};
 
-/// The elements this reader has a rule for, numbered as upstream numbers
+/// The elements this browser has a rule for, numbered as upstream numbers
 /// them: an element's `local_name` is its number. Every value is pinned
 /// against upstream's own constant in `lexborport/layout_check.c`, so a
 /// renumbering upstream fails the build rather than turning paragraphs into
 /// something else.
 ///
-/// A tag not named here is not unknown to the parser. It is one this reader
+/// A tag not named here is not unknown to the parser. It is one this browser
 /// has no separate rule for, and its words read as the text around them.
 pub const Tag = enum(usize) {
     a = 0x0007,
@@ -509,7 +509,7 @@ pub const SelectorList = extern struct {
     specificity: u32,
 };
 
-/// The properties this reader acts on, numbered as upstream numbers them.
+/// The properties this browser acts on, numbered as upstream numbers them.
 pub const Property = enum(usize) {
     /// One upstream does not read, kept by name with its value as written.
     custom = 0x0001,
@@ -559,7 +559,7 @@ pub const Property = enum(usize) {
 };
 
 /// The four sides a `margin` or a `padding` shorthand sets, in the order
-/// upstream keeps them, each a length this reader reads as it reads a width.
+/// upstream keeps them, each a length this browser reads as it reads a width.
 /// A longhand such as `margin-left` is a `LengthPercentage` on its own.
 pub const Sides = extern struct {
     top: LengthPercentage,
@@ -568,7 +568,7 @@ pub const Sides = extern struct {
     left: LengthPercentage,
 };
 
-/// The keywords and kinds of value this reader tells apart, numbered as
+/// The keywords and kinds of value this browser tells apart, numbered as
 /// upstream numbers them. Anything else is a value it does not act on.
 pub const Keyword = enum(c_uint) {
     /// Nothing written: a side of a shorthand the page did not give.

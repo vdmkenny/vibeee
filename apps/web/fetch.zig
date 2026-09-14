@@ -153,7 +153,7 @@ pub const STALL_US: u64 = 30 * std.time.us_per_s;
 /// Every way a page can fail to arrive: the connection's own, the
 /// protocol's, and these.
 pub const Failure = ulib.wire.Error || http.Error || error{
-    /// Not an address this reader can ask a site for.
+    /// Not an address this browser can ask a site for.
     BadAddress,
     /// Sent on somewhere else more times than a page should need.
     RedirectLoop,
@@ -186,13 +186,13 @@ pub const Wait = union(enum) {
 
 pub const Fetch = struct {
     /// What is asked of the site: a page, a stylesheet or a picture, which
-    /// says what the site is told the reader takes and how large its answer
-    /// may be, and what the request says of the reader besides.
+    /// says what the site is told the browser takes and how large its answer
+    /// may be, and what the request says of the browser besides.
     asking: http.Asking = .{},
     /// The sites not to be reached, where there are any.
     blocklist: ?blocklist_mod.Blocklist = null,
     /// The cookies that go with each request and come back with each
-    /// answer, where the reader keeps any.
+    /// answer, where the browser keeps any.
     jar: ?*cookie.Jar = null,
     state: State = .idle,
     /// Where the page is: the address asked for, or after a redirect the one

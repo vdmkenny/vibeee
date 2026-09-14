@@ -697,7 +697,7 @@ pub const Context = struct {
     }
 
     /// A picture to press, flat on the strip it sits in until the pointer
-    /// comes to it: the back and forward keys of a reader, the tools along
+    /// comes to it: the back and forward keys of a browser, the tools along
     /// a strip. A row of framed buttons reads as a row of separate
     /// decisions, and a strip of tools is one thing.
     ///

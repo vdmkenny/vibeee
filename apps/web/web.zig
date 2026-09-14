@@ -1,21 +1,22 @@
-//! web: a reader for pages.
+//! web: a browser.
 //!
-//! What `design/00-vibeee.md` settled on: a reader for simple pages rather
-//! than a general browser. It asks a site for one page, reads the words out
-//! of the markup, and sets them in this system's own faces in a column the
-//! width a line reads best at. Of what a page's stylesheets say, it follows
-//! what a column of text can show: what they hide, the colours of words and
-//! of what they sit on, which way lines lean, and the boxes a page sets side
-//! by side. A page's pictures come after its words, one at a time, what the
-//! page says each one shows standing in for it until it is here.
+//! A small one, of this system's own: it asks a site for a page, reads the
+//! markup and its stylesheets into words and boxes, lays them out the width
+//! of the window in this system's own faces, and draws them. Of what a
+//! page's stylesheets say, it follows what it can draw: what they hide, the
+//! colours of words and of what they sit on, which way lines lean, the room
+//! a box keeps and the lines along its sides, and the rows, columns and
+//! grids a page sets its boxes in. A page's pictures come after its words,
+//! one at a time, what the page says each one shows standing in for it
+//! until it is here.
 //!
-//! A page's scripts run in the reader, on the tree the page was read from,
+//! A page's scripts run in the browser, on the tree the page was read from,
 //! under bounds: how much they may hold, how deep they may call, and how long
 //! each may run before it is stopped. What they change is read again and
 //! drawn. What they ask for from outside the page, a page fetched or a script
 //! by its address, they are answered on a later pass, the way a stylesheet
 //! comes; nothing a script does waits on the network. Where a script sends
-//! the reader, the reader goes once the script has returned.
+//! the browser, the browser goes once the script has returned.
 //!
 //! The parts each have a file: `url` for where things are, `http` and
 //! `fetch` for getting them, `cookie` for what sites set, `source` for a page
@@ -65,7 +66,7 @@ const Bounded = lib.bounded.Bounded;
 
 const blocklist_mod = @import("blocklist.zig");
 /// The names on the list, as the build wrote them out. Fetched and written
-/// by `gen_blocklist.zig`, which `build.zig` runs for every reader it builds.
+/// by `gen_blocklist.zig`, which `build.zig` runs for every browser it builds.
 const blocklist_data = @import("blocklist_data");
 const charset = @import("charset.zig");
 const cookie_mod = @import("cookie.zig");
@@ -124,7 +125,7 @@ var shown: Page = .{};
 /// differently in.
 var source: Source = .{};
 /// The page on screen as a tree, kept while its scripts run on it: what they
-/// change, the reader reads the page from again.
+/// change, the browser reads the page from again.
 var document: ?Tree = null;
 /// The scripts running on the page on screen, where any are.
 var scripts: ?*dom.Document = null;
@@ -150,16 +151,16 @@ var queued: dom.Scripts = .{};
 var queued_own: links.Link = .{ .address = "", .media = "" };
 
 const ScriptJob = union(enum) { idle, own, ask: u32 };
-/// The cookies sites set and scripts write, kept while the reader is open:
+/// The cookies sites set and scripts write, kept while the browser is open:
 /// they belong to a site, and go with every request to it.
 var jar: cookie_mod.Jar = .{};
-/// What sites put by through their scripts, kept while the reader is open.
+/// What sites put by through their scripts, kept while the browser is open.
 var store: storage_mod.Storage = .{};
 /// The pictures of the page on screen, and the fetch that brings them.
 var pictures: pictures_mod.Pictures = .{};
 var history: History = .{};
 
-/// The reader's settings as the store last had them, and the event that says
+/// The browser's settings as the store last had them, and the event that says
 /// they changed, where the store is there to give one.
 var choices: proto.settings.Web = .{};
 var settings_changed: ?u32 = null;
@@ -186,7 +187,7 @@ var repaint_wanted = false;
 /// How far down to open the page being fetched: where it was left, when it
 /// is one being gone back to.
 var pending_scroll: i32 = 0;
-/// Where the keyboard goes on the next pass: to the field when the reader
+/// Where the keyboard goes on the next pass: to the field when the browser
 /// opens with nowhere to go, and to the page once one has arrived.
 var focus_next: ?enum { field, page } = null;
 /// The page being visited was followed to the version for small screens it
@@ -195,9 +196,9 @@ var followed_mobile = false;
 /// The site that named the version for small screens being gone on to, and
 /// the site that version is on, until it has come.
 var detour: ?Detour = null;
-/// Sites whose version for small screens sent the reader straight on to
-/// another site, as a site that tells phones from other readers by what a
-/// reader calls itself does. Not gone on to again while the reader runs.
+/// Sites whose version for small screens sent the browser straight on to
+/// another site, as a site that tells phones from other browsers by what a
+/// browser calls itself does. Not gone on to again while the browser runs.
 var refused: Bounded(Host, REFUSED_MAX) = .{};
 const REFUSED_MAX = 16;
 
@@ -210,7 +211,7 @@ const Detour = struct { from: Host = .{}, to: Host = .{} };
 /// the page those answers made can be fetched again, which fetching a page
 /// again, or going back to one and on again, asks for, by sending them again
 /// rather than by asking for the empty form the site answers a GET with. One
-/// form's answers, the last sent, being all a reader with one page on screen
+/// form's answers, the last sent, being all a browser with one page on screen
 /// needs.
 var sending: Sending = .{};
 
@@ -243,7 +244,7 @@ const Sending = struct {
 var title_stale = true;
 
 /// How the page on screen got here, for the status line. None for a page the
-/// reader wrote itself to say why another is not here.
+/// browser wrote itself to say why another is not here.
 var arrived: ?Arrival = null;
 
 const Arrival = struct {
@@ -273,7 +274,7 @@ const Reading = struct {
     }
 };
 
-/// Where the reader is and where it has been, one entry per page gone to,
+/// Where the browser is and where it has been, one entry per page gone to,
 /// with how far down each was left so that going back returns to the place.
 const History = struct {
     const MAX = 32;
@@ -354,7 +355,7 @@ fn usage() noreturn {
     sys.exit(2);
 }
 
-/// Say how long a step of the reader's own took, where `-v` asked for it.
+/// Say how long a step of the browser's own took, where `-v` asked for it.
 fn took(what: []const u8, started_us: u64) void {
     if (!verbose) return;
     var buf: [96]u8 = undefined;
@@ -413,7 +414,7 @@ fn apply() void {
     inShade(pageShade());
 }
 
-/// The sites the reader keeps away from, while ad protection is on: those
+/// The sites the browser keeps away from, while ad protection is on: those
 /// that serve ads, and those that count and follow the people reading. None
 /// where it is off, which is how it is turned off.
 fn keptFrom() ?blocklist_mod.Blocklist {
@@ -452,7 +453,7 @@ fn inShade(shade: lib.rgb.Shade) void {
 
 /// Go on to the version of the page made for small screens, which the page
 /// on site `from` named, as a redirect would: the history keeps one entry,
-/// and it names where the reader went.
+/// and it names where the browser went.
 fn goMobile(where: []const u8, from: []const u8) void {
     followed_mobile = true;
     var next: Detour = .{};
@@ -464,7 +465,7 @@ fn goMobile(where: []const u8, from: []const u8) void {
 }
 
 /// Whether the version for small screens a page on `host` names has sent
-/// the reader on elsewhere.
+/// the browser on elsewhere.
 fn refusedBy(host: []const u8) bool {
     for (refused.slice()) |site| {
         if (std.ascii.eqlIgnoreCase(site.slice(), host)) return true;
@@ -474,7 +475,7 @@ fn refusedBy(host: []const u8) bool {
 
 /// A page has come at `final`. Where it came after a detour to a version for
 /// small screens and is on another site than that version, the version sent
-/// the reader on, and the site that named it is remembered as one whose
+/// the browser on, and the site that named it is remembered as one whose
 /// version is not gone on to again. The oldest remembered goes when there is
 /// no more room.
 fn landed(final: url.Url) void {
@@ -486,7 +487,7 @@ fn landed(final: url.Url) void {
 }
 
 /// Follow a link on the page on screen. The page's scripts are told of the
-/// click first, and a script may refuse it, or send the reader somewhere of
+/// click first, and a script may refuse it, or send the browser somewhere of
 /// its own.
 fn follow(link: u16) void {
     if (link >= shown.links.items.len) return;
@@ -584,7 +585,7 @@ fn visit(target: []const u8) void {
     address.setFromStart(target);
     const where = url.parse(target) orelse return failed(error.NotAnAddress, target);
     if (where.scheme == .file) return openFile(where);
-    // A page on one of the sites the reader keeps away from is not gone to:
+    // A page on one of the sites the browser keeps away from is not gone to:
     // the page itself is what a tracker writes, no less than a picture from
     // one is.
     if (fetch.refuses(where)) return failed(error.Blocked, where.host);
@@ -639,7 +640,7 @@ fn addressFrom(typed_text: []const u8, buf: []u8) ?[]const u8 {
 }
 
 /// `file://` and the whole path, from one that may be relative to where the
-/// reader was started.
+/// browser was started.
 fn fileAddress(path: []const u8, buf: []u8) ?[]const u8 {
     var whole: [url.ADDRESS_MAX]u8 = undefined;
     const absolute = if (path[0] == '/') path else relative: {
@@ -746,7 +747,7 @@ fn settle(wait: fetch_mod.Wait) bool {
     return true;
 }
 
-/// Take `next` as the reader's settings, from the store or from the menu,
+/// Take `next` as the browser's settings, from the store or from the menu,
 /// and do what changing each asks. Asking for versions for small screens or
 /// not, following stylesheets or not, running scripts or not and keeping
 /// away from the blocklist or not make the page on screen another page,
@@ -1002,7 +1003,7 @@ fn said(text: []const u8) void {
     }
 }
 
-/// What a page's scripts get of the reader around them.
+/// What a page's scripts get of the browser around them.
 fn hostOf() dom.Host {
     return .{
         .gpa = gpa,
@@ -1108,7 +1109,7 @@ fn versionWindow() media.Screen {
 /// Where to go on to instead of the page parsed as `tree`: the version it
 /// names for a window like `screen`, where the settings ask for versions for
 /// small screens, none has been gone on to already for this place, the site
-/// has not sent the reader back from its version before, and the page is not
+/// has not sent the browser back from its version before, and the page is not
 /// that version itself.
 fn mobileOf(tree: *const Tree, base: url.Url, screen: media.Screen) ?url.Address {
     if (!choices.mobile or followed_mobile or refusedBy(base.host)) return null;
@@ -1264,9 +1265,9 @@ fn answered(doc: *dom.Document) void {
     }
 }
 
-/// What the scripts have done since they were last asked: sent the reader
+/// What the scripts have done since they were last asked: sent the browser
 /// somewhere, in which case it goes there and `doc` is no more, or changed
-/// the page, which is read again. True where the reader went somewhere.
+/// the page, which is read again. True where the browser went somewhere.
 fn afterScripts(doc: *dom.Document) bool {
     if (dom.takeGoing(doc)) |going| {
         sending = .{};
@@ -1576,7 +1577,7 @@ fn homeRow() eui.widget.MenuItem {
     return .{ .label = label, .mark = mark };
 }
 
-/// Where the page on screen came from: none for a page the reader wrote
+/// Where the page on screen came from: none for a page the browser wrote
 /// itself to say why another is not here.
 fn onScreen() ?[]const u8 {
     if (arrived == null) return null;
@@ -1591,7 +1592,7 @@ fn isHome(here: []const u8) bool {
 }
 
 /// Do what a command of the menu says. The store keeps it and tells every
-/// reader that is open; it is taken here at once all the same, so the menu
+/// browser that is open; it is taken here at once all the same, so the menu
 /// works where there is no store to keep it.
 fn choose(row: Row) void {
     var next = switch (row) {
@@ -1604,7 +1605,7 @@ fn choose(row: Row) void {
 }
 
 /// Put the setting on row `row` at the value `at`, of the values it may be.
-/// The store keeps it and tells every reader that is open; it is taken here at
+/// The store keeps it and tells every browser that is open; it is taken here at
 /// once all the same, so the menu works where there is no store to keep it.
 fn set(row: Row, at: usize) void {
     var next = choices;
@@ -1701,7 +1702,7 @@ fn status(area: Rect, body: Rect) void {
 
 /// What the page's scripts came to, for the status line: how many ran, what
 /// the last one threw, or what they reached for and could not have. The only
-/// way to tell a reader that ran none from a page that had none.
+/// way to tell a browser that ran none from a page that had none.
 fn scriptsText(buf: []u8) []const u8 {
     if (!choices.scripts) return "scripts off";
     const doc = scripts orelse return "";

@@ -1,4 +1,4 @@
-//! Every way the reader can fail to show what was asked for, and what each
+//! Every way the browser can fail to show what was asked for, and what each
 //! is called: a heading and a sentence for the page that says so, and the
 //! few words a shell line has room for. One table, so that the window and
 //! the shell never say two different things about one failure.
@@ -20,7 +20,7 @@ pub const ReadError = source_mod.Error || error{
 
 pub const Failure = fetch_mod.Failure || file.AllocError || ReadError || error{
     NotAnAddress,
-    /// A form whose answers come to more than this reader sends.
+    /// A form whose answers come to more than this browser sends.
     LongForm,
 };
 
@@ -47,7 +47,7 @@ pub fn told(why: Failure, subject: []const u8, buf: []u8) Told {
         },
         error.Refused => .{
             .heading = "No shared way to encrypt this",
-            .detail = sentence(buf, "{s} and this reader could not agree on a sealed connection ({s}), so nothing was sent.", .{ subject, ulib.wire.refusal() }),
+            .detail = sentence(buf, "{s} and this browser could not agree on a sealed connection ({s}), so nothing was sent.", .{ subject, ulib.wire.refusal() }),
             .word = "the sealed connection was refused",
         },
         error.NoClock => .{
@@ -72,7 +72,7 @@ pub fn told(why: Failure, subject: []const u8, buf: []u8) Told {
         },
         error.TooLarge, error.TooBig => .{
             .heading = "This is too large",
-            .detail = std.fmt.comptimePrint("It is over {d} MB, which is more than this reader reads.", .{fetch_mod.PAGE_MAX / (1024 * 1024)}),
+            .detail = std.fmt.comptimePrint("It is over {d} MB, which is more than this browser reads.", .{fetch_mod.PAGE_MAX / (1024 * 1024)}),
             .word = "larger than this reads",
         },
         error.Truncated => .{
@@ -87,7 +87,7 @@ pub fn told(why: Failure, subject: []const u8, buf: []u8) Told {
         },
         error.Blocked => .{
             .heading = "This site is kept from",
-            .detail = sentence(buf, "{s} is on the reader's blocklist: the sites that serve ads, and those that count and follow the people reading. Ad protection, in the menu at the end of the strip, turns the list off.", .{subject}),
+            .detail = sentence(buf, "{s} is on the browser's blocklist: the sites that serve ads, and those that count and follow the people reading. Ad protection, in the menu at the end of the strip, turns the list off.", .{subject}),
             .word = "on the blocklist",
         },
         error.RedirectLoop => .{
@@ -97,7 +97,7 @@ pub fn told(why: Failure, subject: []const u8, buf: []u8) Told {
         },
         error.Stalled => .{
             .heading = "The site stopped answering",
-            .detail = std.fmt.comptimePrint("Nothing arrived for {d} seconds, so the reader gave up waiting.", .{fetch_mod.STALL_US / std.time.us_per_s}),
+            .detail = std.fmt.comptimePrint("Nothing arrived for {d} seconds, so the browser gave up waiting.", .{fetch_mod.STALL_US / std.time.us_per_s}),
             .word = "stopped answering",
         },
         error.OutOfMemory => .{
@@ -115,7 +115,7 @@ pub fn told(why: Failure, subject: []const u8, buf: []u8) Told {
         error.NotAPage => .{ .heading = "This is not a page", .detail = subject, .word = "not a page" },
         error.LongForm => .{
             .heading = "This form sends too much",
-            .detail = std.fmt.comptimePrint("Its answers come to more than {d} KB, which is more than this reader sends. One that sends a file, or pages of words, is such a form.", .{form_mod.ANSWERS_MAX / 1024}),
+            .detail = std.fmt.comptimePrint("Its answers come to more than {d} KB, which is more than this browser sends. One that sends a file, or pages of words, is such a form.", .{form_mod.ANSWERS_MAX / 1024}),
             .word = "the form sends too much",
         },
     };

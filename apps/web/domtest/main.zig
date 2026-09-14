@@ -1,4 +1,4 @@
-//! The reader's document, tested on this machine.
+//! The browser's document, tested on this machine.
 //!
 //! QuickJS and lexbor are built for the host here rather than for the target,
 //! so a page can be parsed, a script run in it, and the tree read back, which
@@ -8,7 +8,7 @@
 //! parser had settled it, none of which a check of either alone would catch.
 //!
 //! Each test runs a script in a page and asks what came of it: what it said,
-//! what the tree reads as now, or what it asked the reader for.
+//! what the tree reads as now, or what it asked the browser for.
 
 const std = @import("std");
 const js = @import("js");
@@ -43,7 +43,7 @@ fn with(script: []const u8) []const u8 {
     return std.fmt.allocPrint(heap, PAGE, .{script}) catch @panic("out of memory");
 }
 
-/// What the reader keeps around a page, for the pages here to share.
+/// What the browser keeps around a page, for the pages here to share.
 var jar: cookie.Jar = .{};
 var store: storage.Storage = .{};
 /// The rules a test's stylesheet gave the page.
@@ -54,7 +54,7 @@ const Opened = struct {
     doc: *dom.Document,
     tree: *lexbor.Document,
 
-    /// Let the page go, and with it what the reader kept around it, so that
+    /// Let the page go, and with it what the browser kept around it, so that
     /// each test starts with nothing and leaks nothing.
     fn end(self: Opened) void {
         dom.close(self.doc);
@@ -87,7 +87,7 @@ const Opened = struct {
         return if (out.data) |data| data[0..out.length] else "";
     }
 
-    /// The page as the reader reads it from the tree now.
+    /// The page as the browser reads it from the tree now.
     fn page(self: Opened) !page_mod.Page {
         const base = url.parse(ADDRESS) orelse return error.NoBase;
         var read: page_mod.Page = .{};
@@ -118,7 +118,7 @@ fn opened(text: []const u8, load: bool) !Opened {
     if (lexbor.lxb_style_init(tree) != .ok) return error.NoPage;
     if (lexbor.lxb_html_document_parse(tree, text.ptr, text.len) != .ok) return error.NoPage;
     // The rules of the page's own style elements, which the tree applied
-    // as it parsed, kept as the reader keeps them.
+    // as it parsed, kept as the browser keeps them.
     css.harvest(heap, tree, &rules);
     const doc = dom.open(machineOf(), tree, &rules, ADDRESS, .{
         .gpa = testing.allocator,
@@ -224,7 +224,7 @@ test "the title is read and written" {
     try reads("document.title = 'Bye';", "<title>Bye</title>");
 }
 
-test "a cookie a script writes is read back, and is the reader's to keep" {
+test "a cookie a script writes is read back, and is the browser's to keep" {
     const it = try opened(with("document.cookie = 'a=1';"), true);
     defer it.end();
     const got = try it.run("document.cookie");
@@ -233,7 +233,7 @@ test "a cookie a script writes is read back, and is the reader's to keep" {
     try testing.expect(jar.has(url.parse(ADDRESS).?, false));
 }
 
-test "what a page puts by is read back, and is the reader's to keep for the site" {
+test "what a page puts by is read back, and is the browser's to keep for the site" {
     const it = try opened(with("localStorage.setItem('k', 'v'); localStorage.setItem('gone', 'x'); localStorage.removeItem('gone');"), true);
     defer it.end();
     const got = try it.run("localStorage.getItem('k') + localStorage.length + localStorage.key(0) + localStorage.getItem('gone')");
@@ -243,7 +243,7 @@ test "what a page puts by is read back, and is the reader's to keep for the site
     try testing.expectEqualStrings("v", site.get("k").?);
 }
 
-test "the page says where it is, and what the reader is called" {
+test "the page says where it is, and what the browser is called" {
     try says("", "location.href", ADDRESS);
     try says("", "location.hostname + location.pathname + location.protocol", "example.test/onehttp:");
     try says("", "document.location.href === window.location.href && top.location.href === location.href ? 'same' : 'not'", "same");
@@ -278,7 +278,7 @@ test "an event is told to its listeners, to the handler on the element, and to t
     );
 }
 
-test "a link to a place on the page is a link, and a click the reader tells is refused and read" {
+test "a link to a place on the page is a link, and a click the browser tells is refused and read" {
     const it = try opened(
         "<!DOCTYPE html><html><body><p><a href=\"#\" id=\"link\">Click</a>: <span id=\"said\">no</span></p>" ++
             "<p><a href=\"javascript:void(0)\" id=\"other\">Other</a></p><h2 id=\"place\">Place</h2>" ++
@@ -304,12 +304,12 @@ test "a link to a place on the page is a link, and a click the reader tells is r
     try testing.expect(std.mem.containsAtLeast(u8, again.text.items, 1, "clicked"));
 }
 
-test "a handler put on the element the script got earlier is still there when the reader clicks" {
+test "a handler put on the element the script got earlier is still there when the browser clicks" {
     const it = try opened(with("document.getElementById('one').onclick = function (ev) { ev.preventDefault(); window.__clicked = 1; };"), true);
     defer it.end();
     var page = try it.page();
     defer page.deinit(heap);
-    // The reader clicks the node the page kept for the paragraph's link-less
+    // The browser clicks the node the page kept for the paragraph's link-less
     // words: the element itself, which the walk noted.
     const node = lexbor.lxb_dom_document_root(it.tree).?;
     var found: ?*lexbor.Node = null;
@@ -326,7 +326,7 @@ test "a handler put on the element the script got earlier is still there when th
     try testing.expectEqualStrings("1", got);
 }
 
-test "a script sends the reader somewhere, and the going is taken once" {
+test "a script sends the browser somewhere, and the going is taken once" {
     const cases = [_][]const u8{
         "location.href = 'http://else.test/two';",
         "location.assign('/two');",
@@ -417,7 +417,7 @@ test "a script that runs too long is stopped, and the page goes on" {
     try testing.expectEqualStrings("1undefined", got);
 }
 
-test "fetch asks the reader, and the answer keeps the promise" {
+test "fetch asks the browser, and the answer keeps the promise" {
     const it = try opened(with("var got = ''; fetch('/api?x=1').then(function (r) { return r.json(); }).then(function (v) { got = v.name + r_status; }); var r_status = '';"), true);
     defer it.end();
     try testing.expect(dom.asking(it.doc));
@@ -498,7 +498,7 @@ test "a script put in the page by its address is asked for and run when it comes
     try testing.expectEqual(@as(u32, 2), dom.reportOf(it.doc).ran);
 }
 
-test "a script the page names by address runs from what the reader fetched, in order" {
+test "a script the page names by address runs from what the browser fetched, in order" {
     const it = try opened("<html><body><script src='/a.js'></script><script>window.__b = window.__a + 'b';</script></body></html>", false);
     defer it.end();
     dom.load(it.doc, &.{.{ .address = "http://example.test/a.js", .text = "window.__a = 'a';" }});
@@ -557,7 +557,7 @@ test "a constructed event is dispatched, and may be stopped" {
 
 test "what a stylesheet says of an element follows the classes a script gives and takes" {
     // The page's own style element is the tree's to read; the linked sheet
-    // is applied as the reader applies one that came by its address.
+    // is applied as the browser applies one that came by its address.
     const it = try opened(
         "<!DOCTYPE html><html><head><style>.own { color: #abcdef; }</style></head><body>" ++
             "<p id=\"one\">first</p><p class=\"noted\">second</p><div class=\"noted\"><p id=\"two\">deep</p></div><p id=\"three\">third</p>" ++

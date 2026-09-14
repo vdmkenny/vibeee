@@ -1,8 +1,8 @@
-//! The sites the reader keeps away from while ad protection is on: those
+//! The sites the browser keeps away from while ad protection is on: those
 //! that serve ads, and those that count and follow the people reading.
 //!
 //! A list of names, each blocked with every name under it, fetched when the
-//! reader is built and kept in it as the hash of each name, in order: four
+//! browser is built and kept in it as the hash of each name, in order: four
 //! bytes a name rather than the name, which runs to eighteen, and a name
 //! looked up by halving. A host is on the list where it, or a name it is
 //! under, is.

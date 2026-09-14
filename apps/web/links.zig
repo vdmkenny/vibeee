@@ -1,4 +1,4 @@
-//! Things a page links to that the reader fetches one after another, as a
+//! Things a page links to that the browser fetches one after another, as a
 //! bounded list: its stylesheets, and its scripts.
 //!
 //! Bounded twice, in how many are fetched and in what those that came may

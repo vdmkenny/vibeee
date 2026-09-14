@@ -1,15 +1,15 @@
-//! A page's cascade as the reader reads it: whether an element shows, the
+//! A page's cascade as the browser reads it: whether an element shows, the
 //! colours it asks for, which way its lines lean, and its retained geometry.
 //!
 //! Upstream works out what every element is given, from stylesheets and
 //! `style` attributes, by specificity and by order. This turns its answer for
-//! one element into the few things this reader draws or will lay out;
+//! one element into the few things this browser draws or will lay out;
 //! everything else a stylesheet says is left where it is.
 //!
 //! A page's `<style>` elements and `style` attributes are upstream's to apply
 //! while the page is parsed. The stylesheets it links to are fetched by the
 //! window, and each is handed to `apply` for the window the page is read for.
-//! `apply` gives upstream only the rules that say something this reader
+//! `apply` gives upstream only the rules that say something this browser
 //! draws or retains for future box layout: matching a rule is a walk of the
 //! whole tree, and most of a site's rules remain of no use here.
 //!
@@ -62,7 +62,7 @@ pub fn shows(node: *const Node) bool {
 /// to one of their own: a page that says `display: inline`, `inline-block`
 /// or `contents` says as much, whatever the element is called. A page that
 /// dresses a row of links, or of words, in elements of their own means them
-/// read as one line, and a block a piece would be the reader's shape and not
+/// read as one line, and a block a piece would be the browser's shape and not
 /// the page's.
 pub fn flows(node: *const Node) bool {
     const display = valueOf(lexbor.Display, node, .display) orelse return false;
@@ -245,7 +245,7 @@ fn unitOf(length: *const lexbor.LengthPercentage) page_mod.Unit {
 }
 
 /// Which way a flex container's items run: `flex-direction: column`, or
-/// across it reversed, which this reader reads as across it; from the
+/// across it reversed, which this browser reads as across it; from the
 /// `flex-flow` shorthand where the page wrote that instead.
 fn directionOf(node: *const Node) page_mod.BoxStyle.Direction {
     const kind: Keyword = if (valueOf(lexbor.Single, node, .flex_direction)) |direction|
@@ -298,7 +298,7 @@ fn flexOf(node: *const Node) Flexing {
 
 /// Where a flex container's items go along its main axis, as
 /// `justify-content` says: `space-between` puts the room it has left between
-/// them, and anything else this reader does not spread leaves them at its
+/// them, and anything else this browser does not spread leaves them at its
 /// start.
 fn justifyOf(node: *const Node) page_mod.BoxStyle.Justify {
     const justify = valueOf(lexbor.Single, node, .justify_content) orelse return .start;
@@ -311,7 +311,7 @@ fn justifyOf(node: *const Node) page_mod.BoxStyle.Justify {
 }
 
 /// Where they go across it, as `align-items` says: stretched to the row
-/// where it says nothing, or something this reader does not tell apart.
+/// where it says nothing, or something this browser does not tell apart.
 fn itemsOf(node: *const Node) page_mod.BoxStyle.Items {
     const items = valueOf(lexbor.Single, node, .align_items) orelse return .stretch;
     return crossOf(items.kind) orelse .stretch;
@@ -514,7 +514,7 @@ pub fn keepsSpaces(node: *const Node) bool {
 /// Whether a list's entries carry no marker: `list-style-type: none`, or
 /// `list-style: none`, which is how a page says a list is its furniture
 /// rather than a list of things. A bullet on each of a row of links is the
-/// reader's noise, not the page's.
+/// browser's noise, not the page's.
 pub fn markerless(node: *const Node) bool {
     if (cascadeOf(node) == null) return false;
     for (&[_][]const u8{ "list-style-type", "list-style" }) |name| {
@@ -766,7 +766,7 @@ pub fn sheetsOf(gpa: Allocator, document: *lexbor.Document, base: url.Url, into:
 /// applied, which is the order the cascade weighs them in where two are of
 /// the same weight: the rules of the page's own style elements, which the
 /// tree applied for itself, and then those of its linked sheets that this
-/// reader honours. They live in the document's own memory and go with it.
+/// browser honours. They live in the document's own memory and go with it.
 /// Beside each rule are the names its selectors read, so that when a script
 /// changes an element's class, id or an attribute, only the rules that read
 /// that name are matched again.
@@ -856,7 +856,7 @@ pub fn harvest(gpa: Allocator, document: *lexbor.Document, rules: *Rules) void {
 }
 
 /// Apply a stylesheet to `document` as it reads on `screen`: its rules for
-/// the window, and of those only the ones that say something this reader
+/// the window, and of those only the ones that say something this browser
 /// draws or retains for box layout. The rules applied are added to `rules`.
 pub fn apply(gpa: Allocator, document: *lexbor.Document, text: []const u8, screen: ?media.Screen, rules: *Rules) void {
     const dom = lexbor.domOf(document);
@@ -935,7 +935,7 @@ pub fn rematch(document: *lexbor.Document, rules: *const Rules, name: []const u8
     }
 }
 
-/// Whether a rule says anything this reader draws or retains for box layout.
+/// Whether a rule says anything this browser draws or retains for box layout.
 fn honoured(style: *const lexbor.StyleRule) bool {
     const list = style.declarations orelse return false;
     var at = list.first;

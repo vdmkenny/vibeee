@@ -73,7 +73,7 @@ fn groundOf(page: *const Page) Color {
 }
 
 /// The shade a page's own colours were chosen for: its ground's, or light
-/// where it leaves its ground to the reader, since a page's colours are
+/// where it leaves its ground to the browser, since a page's colours are
 /// chosen against white.
 fn shadeOf(page: *const Page) Shade {
     return (page.colourOf(page.ground) orelse return .light).shade();
@@ -151,7 +151,7 @@ const Metrics = struct {
         const drawn: ?Size = switch (state) {
             .here => |kept| drawnSize(which, kept.own),
             .waiting, .coming, .failed => if (coming) givenSize(which) else null,
-            // One from a site the reader keeps away from is not drawn, and
+            // One from a site the browser keeps away from is not drawn, and
             // nothing stands in for it, so it takes no room at all.
             .blocked => return .{ .w = 0, .h = 0 },
         };

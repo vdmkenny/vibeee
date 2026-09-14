@@ -1,10 +1,10 @@
 //! What a page's scripts put by for the site they are on: `localStorage`, as
-//! the reader keeps it while it runs.
+//! the browser keeps it while it runs.
 //!
 //! A site keeps a few words this way: that a notice was seen, which look was
 //! chosen. They belong to the site rather than to the page, so they are kept
 //! here, outside any page, and handed to each page of the site as it opens.
-//! Nothing is written to disk: what is kept lasts as long as the reader does.
+//! Nothing is written to disk: what is kept lasts as long as the browser does.
 //!
 //! Bounded twice: how many sites are kept for at once, the site least
 //! recently read making room for a new one, and how much each may hold.
@@ -15,7 +15,7 @@ const std = @import("std");
 
 const Allocator = std.mem.Allocator;
 
-/// How many sites the reader keeps for at once.
+/// How many sites the browser keeps for at once.
 pub const ORIGINS_MAX = 16;
 
 /// The most one site's keys and values come to between them, in bytes.

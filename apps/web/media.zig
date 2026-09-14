@@ -4,7 +4,7 @@
 //! Upstream reads the rules inside such a block and keeps what the block is
 //! for as the words the sheet wrote, unread, so they are read here. A query is
 //! asked of the window a page is drawn in, measured in the page's own pixels,
-//! on a screen of colour driven with a pointer that hovers, by a reader that
+//! on a screen of colour driven with a pointer that hovers, by a browser that
 //! runs no scripts. A question it cannot answer is not this window, which is
 //! what the specification makes of a feature it does not know, and with no
 //! window at all, a question about its size is one it cannot answer.

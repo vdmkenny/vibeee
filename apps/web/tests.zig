@@ -1,4 +1,4 @@
-//! The reader's host side: addresses, the protocol, encodings, what a page
+//! The browser's host side: addresses, the protocol, encodings, what a page
 //! reads as, and where its words go. Everything here is arithmetic over text,
 //! so none of it needs the machine, the parser or a window to be tested.
 

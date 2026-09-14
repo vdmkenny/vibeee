@@ -58,7 +58,7 @@ pub const State = union(enum) {
     coming,
     here: Kept,
     /// Not to be had: nowhere to fetch it from, not found, not a picture this
-    /// reader decodes, or more than it holds.
+    /// browser decodes, or more than it holds.
     failed,
     /// From a site on the blocklist: not asked for, and nothing stands in
     /// for it.

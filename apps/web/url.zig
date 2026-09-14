@@ -1,6 +1,6 @@
 //! Where a page is, and where a link on it points.
 //!
-//! Pure arithmetic over text, host-tested. A reader that resolved a link one
+//! Pure arithmetic over text, host-tested. A browser that resolved a link one
 //! directory out would fetch the wrong page, and the fault would look like a
 //! site that had moved rather than like a bug here.
 //!
@@ -12,7 +12,7 @@ const Bounded = @import("lib").bounded.Bounded;
 
 const Writer = std.Io.Writer;
 
-/// The longest address this reader keeps. Longer ones exist, almost all of
+/// The longest address this browser keeps. Longer ones exist, almost all of
 /// them tracking parameters on a link, and a page reached by one is still
 /// reached by what fits here more often than not; past it a link is simply
 /// not followed rather than followed somewhere cut short.
@@ -90,7 +90,7 @@ pub const Url = struct {
     }
 };
 
-/// Read an absolute address. Null for anything that is not one this reader
+/// Read an absolute address. Null for anything that is not one this browser
 /// can fetch: an unknown scheme, a missing host, a port that is not one.
 pub fn parse(text: []const u8) ?Url {
     const marker = std.mem.indexOf(u8, text, "://") orelse return null;
@@ -125,7 +125,7 @@ pub fn parse(text: []const u8) ?Url {
 }
 
 /// Where `reference`, found on the page at `base`, points, written into
-/// `out`. Null for a link this reader does not follow: another scheme, a
+/// `out`. Null for a link this browser does not follow: another scheme, a
 /// jump within the page, an address too long to hold.
 pub fn resolve(base: Url, reference: []const u8, out: []u8) ?[]const u8 {
     const ref = withoutFragment(std.mem.trim(u8, reference, &c0_or_space));
@@ -133,7 +133,7 @@ pub fn resolve(base: Url, reference: []const u8, out: []u8) ?[]const u8 {
     if (ref.len == 0) return null;
 
     if (schemeOf(ref)) |named| {
-        // A scheme this reader knows is an address in its own right; any
+        // A scheme this browser knows is an address in its own right; any
         // other, `mailto:` or `javascript:`, is not a page to go to.
         _ = Scheme.named(named) orelse return null;
         return std.fmt.bufPrint(out, "{f}", .{parse(ref) orelse return null}) catch null;

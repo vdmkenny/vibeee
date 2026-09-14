@@ -128,7 +128,7 @@ pub const Icon = enum {
     /// A closed padlock: a connection nobody in between can read. Shown
     /// beside what it protects rather than as a state to change.
     lock,
-    /// Where a reader has been, and the way back to it and forward again.
+    /// Where a browser has been, and the way back to it and forward again.
     /// Arrows with shafts rather than chevrons: a chevron at this size is
     /// the same shape as the triangle that opens a menu.
     back,
@@ -136,7 +136,7 @@ pub const Icon = enum {
     /// Fetch it again. A circle open at the top, with the end it turns
     /// towards pointed: the one shape that says "again" without words.
     reload,
-    /// The page a reader starts on: a house, which is what every reader has
+    /// The page a browser starts on: a house, which is what every browser has
     /// drawn it as.
     home,
     /// Three bars: the rest of what a window can be told, behind one key at

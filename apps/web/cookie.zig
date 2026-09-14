@@ -1,7 +1,7 @@
-//! The cookies a reader keeps while it is open.
+//! The cookies a browser keeps while it is open.
 //!
 //! A cookie belongs to a site, not the document that happened to write it.
-//! A document goes when the reader follows a link or a redirect; the cookie
+//! A document goes when the browser follows a link or a redirect; the cookie
 //! must still go with the request for the page on the other side. The jar is
 //! deliberately a session jar: there is no disk persistence yet, but a page
 //! can set a cookie, redirect, fetch again, and receive the one it set.

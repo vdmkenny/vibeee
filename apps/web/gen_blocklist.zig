@@ -1,10 +1,10 @@
 //! The build's side of the blocklist: fetch the list, read the names on it,
-//! and write them as the reader keeps them.
+//! and write them as the browser keeps them.
 //!
-//! Fetched at every build, so a reader carries the list as it was when it was
+//! Fetched at every build, so a browser carries the list as it was when it was
 //! built. The last list fetched is kept beside the build, and a build that
 //! cannot reach the list uses that one; a build that has never reached it
-//! makes a reader whose list is empty, and says so.
+//! makes a browser whose list is empty, and says so.
 //!
 //! Usage: gen-blocklist <address> <kept copy> <out.zig>
 
@@ -37,7 +37,7 @@ pub fn main(init: std.process.Init) !void {
     }
 
     const list = cwd.readFileAlloc(io, kept_path, gpa, .limited(LIST_MAX)) catch |err| none: {
-        std.debug.print("warning: no blocklist has been fetched ({t}), so the reader is built with an empty one\n", .{err});
+        std.debug.print("warning: no blocklist has been fetched ({t}), so the browser is built with an empty one\n", .{err});
         break :none try gpa.alloc(u8, 0);
     };
     defer gpa.free(list);
@@ -51,7 +51,7 @@ pub fn main(init: std.process.Init) !void {
         try hashes.append(gpa, blocklist.hashOf(std.ascii.lowerString(&buf, name)));
     }
 
-    // In order and each once, which is what the reader halves its way
+    // In order and each once, which is what the browser halves its way
     // through.
     std.mem.sort(u32, hashes.items, {}, std.sort.asc(u32));
     var kept: usize = 0;
@@ -66,7 +66,7 @@ pub fn main(init: std.process.Init) !void {
     defer out.deinit();
     const w = &out.writer;
     try w.print(
-        \\//! The blocklist the reader is built with: {d} names from
+        \\//! The blocklist the browser is built with: {d} names from
         \\//! {s},
         \\//! each kept as its hash. Written by `gen_blocklist.zig` at every build.
         \\

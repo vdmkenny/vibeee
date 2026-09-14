@@ -3,8 +3,8 @@
 //! The page's own tree, given to a script in the terms a script expects: an
 //! element is an object with an `id`, a `className`, a `style`, children and a
 //! `textContent`, and the document is where elements are found and made. The
-//! tree behind it is lexbor's, the same one the reader reads the page from,
-//! so what a script does to it is what the reader draws next time it reads.
+//! tree behind it is lexbor's, the same one the browser reads the page from,
+//! so what a script does to it is what the browser draws next time it reads.
 //!
 //! Nothing of the tree is mirrored or cached: an element object holds a
 //! pointer to a lexbor node and nothing else, and every method is lexbor's
@@ -12,15 +12,15 @@
 //! it and kept, so that two askings answer with the same object, as a script
 //! expects them to, and what a script puts on it stays put.
 //!
-//! What a script wants from outside its page goes through the reader, and
+//! What a script wants from outside its page goes through the browser, and
 //! never waits for it: a page it asks for with `fetch`, a script it inserts
-//! by its address, are asks the reader takes one at a time and answers on a
-//! later pass, and where a script sends the reader is a going the reader
+//! by its address, are asks the browser takes one at a time and answers on a
+//! later pass, and where a script sends the browser is a going the browser
 //! takes once the script has returned. The cookies and what a site puts by
-//! are the reader's to keep, since they outlive the page; the document reads
+//! are the browser's to keep, since they outlive the page; the document reads
 //! and writes them through it.
 //!
-//! What a page asks for that this reader cannot give is given as an empty
+//! What a page asks for that this browser cannot give is given as an empty
 //! shape rather than left out, and noted: a script that finds no
 //! `getComputedStyle` stops where one that finds an empty one goes on, and a
 //! page that stops says nothing about why.
@@ -49,18 +49,18 @@ const Context = qjs.Context;
 const Value = qjs.Value;
 const Node = lexbor.Node;
 
-/// What the document asks of the reader around it: where what outlives the
+/// What the document asks of the browser around it: where what outlives the
 /// page is kept, and what is true of the window the page is in.
 pub const Host = struct {
-    /// The reader's own heap, for what outlives the page.
+    /// The browser's own heap, for what outlives the page.
     gpa: Allocator,
-    /// The cookies the reader keeps while it runs.
+    /// The cookies the browser keeps while it runs.
     jar: *cookie.Jar,
-    /// What a page's site puts by, which the reader keeps while it runs.
+    /// What a page's site puts by, which the browser keeps while it runs.
     store: *storage.Storage,
-    /// The window the page is drawn in, or none for a reader with none.
+    /// The window the page is drawn in, or none for a browser with none.
     screen: ?media.Screen = null,
-    /// What the reader calls itself to a site.
+    /// What the browser calls itself to a site.
     user_agent: []const u8,
 };
 
@@ -74,12 +74,12 @@ pub const SCRIPTS_BYTES_MAX = 2 * 1024 * 1024;
 /// The scripts a page names by address, in the order it names them.
 pub const Scripts = links.Queue(SCRIPTS_MAX, SCRIPTS_BYTES_MAX);
 
-/// A script the reader fetched for the page, by the address the page named.
+/// A script the browser fetched for the page, by the address the page named.
 pub const Fetched = struct { address: []const u8, text: []const u8 };
 
-/// What a script asks the reader to fetch: an address, what to send with it
+/// What a script asks the browser to fetch: an address, what to send with it
 /// where it asks by POST, and whether it is a script to run, which says
-/// what the site is told the reader takes. The slices are the document's
+/// what the site is told the browser takes. The slices are the document's
 /// until the ask is answered.
 pub const Ask = struct {
     id: u32,
@@ -96,7 +96,7 @@ pub const Answer = struct {
     failed: bool = false,
 };
 
-/// Where a script asked the reader to go, and a form's answers to send there
+/// Where a script asked the browser to go, and a form's answers to send there
 /// where it sends one by POST. The slices are the document's until the next
 /// ask for a going.
 pub const Going = struct {
@@ -104,14 +104,14 @@ pub const Going = struct {
     sent: ?[]const u8 = null,
 };
 
-/// What a page's scripts came to, for the reader to say.
+/// What a page's scripts came to, for the browser to say.
 pub const Report = struct {
     /// How many of the page's scripts have run, and how many of those threw.
     ran: u32 = 0,
     threw: u32 = 0,
     /// The last exception a page threw, or nothing.
     error_last: []const u8 = "",
-    /// The last thing a page reached for and this reader had no answer to,
+    /// The last thing a page reached for and this browser had no answer to,
     /// and how many such things there were.
     missing_last: []const u8 = "",
     missing_count: u32 = 0,
@@ -155,7 +155,7 @@ const Timer = struct {
 /// An ask, and what to do with its answer.
 const Pending = struct {
     ask: Ask,
-    /// Handed to the reader already, which is answering it.
+    /// Handed to the browser already, which is answering it.
     taken: bool = false,
     kind: union(enum) {
         /// `fetch`: the promise's two ends.
@@ -204,10 +204,10 @@ pub const Document = struct {
     /// while they run is run after them and none is run twice.
     ran_nodes: std.AutoHashMapUnmanaged(*Node, void) = .empty,
     report: Report = .{},
-    /// What a script has reached for and this reader had no answer to, so
+    /// What a script has reached for and this browser had no answer to, so
     /// that each is said once and not again.
     noted: std.StringHashMapUnmanaged(void) = .empty,
-    /// Whether a script has changed the tree since the reader last asked.
+    /// Whether a script has changed the tree since the browser last asked.
     changed: bool = false,
     /// The nearest node holding everything a script changed that a
     /// stylesheet's rules could read differently, since the rules were last
@@ -276,7 +276,7 @@ fn documentOf(ctx: *Context) ?*Document {
 }
 
 // ---------------------------------------------------------------------------
-// Opening, and what the reader asks afterwards
+// Opening, and what the browser asks afterwards
 // ---------------------------------------------------------------------------
 
 /// Give a page's tree to a script, at `address`. None where the engine has
@@ -370,7 +370,7 @@ pub fn close(it: *Document) void {
 }
 
 /// Run what the page carries, in the order it carries it: each script
-/// element's own words, or the text the reader fetched for the address it
+/// element's own words, or the text the browser fetched for the address it
 /// names, where it fetched one. A script that adds a script to the page as
 /// it runs has that one run after it. Then the document is told it is
 /// ready, which is what a page waits for.
@@ -393,7 +393,7 @@ pub const Loading = enum {
 };
 
 /// Run the page's scripts in its order as far as their text is here, and
-/// stop at the first named by an address the reader has not brought yet,
+/// stop at the first named by an address the browser has not brought yet,
 /// so that a page is shown and its scripts run as each one comes. Once the
 /// last has run the document is told it is ready.
 pub fn loadNext(it: *Document, fetched: []const Fetched) Loading {
@@ -418,7 +418,7 @@ fn loaded(it: *Document) void {
     _ = tell(it, root, "load", false);
 }
 
-/// The text the reader fetched for `address`, where it fetched one.
+/// The text the browser fetched for `address`, where it fetched one.
 fn fetchedText(fetched: []const Fetched, address: []const u8) ?[]const u8 {
     for (fetched) |script| {
         if (std.mem.eql(u8, script.address, address)) return script.text;
@@ -460,7 +460,7 @@ fn isJavaScript(node: *Node) bool {
 
 const script_types = [_][]const u8{ "text/javascript", "application/javascript", "text/ecmascript", "application/ecmascript", "text/jscript" };
 
-/// Run one script element: the text the reader fetched for the address it
+/// Run one script element: the text the browser fetched for the address it
 /// names, or its own words.
 fn runElement(it: *Document, node: *Node, fetched: []const Fetched) void {
     const was_running = it.running;
@@ -491,7 +491,7 @@ fn runText(it: *Document, source: []const u8, name: [*:0]const u8) void {
 }
 
 /// Where the page's scripts are, by the addresses they name, in order: what
-/// the reader fetches before the page's scripts run.
+/// the browser fetches before the page's scripts run.
 pub fn scriptsOf(gpa: Allocator, document: *lexbor.Document, base: url.Url, into: *Scripts) Allocator.Error!void {
     const root = lexbor.lxb_dom_document_root(document) orelse return;
     var at = lexbor.following(root, root);
@@ -605,7 +605,7 @@ pub fn loop(it: *Document) bool {
 }
 
 /// Whether a script has changed the page since the last time this was
-/// asked, and so whether the reader must read it again.
+/// asked, and so whether the browser must read it again.
 pub fn changed(it: *Document) bool {
     defer it.changed = false;
     settleStyles(it);
@@ -625,13 +625,13 @@ pub fn waits(it: *Document) ?u32 {
     return soonest;
 }
 
-/// Where a script asked the reader to go, if it did: taken once.
+/// Where a script asked the browser to go, if it did: taken once.
 pub fn takeGoing(it: *Document) ?Going {
     defer it.going = null;
     return it.going;
 }
 
-/// Whether the scripts have asked for anything the reader has not taken yet.
+/// Whether the scripts have asked for anything the browser has not taken yet.
 pub fn asking(it: *const Document) bool {
     for (it.asks.items) |pending| {
         if (!pending.taken) return true;
@@ -639,7 +639,7 @@ pub fn asking(it: *const Document) bool {
     return false;
 }
 
-/// The next ask the reader has not taken yet, which it is then answering.
+/// The next ask the browser has not taken yet, which it is then answering.
 pub fn nextAsk(it: *Document) ?Ask {
     for (it.asks.items) |*pending| {
         if (pending.taken) continue;
@@ -796,7 +796,7 @@ fn commonAncestor(a: *Node, b: *Node) *Node {
     return a;
 }
 
-/// Say, once a page, that a script reached for something this reader has no
+/// Say, once a page, that a script reached for something this browser has no
 /// answer for. A page that stops where it found nothing gives no sign of
 /// why; saying what it reached for turns a page that will not draw into a
 /// list of what to give it next.
@@ -1000,7 +1000,7 @@ fn jsYes(ctx: *Context, _: Value, _: c_int, _: [*]const Value) callconv(.c) Valu
     return qjs.newBool(ctx, 1);
 }
 
-/// Nought: a size or a place this reader has nothing to say about, given
+/// Nought: a size or a place this browser has nothing to say about, given
 /// rather than left out so a page that asks does not stop.
 fn jsZero(ctx: *Context, _: Value) callconv(.c) Value {
     return qjs.newInt(ctx, 0);
@@ -1469,7 +1469,7 @@ fn jsStyleSet(ctx: *Context, this: Value, value: Value, magic: c_int) callconv(.
     return qjs.undefinedValue();
 }
 
-/// The style the cascade gave an element, as far as this reader reads it:
+/// The style the cascade gave an element, as far as this browser reads it:
 /// what its own attribute says, and for `display`, whether the cascade
 /// hides it.
 fn jsComputedGet(ctx: *Context, this: Value, magic: c_int) callconv(.c) Value {
@@ -2045,10 +2045,10 @@ fn jsClick(ctx: *Context, this: Value, _: c_int, _: [*]const Value) callconv(.c)
 }
 
 // ---------------------------------------------------------------------------
-// What a page asks for and this reader has nothing to say about
+// What a page asks for and this browser has nothing to say about
 // ---------------------------------------------------------------------------
 
-/// A size and a place, as noughts: this reader sets a page in one column and
+/// A size and a place, as noughts: this browser sets a page in one column and
 /// keeps no geometry, so where something is, is noughts rather than a guess.
 fn jsBox(ctx: *Context, _: Value, _: c_int, _: [*]const Value) callconv(.c) Value {
     if (documentOf(ctx)) |it| missing(it, "getBoundingClientRect");
@@ -2059,7 +2059,7 @@ fn jsBox(ctx: *Context, _: Value, _: c_int, _: [*]const Value) callconv(.c) Valu
     return box;
 }
 
-/// The style the cascade gave an element, as far as this reader reads it.
+/// The style the cascade gave an element, as far as this browser reads it.
 fn jsComputed(ctx: *Context, _: Value, argc: c_int, argv: [*]const Value) callconv(.c) Value {
     const it = documentOf(ctx) orelse return qjs.newObject(ctx);
     missing(it, "getComputedStyle");
@@ -2078,9 +2078,9 @@ fn jsWatcher(ctx: *Context, _: Value, _: c_int, _: [*]const Value) callconv(.c) 
     return watcher;
 }
 
-/// Asked of a reader with no way to answer: `scrollIntoView`, `focus` and
+/// Asked of a browser with no way to answer: `scrollIntoView`, `focus` and
 /// `blur`, `alert`, `confirm` and `prompt`, and the walking of a history this
-/// reader keeps for itself. Each says what it was.
+/// browser keeps for itself. Each says what it was.
 fn jsAsked(ctx: *Context, _: Value, _: c_int, _: [*]const Value, magic: c_int) callconv(.c) Value {
     if (documentOf(ctx)) |it| missing(it, asked_for[@intCast(magic)]);
     return qjs.undefinedValue();
@@ -2097,7 +2097,7 @@ fn askedMethod(comptime name: [*:0]const u8, comptime which: usize) qjs.ListEntr
     return .method(name, 0, &S.call);
 }
 
-/// A browser base class. The reader's nodes are handed to scripts as objects
+/// A browser base class. The browser's nodes are handed to scripts as objects
 /// rather than made through these, but a page's own components extend
 /// `HTMLElement` before they touch a node, and need a constructor to extend.
 fn jsPlatformClass(ctx: *Context, _: Value, _: c_int, _: [*]const Value) callconv(.c) Value {
@@ -2112,7 +2112,7 @@ fn jsNewImage(ctx: *Context, _: Value, _: c_int, _: [*]const Value) callconv(.c)
 }
 
 /// `matchMedia`: what a stylesheet's query says of the window the page is
-/// in, which is the same question the reader asks of its stylesheets.
+/// in, which is the same question the browser asks of its stylesheets.
 fn jsMedia(ctx: *Context, _: Value, argc: c_int, argv: [*]const Value) callconv(.c) Value {
     const it = documentOf(ctx) orelse return qjs.newObject(ctx);
     const query = qjs.newObject(ctx);
@@ -2512,7 +2512,7 @@ fn jsAttachShadow(ctx: *Context, this: Value, _: c_int, _: [*]const Value) callc
 // Asking for a page of your own
 // ---------------------------------------------------------------------------
 
-/// Ask the reader for `address`, sending `sent` where the ask is a POST.
+/// Ask the browser for `address`, sending `sent` where the ask is a POST.
 /// Nothing where the page has too many asks open already.
 fn ask(it: *Document, address: []const u8, sent: ?http.Payload, kind: @FieldType(Pending, "kind")) ?u32 {
     if (it.asks.items.len == ASKS_MAX) return null;
@@ -2663,7 +2663,7 @@ fn jsNewHeaders(ctx: *Context, _: Value, _: c_int, _: [*]const Value) callconv(.
     return headersObject(ctx);
 }
 
-/// `fetch`: ask the reader for a page, and promise its answer, which comes
+/// `fetch`: ask the browser for a page, and promise its answer, which comes
 /// on a later pass.
 fn jsFetch(ctx: *Context, _: Value, argc: c_int, argv: [*]const Value) callconv(.c) Value {
     const it = documentOf(ctx) orelse return qjs.undefinedValue();
@@ -2758,7 +2758,7 @@ fn jsNewXhr(ctx: *Context, _: Value, _: c_int, _: [*]const Value) callconv(.c) V
 // What a page keeps
 // ---------------------------------------------------------------------------
 
-/// `document.cookie`: what the reader's jar holds for the page, less what
+/// `document.cookie`: what the browser's jar holds for the page, less what
 /// a site marked as its own alone.
 fn jsCookie(ctx: *Context, _: Value) callconv(.c) Value {
     const it = documentOf(ctx) orelse return str(ctx, "");
@@ -2959,7 +2959,7 @@ fn jsWindowHere(ctx: *Context, _: Value) callconv(.c) Value {
 /// `location = "..."`, and `location.href = "..."`: a page asking to be
 /// taken somewhere, which is what a page that has moved says. Asked for
 /// where it already is, it is not asked to go anywhere: a page that sends
-/// the reader to itself is how a circle starts.
+/// the browser to itself is how a circle starts.
 fn jsSetLocation(ctx: *Context, _: Value, value: Value) callconv(.c) Value {
     const it = documentOf(ctx) orelse return qjs.undefinedValue();
     const where = words(ctx, value) orelse return qjs.undefinedValue();
@@ -2998,7 +2998,7 @@ const where_methods = [_]qjs.ListEntry{
     .method("toString", 0, &jsLocationString),
 };
 
-/// `new URL(reference, base)`: the reader's own resolver, in the shape a
+/// `new URL(reference, base)`: the browser's own resolver, in the shape a
 /// script expects.
 fn jsNewUrl(ctx: *Context, _: Value, argc: c_int, argv: [*]const Value) callconv(.c) Value {
     const it = documentOf(ctx) orelse return qjs.nullValue();
@@ -3047,7 +3047,7 @@ fn paramValue(query: []const u8, name: []const u8) ?[]const u8 {
 }
 
 /// `text` with its plus signs and percent escapes undone, kept until the
-/// next asking. The reader's form encoding read backwards, so a query a
+/// next asking. The browser's form encoding read backwards, so a query a
 /// script reads matches what one it sends carries.
 fn unescaped(text: []const u8) ?[]const u8 {
     const S = struct {
@@ -3093,7 +3093,7 @@ const params_methods = [_]qjs.ListEntry{
 
 /// Every answer in `node`'s subtree that goes under a name, written into `w`
 /// the way a form sends them: a form's own controls, which is what a form
-/// sends. The encoding is `form`'s, so a script sends what the reader does.
+/// sends. The encoding is `form`'s, so a script sends what the browser does.
 fn answersIn(node: *Node, w: *std.Io.Writer) void {
     var first = true;
     var at = lexbor.following(node, node);
@@ -3237,7 +3237,7 @@ fn jsUrl(ctx: *Context, _: Value) callconv(.c) Value {
 }
 
 /// The page is read: a script run at the end of a parse is not one waiting
-/// for it. And it is not hidden: this reader shows one page at a time.
+/// for it. And it is not hidden: this browser shows one page at a time.
 fn jsWord(ctx: *Context, _: Value, magic: c_int) callconv(.c) Value {
     return str(ctx, document_words[@intCast(magic)].word);
 }
@@ -3300,7 +3300,7 @@ const document_gets = [_]qjs.ListEntry{
 };
 
 /// The window a page stands in: what is true of any window, whether or not
-/// this reader has one to show. A history it cannot walk, a screen it is
+/// this browser has one to show. A history it cannot walk, a screen it is
 /// drawn on, a clock, and no way to ask a question of the person reading.
 fn furnish(it: *Document) void {
     const ctx = it.ctx;
@@ -3341,7 +3341,7 @@ fn furnish(it: *Document) void {
     _ = qjs.setStr(ctx, global, "navigator", who);
 
     // What a page is drawn on and in: as wide and tall as the window the
-    // reader has, in the page's own pixels.
+    // browser has, in the page's own pixels.
     const width: i32 = if (it.host.screen) |screen| @intFromFloat(screen.width) else 800;
     const height: i32 = if (it.host.screen) |screen| @intFromFloat(screen.height) else 480;
     const screen = qjs.newObject(ctx);
