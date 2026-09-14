@@ -29,6 +29,16 @@ const Writer = std.Io.Writer;
 /// system it runs on, and the kind of machine that is.
 pub const USER_AGENT = "vibeee-web/1.0 (vibeee; " ++ @tagName(builtin.cpu.arch) ++ ")";
 
+/// The same, asking for the version of a page made for small screens: the
+/// word sites look for in what a browser calls itself, since most that keep
+/// such a version tell a phone by that word rather than by the hints.
+pub const MOBILE_USER_AGENT = "vibeee-web/1.0 (vibeee; " ++ @tagName(builtin.cpu.arch) ++ "; Mobile)";
+
+/// What the browser calls itself, for the version of pages it asks for.
+pub fn userAgent(mobile: bool) []const u8 {
+    return if (mobile) MOBILE_USER_AGENT else USER_AGENT;
+}
+
 /// What a request is for, which says what the site is told.
 pub const Wanted = enum { page, style, script, picture };
 
@@ -87,7 +97,7 @@ fn writeRequest(w: *Writer, url: Url, asking: Asking) Writer.Error!void {
     try url.writeTarget(w);
     try w.writeAll(" HTTP/1.1\r\nHost: ");
     try url.writeHost(w);
-    try w.print("\r\nUser-Agent: " ++ USER_AGENT ++ "\r\nAccept: {s}\r\n", .{accepts.get(asking.wanted)});
+    try w.print("\r\nUser-Agent: {s}\r\nAccept: {s}\r\n", .{ userAgent(asking.mobile), accepts.get(asking.wanted) });
     // Global Privacy Control, with every request: the person reading does
     // not agree to their visit being sold or shared, which some sites are
     // bound by law to honour.
@@ -490,11 +500,13 @@ test "a request for the version for small screens says so, and any other says no
     const small = request(&small_buf, where, .{ .mobile = true }).?;
     try testing.expect(std.mem.indexOf(u8, small, "\r\nSec-CH-UA-Mobile: ?1\r\n") != null);
     try testing.expect(std.mem.indexOf(u8, small, "\r\nSave-Data: on\r\n") != null);
+    try testing.expect(std.mem.indexOf(u8, small, "; Mobile)\r\n") != null);
 
     var plain_buf: [512]u8 = undefined;
     const plain = request(&plain_buf, where, .{}).?;
     try testing.expect(std.mem.indexOf(u8, plain, "Sec-CH-UA-Mobile") == null);
     try testing.expect(std.mem.indexOf(u8, plain, "Save-Data") == null);
+    try testing.expect(std.mem.indexOf(u8, plain, "Mobile") == null);
 }
 
 test "a sealed request says the shade the page is drawn in, and a picture's how wide it is drawn" {

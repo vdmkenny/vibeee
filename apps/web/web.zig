@@ -1010,7 +1010,7 @@ fn hostOf() dom.Host {
         .jar = &jar,
         .store = &store,
         .screen = window,
-        .user_agent = http.USER_AGENT,
+        .user_agent = http.userAgent(choices.mobile),
     };
 }
 
