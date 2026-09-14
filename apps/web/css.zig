@@ -439,19 +439,18 @@ fn addTracks(tracks: *page_mod.Tracks, parser: *lexbor.CssParser, term: []const 
     tracks.named.append(trackOf(parser, term)) catch {};
 }
 
-/// One track: a share, or a length. A `minmax(least, most)` is its most
-/// where that is a share, and its least otherwise.
+/// One track: a share, or a length. A `minmax(least, most)` is its most:
+/// a share, a length, or a share where the most is left to the words.
 fn trackOf(parser: *lexbor.CssParser, term: []const u8) page_mod.Track {
     if (functionOf(term, "minmax")) |inside| {
         const comma = std.mem.indexOfScalar(u8, inside, ',') orelse return .{ .share = 1 };
-        const most = std.mem.trim(u8, inside[comma + 1 ..], &std.ascii.whitespace);
-        if (shareOf(most)) |share| return .{ .share = share };
-        return trackOf(parser, std.mem.trim(u8, inside[0..comma], &std.ascii.whitespace));
+        return trackOf(parser, std.mem.trim(u8, inside[comma + 1 ..], &std.ascii.whitespace));
     }
     if (shareOf(term)) |share| return .{ .share = share };
     for ([_][]const u8{ "auto", "max-content", "min-content" }) |word| {
         if (std.ascii.eqlIgnoreCase(term, word)) return .{ .share = 1 };
     }
+    if (functionOf(term, "fit-content") != null) return .{ .share = 1 };
     return .{ .length = lengthIn(parser, "width", term) };
 }
 

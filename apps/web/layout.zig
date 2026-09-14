@@ -19,6 +19,7 @@
 const std = @import("std");
 const text_lib = @import("lib").text;
 const page_mod = @import("page.zig");
+const Bounded = @import("lib").bounded.Bounded;
 const rgb = @import("lib").rgb;
 
 const Page = page_mod.Page;
@@ -365,9 +366,14 @@ fn Placer(comptime Metrics: type) type {
         /// The table cell being set, among the page's, while one is.
         cell: ?u32 = null,
         /// Where the block's text starts from the column edge, and how much
-        /// of the column it has.
+        /// of the column it has: what the block was given, and what its
+        /// line being filled has of that beside the floated boxes.
+        block_x0: i32 = 0,
+        block_right: i32 = 0,
         x0: i32 = 0,
         room: i32 = 0,
+        /// The floated boxes the words beside them go around, while any do.
+        floating: Bounded(Afloat, FLOATS_MAX) = .{},
 
         /// The line being filled: how far along it the next word goes, its
         /// first fragment, and the tallest face on it so far.
@@ -431,10 +437,9 @@ fn Placer(comptime Metrics: type) type {
             self.startLine();
 
             const inset: i32 = if (block.kind == .preformatted) self.spacing.inset else 0;
-            self.x0 = self.left + @as(i32, block.depth) * self.spacing.indent + inset;
-            // Never narrower than a few letters: a list nested past the
-            // column's edge still has to put its words somewhere.
-            self.room = @max(self.right - self.x0 - inset, self.spacing.indent * 2);
+            self.block_x0 = self.left + @as(i32, block.depth) * self.spacing.indent + inset;
+            self.block_right = self.right - inset;
+            self.lineRoom();
 
             switch (block.kind) {
                 .rule => {
@@ -537,6 +542,7 @@ fn Placer(comptime Metrics: type) type {
             const inner_top = self.y;
             const first_line = self.out.lines.items.len;
             const first_fill = self.out.fills.items.len;
+            const first_afloat = self.floating.len;
 
             if (style.display == .flex or style.display == .grid) {
                 try self.flex(index, inner_x, inner_room);
@@ -580,6 +586,11 @@ fn Placer(comptime Metrics: type) type {
                     at += 1;
                 }
             }
+
+            // A box reaches as far down as the floated boxes it holds, which
+            // are its own to hold and no box's after it.
+            for (self.floating.slice()[first_afloat..]) |afloat| self.y = @max(self.y, afloat.bottom);
+            self.floating.truncate(first_afloat);
 
             // The box is as tall as it says where it says, held between the
             // least and most it says; what its words came to otherwise. Words
@@ -692,6 +703,33 @@ fn Placer(comptime Metrics: type) type {
             self.y += self.ascent + self.descent;
             self.leads = false;
             self.startLine();
+            if (!self.floating.isEmpty()) self.lineRoom();
+        }
+
+        /// Where the line being filled starts and how much room it has: the
+        /// block's, less what a floated box beside it takes, and never
+        /// narrower than a few letters, since a list nested past the
+        /// column's edge still has to put its words somewhere. A line left
+        /// less than a quarter of its block's room beside a float goes
+        /// below the float instead.
+        fn lineRoom(self: *Self) void {
+            const least = @max(@divTrunc(self.block_right - self.block_x0, 4), self.spacing.indent * 2);
+            while (true) {
+                var left = self.block_x0;
+                var right = self.block_right;
+                var below: ?i32 = null;
+                for (self.floating.slice()) |afloat| {
+                    if (self.y >= afloat.bottom) continue;
+                    if (afloat.side == .left) left = @max(left, afloat.right) else right = @min(right, afloat.left);
+                    below = @min(below orelse afloat.bottom, afloat.bottom);
+                }
+                if (right - left >= least or below == null) {
+                    self.x0 = left;
+                    self.room = @max(right - left, self.spacing.indent * 2);
+                    return;
+                }
+                self.y = below.?;
+            }
         }
 
         /// Move what is on the line being ended along by the room it leaves,
@@ -1096,14 +1134,24 @@ fn Placer(comptime Metrics: type) type {
 
         /// A run of floated boxes, set as one row that wraps: each as wide
         /// as it says or as its words come to, and the row at the right
-        /// where every one of them floats right. What follows goes below
-        /// the row.
+        /// where every one of them floats right. The words that follow go
+        /// beside the boxes, as far down as they reach, and the box that
+        /// holds them all reaches at least as far.
         fn floats(self: *Self, items: []Item, x: i32, room: i32) Error!void {
             var style = page_mod.BoxStyle{ .display = .flex, .wrap = true, .items = .start, .justify = .end };
             for (items) |item| {
                 if (item.style.float == .left) style.justify = .start;
             }
+            const top = self.y;
+            const first_placed = self.out.placed.items.len;
             try self.layRows(items, style, x, room);
+            for (self.out.placed.items[first_placed..]) |placed| {
+                const side = self.page.containers.items[placed.container orelse continue].style.float;
+                self.floating.append(.{ .left = placed.area.x, .right = placed.area.x + placed.area.w, .bottom = placed.area.y + placed.area.h, .side = side }) catch return;
+            }
+            self.y = top;
+            self.previous = null;
+            self.owed = 0;
         }
 
         /// Set `items` in rows as the container `style` says, `wide` from
@@ -1623,6 +1671,14 @@ const Owns = struct { first: u32 = 0, end: u32 = 0 };
 /// The items of one row of a flex or grid container: those from `first` up
 /// to `end`, among the container's.
 const Row = struct { first: usize, end: usize };
+
+/// A floated box the words beside it go around: its sides, how far down it
+/// reaches, and which side it floats to.
+const Afloat = struct { left: i32, right: i32, bottom: i32, side: page_mod.BoxStyle.Float };
+
+/// How many floated boxes the words go around at once. A page with more
+/// beside one another is a row of pictures, whose words come below.
+const FLOATS_MAX = 8;
 
 /// Grow a row's items into the room it leaves over, in proportion to how
 /// each grows, or shrink them to what it lacks, in proportion to how each
@@ -2679,7 +2735,7 @@ test "a box is as tall as it says, and what spills past that is cut off where it
     try testing.expect(open.layout.lines.items[3].y >= 54);
 }
 
-test "boxes that float are set as a row, the ones floating right at its end, and what follows goes below" {
+test "boxes that float are set as a row, the ones floating right at its end, and the words after them go beside them" {
     var left = try flexed(200, .{ .display = .block }, &.{
         .{ .words = "aa", .style = .{ .display = .block, .float = .left, .width = .{ .px = 50 } } },
         .{ .words = "bb", .style = .{ .display = .block, .float = .left, .width = .{ .px = 50 } } },
@@ -2693,7 +2749,10 @@ test "boxes that float are set as a row, the ones floating right at its end, and
         try testing.expectEqual(x, item.area.x);
         try testing.expectEqual(@as(i32, 0), item.area.y);
     }
-    try testing.expect(left.layout.lines.items[3].y >= 18);
+    // The words after the floats stand beside them, in the room they leave.
+    const beside = left.layout.lines.items[3];
+    try testing.expectEqual(@as(i32, 0), beside.y);
+    try testing.expectEqual(@as(i32, 150), left.layout.fragsOf(beside)[0].x);
 
     var right = try flexed(200, .{ .display = .block }, &.{
         .{ .words = "aa", .style = .{ .display = .block, .float = .right, .width = .{ .px = 50 } } },
@@ -2703,4 +2762,17 @@ test "boxes that float are set as a row, the ones floating right at its end, and
     defer right.deinit();
     try testing.expectEqual(@as(i32, 100), right.layout.placed.items[0].area.x);
     try testing.expectEqual(@as(i32, 150), right.layout.placed.items[1].area.x);
+    try testing.expectEqual(@as(i32, 0), right.layout.fragsOf(right.layout.lines.items[2])[0].x);
+
+    // Words left less than a quarter of their room beside a float go below
+    // it, and the box holding the float reaches as far as the float does.
+    var crowded = try flexed(200, .{ .display = .block }, &.{
+        .{ .words = "aa bb cc dd ee", .style = .{ .display = .block, .float = .left, .width = .{ .px = 170 } } },
+        .{ .words = "ff", .style = .{ .display = .block } },
+    });
+    defer crowded.deinit();
+    const under = crowded.layout.lines.items[crowded.layout.lines.items.len - 1];
+    try testing.expectEqual(@as(i32, 0), crowded.layout.fragsOf(under)[0].x);
+    try testing.expect(under.y >= 18);
+    try testing.expect(crowded.layout.height >= under.y + 18);
 }
