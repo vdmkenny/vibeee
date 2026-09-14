@@ -514,6 +514,7 @@ pub const Property = enum(usize) {
     /// One upstream does not read, kept by name with its value as written.
     custom = 0x0001,
     align_items = 0x0003,
+    align_self = 0x0004,
     background_color = 0x0006,
     border = 0x0009,
     border_bottom = 0x000a,
@@ -526,7 +527,13 @@ pub const Property = enum(usize) {
     border_top_color = 0x0011,
     color = 0x0015,
     display = 0x0017,
+    flex = 0x0019,
+    flex_basis = 0x001a,
     flex_direction = 0x001b,
+    flex_flow = 0x001c,
+    flex_grow = 0x001d,
+    flex_shrink = 0x001e,
+    flex_wrap = 0x001f,
     height = 0x002a,
     justify_content = 0x0030,
     margin = 0x0035,
@@ -566,6 +573,7 @@ pub const Sides = extern struct {
 pub const Keyword = enum(c_uint) {
     /// Nothing written: a side of a shorthand the page did not give.
     undef = 0x0000,
+    stretch = 0x000a,
     auto = 0x000c,
     thin = 0x001c,
     medium = 0x001d,
@@ -588,14 +596,20 @@ pub const Keyword = enum(c_uint) {
     block = 0x00e7,
     @"inline" = 0x00e8,
     flex = 0x00ed,
+    grid = 0x00ee,
     contents = 0x00fd,
     inline_block = 0x00fe,
     inline_flex = 0x0100,
+    inline_grid = 0x0101,
+    content = 0x0103,
     number = 0x0108,
     row = 0x0104,
     row_reverse = 0x0105,
     column = 0x0106,
     column_reverse = 0x0107,
+    nowrap = 0x0109,
+    wrap = 0x010a,
+    wrap_reverse = 0x010b,
     start = 0x010d,
     end = 0x010e,
     justify = 0x014a,
@@ -737,6 +751,23 @@ pub const Single = extern struct { kind: Keyword };
 /// A number, and whether it was written with a point.
 pub const Number = extern struct { num: f64, is_float: bool };
 
+/// A number where one was written, which `kind` says: `undef` where the
+/// page left it out.
+pub const NumberType = extern struct { kind: Keyword, number: Number };
+
+/// The `flex` shorthand: `none`, or how the item grows, shrinks and what it
+/// starts from, each `undef` where the page left it out.
+pub const Flex = extern struct {
+    kind: Keyword,
+    grow: NumberType,
+    shrink: NumberType,
+    basis: LengthPercentage,
+};
+
+/// The `flex-flow` shorthand: which way the items run, and whether they
+/// go on to another line.
+pub const FlexFlow = extern struct { direction: Keyword, wrap: Keyword };
+
 /// A length, with its unit.
 pub const Length = extern struct { num: f64, is_float: bool, unit: Unit };
 
@@ -768,6 +799,8 @@ pub const LengthPercentage = extern struct {
 pub const Unit = enum(c_uint) {
     undef = 0,
     px = 0x0007,
+    em = 0x000a,
+    rem = 0x000e,
     vh = 0x0011,
     vw = 0x0015,
     _,

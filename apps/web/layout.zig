@@ -31,6 +31,10 @@ pub const Error = std.mem.Allocator.Error;
 /// How much room a control or a picture takes on a line.
 pub const Size = struct { w: i32, h: i32 };
 
+/// The pixels in an em: the size a page's text starts at, which is what a
+/// media query measures an em by too.
+const EM = 16;
+
 /// A box on the page, from the column's left edge and the page's top.
 pub const Area = struct { x: i32, y: i32, w: i32, h: i32 };
 
@@ -279,7 +283,7 @@ pub fn buildIn(gpa: std.mem.Allocator, page: *const Page, viewport: Viewport, sp
 /// paint or leave. One set inline among words is its words' line's.
 fn wantsBox(box: page_mod.Container) bool {
     const style = box.style;
-    if (style.display == .flex) return true;
+    if (style.display == .flex or style.display == .grid) return true;
     if (style.display == .@"inline") return false;
     if (box.ground != .none) return true;
     const edges = [_]page_mod.Unit{
@@ -299,9 +303,9 @@ const Room = struct { top: i32 = 0, right: i32 = 0, bottom: i32 = 0, left: i32 =
 
 /// What setting a box came to, for a flex box measuring an item: the ground
 /// the box painted for itself, among the layout's fills, the margin on its
-/// two sides, which its ground does not cover, and the room past its words
-/// on the right, which its width takes in.
-const Laid = struct { fill: ?usize = null, margin_x: i32 = 0, right: i32 = 0 };
+/// sides and above and below it, which its ground does not cover, and the
+/// room past its words on the right, which its width takes in.
+const Laid = struct { fill: ?usize = null, margin_x: i32 = 0, margin_y: i32 = 0, right: i32 = 0 };
 
 fn gap(spacing: Spacing, before: Block, block: Block) i32 {
     if (block.kind == .heading) return spacing.above_heading;
@@ -343,8 +347,9 @@ fn Placer(comptime Metrics: type) type {
         /// Which of the page's blocks each of its boxes holds, where the page
         /// kept any and one of them asks for box layout. Empty where none do.
         spans: []Owns = &.{},
-        /// For each of the page's boxes, the box holding it.
-        parents: []u32 = &.{},
+        /// What each box's words would take at the least and at the most,
+        /// once it has been asked.
+        extents: []?Extent = &.{},
         /// Which way the block's lines lean.
         alignment: page_mod.Alignment = .start,
         /// The table cell being set, among the page's, while one is.
@@ -386,13 +391,14 @@ fn Placer(comptime Metrics: type) type {
         /// blocks, as it has always been.
         fn whole(self: *Self) Error!void {
             self.right = self.viewport.w;
-            if (!self.cover()) return self.blocks(0, self.page.blocks.items.len);
+            const boxed = self.cover();
             defer {
                 self.gpa.free(self.spans);
-                self.gpa.free(self.parents);
+                self.gpa.free(self.extents);
                 self.spans = &.{};
-                self.parents = &.{};
+                self.extents = &.{};
             }
+            if (!boxed) return self.blocks(0, self.page.blocks.items.len);
             _ = try self.container(0, 0, @max(self.viewport.w, 0), false);
         }
 
@@ -487,7 +493,11 @@ fn Placer(comptime Metrics: type) type {
             // The box's ground goes in before the boxes it holds, so that
             // theirs are painted over it and not under it; how far down it
             // reaches is known once they are set.
-            var laid = Laid{ .margin_x = margin.left + margin.right, .right = margin.right + edges.right.width + padding.right };
+            var laid = Laid{
+                .margin_x = margin.left + margin.right,
+                .margin_y = margin.top + margin.bottom,
+                .right = margin.right + edges.right.width + padding.right,
+            };
             if (kept.ground != .none or lined) {
                 laid.fill = self.out.fills.items.len;
                 try self.out.fills.append(self.gpa, .{
@@ -503,7 +513,7 @@ fn Placer(comptime Metrics: type) type {
             self.right = inner_x + inner_room;
             self.y += edges.top.width + padding.top;
 
-            if (style.display == .flex) {
+            if (style.display == .flex or style.display == .grid) {
                 try self.flex(index, inner_x, inner_room);
             } else {
                 var at = span.first;
@@ -666,7 +676,7 @@ fn Placer(comptime Metrics: type) type {
         /// line. A control too wide is cut to the column; a picture comes
         /// already fitted to it, keeping its shape.
         fn box(self: *Self, index: u32, run: page_mod.Run) Error!void {
-            const size = self.sizeOf(run);
+            const size = self.sizeOf(run, self.room);
             const width = @min(size.w, self.room);
             if (self.pen > 0 and self.pen + width > self.room) try self.endLine(false);
             const descent = self.metrics.height(.body) - self.metrics.ascent(.body);
@@ -816,23 +826,29 @@ fn Placer(comptime Metrics: type) type {
             }
         }
 
-        /// The room a control or a picture takes, a picture fitted to the room
-        /// there is.
-        fn sizeOf(self: *const Self, run: page_mod.Run) Size {
+        /// The room a control or a picture takes, a picture fitted to the
+        /// room there is.
+        fn sizeOf(self: *const Self, run: page_mod.Run, room: i32) Size {
             return switch (run) {
                 .control => |which| self.metrics.control(self.page, self.page.controls.items[which]),
-                .picture => |which| self.metrics.picture(self.page, which, self.room),
+                .picture => |which| self.metrics.picture(self.page, which, room),
                 .text, .line_break => unreachable,
             };
         }
 
-        /// What a cell's words need at the least, which is their widest word
-        /// or box, and would take at the most, which is their longest line
-        /// with nothing but their own line ends to break it.
+        /// What a cell's words need at the least and would take at the most.
         fn extent(self: *const Self, cell: page_mod.Cell) Extent {
+            return self.extentOfRuns(self.page.cellRuns(cell), self.room);
+        }
+
+        /// What some runs' words need at the least, which is their widest
+        /// word or box, and would take at the most, which is their longest
+        /// line with nothing but their own line ends to break it; a picture
+        /// among them fitted to `room`.
+        fn extentOfRuns(self: *const Self, runs: []const page_mod.Run, room: i32) Extent {
             var out: Extent = .{};
             var line: i32 = 0;
-            for (self.page.cellRuns(cell)) |run| switch (run) {
+            for (runs) |run| switch (run) {
                 .text => |text| {
                     const face = text.look.face;
                     const words = self.page.textOf(text);
@@ -841,7 +857,7 @@ fn Placer(comptime Metrics: type) type {
                     while (each.next()) |word| out.least = @max(out.least, self.metrics.width(face, word));
                 },
                 .control, .picture => {
-                    const size = self.sizeOf(run);
+                    const size = self.sizeOf(run, room);
                     out.least = @max(out.least, size.w);
                     line += size.w;
                 },
@@ -985,19 +1001,26 @@ fn Placer(comptime Metrics: type) type {
             return self.y;
         }
 
-        /// A flex container: the boxes it holds, and any words of its own
-        /// between them, set one after another along its main axis with the
-        /// room its `gap` says between them, and moved along that axis and
-        /// across it as its `justify-content` and `align-items` say.
+        /// A flex or grid container: the boxes it holds, and any words of
+        /// its own between them, set in rows. A flex row sets its items
+        /// side by side with the room its `gap` says between them; one that
+        /// wraps begins another row where they do not fit, and a grid begins
+        /// one every so many columns. A column stacks its items. Each row is
+        /// as tall as its tallest item, and the items are moved along the
+        /// row and across it as `justify-content` and `align-items` say, an
+        /// item without a height of its own drawn as tall as its row where
+        /// they say to stretch.
         ///
-        /// An item is as long as it says it is, in pixels or as a share of
-        /// the room or of the window, held between the least and most it
-        /// says; one that says nothing is as long as its words come to, set
-        /// in a share of what the others leave, which is all the room there
-        /// is for it however much more its words would take.
+        /// An item is as long as it says, in pixels or as a share of the
+        /// room or of the window, held between the least and most it says;
+        /// one that says nothing is as long as its words would come to on
+        /// one line, and no longer than the room. What a row leaves over
+        /// goes to the items that grow, in proportion; what it lacks is
+        /// taken from those that shrink, in proportion, though not past
+        /// their widest word.
         fn flex(self: *Self, index: u32, x: i32, room: i32) Error!void {
             const style = self.page.containers.items[index].style;
-            const down = style.direction == .column;
+            const down = style.display == .flex and style.direction == .column;
             // The room its items share is what it is given, where it says.
             const wide = @max(self.sized(style.width, style.min_width, style.max_width, room) orelse room, 0);
             var items = try self.gather(index);
@@ -1010,126 +1033,309 @@ fn Placer(comptime Metrics: type) type {
             defer self.previous = keep;
             const first_line = self.out.lines.items.len;
 
-            // What each item is given along the main axis and across it,
-            // where it says: the rest is what its words come to.
-            var taken: i32 = 0;
-            var asking: i32 = 0;
-            for (items.items) |*item| {
-                item.main = if (down)
-                    self.sized(item.style.height, item.style.min_height, item.style.max_height, wide)
-                else
-                    self.sized(item.style.width, item.style.min_width, item.style.max_width, wide);
-                item.cross = if (down)
-                    self.sized(item.style.width, item.style.min_width, item.style.max_width, wide)
-                else
-                    self.sized(item.style.height, item.style.min_height, item.style.max_height, wide);
-                if (item.main) |main| taken += main else asking += 1;
+            for (items.items) |*item| try self.measure(item, down, wide);
+            var rows: std.ArrayList(Row) = .empty;
+            defer rows.deinit(self.gpa);
+            if (down) {
+                for (items.items, 0..) |_, at| try rows.append(self.gpa, .{ .first = at, .end = at + 1 });
+            } else if (style.display == .grid) {
+                try self.gridRows(&rows, items.items, style.columns, wide, between);
+            } else {
+                try self.flexRows(&rows, items.items, style.wrap, style.justify, wide, between);
             }
-            const gaps = between * @as(i32, @intCast(items.items.len - 1));
-            const share = if (down or asking == 0)
-                0
-            else
-                @max(@divTrunc(@max(wide - taken - gaps, 0), asking), 1);
 
-            // Each item's words are set where it would go, then measured,
-            // and moved to where it does go once every one of them is known.
-            for (items.items) |*item| {
-                const along = item.main orelse share;
-                self.y = if (down) self.y else top;
-                item.x = x;
-                item.y = self.y;
-                item.first = self.out.lines.items.len;
-                item.fills_first = self.out.fills.items.len;
-                self.previous = null;
-                self.owed = 0;
-                item.laid = try self.setItem(item, x, @max(if (down) (item.cross orelse wide) else along, 1));
-                item.lines = self.out.lines.items.len - item.first;
-                item.fills = self.out.fills.items.len - item.fills_first;
-                // As tall as its words come to, or as the room its box keeps
-                // below them reaches; as wide as they come to, and the room
-                // its box keeps past them.
-                item.tall = @max(item.tall, self.y - item.y);
-                for (self.out.lines.items[item.first..][0..item.lines]) |line| {
-                    for (self.out.fragsOf(line)) |frag| item.wide = @max(item.wide, frag.x + frag.width - x + item.laid.right);
-                    item.tall = @max(item.tall, line.y + line.height - item.y);
+            // Each row's items are set where they go along it, then
+            // measured, and moved across it once its tallest is known.
+            var y = top;
+            for (rows.items, 0..) |row, count| {
+                if (count > 0) y += between;
+                var across: i32 = 0;
+                for (items.items[row.first..row.end]) |*item| {
+                    const how = item.style.self_align orelse style.items;
+                    const width = if (down) self.acrossOf(item, how, wide) else item.main.?;
+                    item.x = x + (if (down) self.offsetOf(how, wide, width) else item.along);
+                    try self.lay(item, y, width);
+                    if (down) {
+                        if (item.main == null) item.main = self.held(item.tall, item.style.min_height, item.style.max_height, wide);
+                        across = @max(across, item.main.?);
+                    } else {
+                        item.tall = self.held(item.tall, item.style.min_height, item.style.max_height, wide);
+                        across = @max(across, item.cross orelse item.tall);
+                    }
                 }
-                if (item.main == null) {
-                    item.main = self.held(
-                        if (down) item.tall else item.wide,
-                        if (down) item.style.min_height else item.style.min_width,
-                        if (down) item.style.max_height else item.style.max_width,
-                        wide,
-                    );
+                for (items.items[row.first..row.end]) |item| {
+                    const how = item.style.self_align orelse style.items;
+                    const area: Area = if (down)
+                        .{ .x = item.x, .y = y, .w = self.acrossOf(&item, how, wide), .h = item.main.? }
+                    else area: {
+                        const tall = item.cross orelse if (how == .stretch) across else item.tall;
+                        break :area .{ .x = item.x, .y = y + self.offsetOf(how, across, tall), .w = item.main.?, .h = tall };
+                    };
+                    try self.out.placed.append(self.gpa, .{ .area = area, .container = item.container });
+                    self.shift(item, 0, area.y - item.y);
+                    // The box's own ground is as wide as the item came out,
+                    // less the margin its ground does not cover; and as tall
+                    // as its row where the item is stretched to it.
+                    if (item.laid.fill) |fill| {
+                        self.out.fills.items[fill].area.w = @max(area.w - item.laid.margin_x, 0);
+                        if (!down and item.cross == null and how == .stretch) self.out.fills.items[fill].area.h = @max(across - item.laid.margin_y, 0);
+                    }
                 }
+                y += across;
             }
 
-            // More than the room there is: every item is held to a share of
-            // it, in proportion to what it asked for, the last taking what
-            // does not divide. Nothing of a page is set outside the column.
-            var main_total: i32 = gaps;
-            for (items.items) |item| main_total += item.main.?;
-            if (main_total > wide) {
-                var all: i32 = 0;
-                for (items.items) |item| all += item.main.?;
-                const left = @max(wide - gaps, 0);
-                var done: i32 = 0;
-                for (items.items, 0..) |*item, each| {
-                    item.main = if (each + 1 == items.items.len or all <= 0)
-                        @max(left - done, 0)
-                    else
-                        @divTrunc(left * item.main.?, all);
-                    done += item.main.?;
-                }
-                main_total = gaps;
-                for (items.items) |item| main_total += item.main.?;
-            }
-
-            // Across the axis an item is as wide or as tall as it says, or
-            // as its words came out; down a column it stretches.
-            var across_room: i32 = if (down) wide else 0;
-            for (items.items) |*item| {
-                item.cross = item.cross orelse if (down) wide else item.tall;
-                if (!down) across_room = @max(across_room, item.cross.?);
-            }
-
-            var along: i32 = switch (style.justify) {
-                .start, .between => 0,
-                .center => @max(@divTrunc(wide - main_total, 2), 0),
-                .end => @max(wide - main_total, 0),
-            };
-            const between_extra: i32 = if (style.justify == .between and items.items.len > 1)
-                @divTrunc(@max(wide - main_total, 0), @as(i32, @intCast(items.items.len - 1)))
-            else
-                0;
-
-            for (items.items) |item| {
-                const offset: i32 = switch (style.items) {
-                    .start => 0,
-                    .center => @divTrunc(across_room - item.cross.?, 2),
-                    .end => across_room - item.cross.?,
-                };
-                const area: Area = if (down)
-                    .{ .x = x + offset, .y = top + along, .w = item.cross.?, .h = item.main.? }
-                else
-                    .{ .x = x + along, .y = top + offset, .w = item.main.?, .h = item.cross.? };
-                try self.out.placed.append(self.gpa, .{ .area = area, .container = item.container });
-                self.shift(item, area.x - item.x, area.y - item.y);
-                // The box's own ground is as wide as the item came out,
-                // less the margin its ground does not cover.
-                if (item.laid.fill) |fill| self.out.fills.items[fill].area.w = @max(area.w - item.laid.margin_x, 0);
-                along += item.main.? + between + between_extra;
-            }
-
-            // The container is as long as its items come to, or as it says.
-            var tall = if (down) main_total else across_room;
+            // The container is as long as its rows come to, or as it says.
+            var tall = y - top;
             for ([_]page_mod.Unit{ style.min_height, style.height }) |unit| {
                 if (self.resolved(unit, self.viewport.h)) |least| tall = @max(tall, least);
             }
             if (self.resolved(style.max_height, self.viewport.h)) |most| tall = @min(tall, most);
+            // A column with room to spare puts its items where it says.
+            if (down and tall > y - top) {
+                const left = tall - (y - top);
+                var along: i32 = switch (style.justify) {
+                    .start, .between => 0,
+                    .center => @divTrunc(left, 2),
+                    .end => left,
+                };
+                const extra: i32 = if (style.justify == .between and items.items.len > 1) @divTrunc(left, @as(i32, @intCast(items.items.len - 1))) else 0;
+                for (items.items, self.out.placed.items[self.out.placed.items.len - items.items.len ..]) |item, *placed| {
+                    placed.area.y += along;
+                    self.shift(item, 0, along);
+                    along += extra;
+                }
+            }
             self.y = top + tall;
             self.owed = 0;
             // Lines side by side are kept in the order of their tops.
             std.sort.block(Line, self.out.lines.items[first_line..], {}, topAbove);
+        }
+
+        /// Set one item's words in a box `width` wide at its `x`, from `y`,
+        /// and measure how tall they came to: as tall as they reach, or as
+        /// the room its box keeps below them reaches.
+        fn lay(self: *Self, item: *Item, y: i32, width: i32) Error!void {
+            self.y = y;
+            item.y = y;
+            item.first = self.out.lines.items.len;
+            item.fills_first = self.out.fills.items.len;
+            self.previous = null;
+            self.owed = 0;
+            item.laid = try self.setItem(item, item.x, @max(width, 1));
+            item.lines = self.out.lines.items.len - item.first;
+            item.fills = self.out.fills.items.len - item.fills_first;
+            item.tall = @max(item.tall, self.y - item.y);
+            for (self.out.lines.items[item.first..][0..item.lines]) |line| {
+                item.tall = @max(item.tall, line.y + line.height - item.y);
+            }
+        }
+
+        /// How wide an item of a column is: as wide as it says, or as the
+        /// column where it is stretched to it, or as its words would come to.
+        fn acrossOf(self: *const Self, item: *const Item, how: page_mod.BoxStyle.Items, wide: i32) i32 {
+            _ = self;
+            return item.cross orelse if (how == .stretch) wide else @min(item.most, wide);
+        }
+
+        /// How far across its row an item of `size` moves, where the row is
+        /// `across` and the item goes where `how` says.
+        fn offsetOf(_: *const Self, how: page_mod.BoxStyle.Items, across: i32, size: i32) i32 {
+            return switch (how) {
+                .start, .stretch => 0,
+                .center => @max(@divTrunc(across - size, 2), 0),
+                .end => @max(across - size, 0),
+            };
+        }
+
+        /// What an item asks for along the axis and across it, where it
+        /// says; and, along a row, what its words would come to where it
+        /// does not, which is what it starts from.
+        fn measure(self: *Self, item: *Item, down: bool, wide: i32) Error!void {
+            const style = item.style;
+            item.grow = style.grow;
+            item.shrink = style.shrink;
+            const main_unit = if (style.basis != .auto) style.basis else if (down) style.height else style.width;
+            const least_unit = if (down) style.min_height else style.min_width;
+            const most_unit = if (down) style.max_height else style.max_width;
+            item.cross = if (down)
+                self.sized(style.width, style.min_width, style.max_width, wide)
+            else
+                self.sized(style.height, style.min_height, style.max_height, wide);
+            const words = if (item.container) |which| try self.extentOf(which) else self.blockExtent(self.page.blocks.items[item.block.?]);
+            item.least = words.least;
+            item.most = words.most;
+            if (self.resolved(main_unit, wide)) |given| {
+                item.main = self.held(given, least_unit, most_unit, wide);
+            } else if (!down) {
+                item.main = self.held(@min(words.most, wide), least_unit, most_unit, wide);
+            }
+        }
+
+        /// The rows of a flex container: one, or where it wraps, as many as
+        /// its items need, each filled from its start with the items that
+        /// fit; every row then fitted to the room.
+        fn flexRows(self: *Self, rows: *std.ArrayList(Row), items: []Item, wrap: bool, justify: page_mod.BoxStyle.Justify, wide: i32, between: i32) Error!void {
+            var first: usize = 0;
+            while (first < items.len) {
+                var end = first + 1;
+                var taken = items[first].main.?;
+                while (end < items.len and (!wrap or taken + between + items[end].main.? <= wide)) : (end += 1) {
+                    taken += between + items[end].main.?;
+                }
+                fitRow(items[first..end], justify, wide, between);
+                try rows.append(self.gpa, .{ .first = first, .end = end });
+                first = end;
+            }
+        }
+
+        /// The rows of a grid: its items in the order they come, each in
+        /// the next column, or the next columns where it spans more, and on
+        /// a new row where the columns run out.
+        fn gridRows(self: *Self, rows: *std.ArrayList(Row), items: []Item, tracks: page_mod.Tracks, wide: i32, between: i32) Error!void {
+            const widths = try self.columnsOf(tracks, wide, between);
+            defer self.gpa.free(widths);
+            var first: usize = 0;
+            var column: usize = 0;
+            var along: i32 = 0;
+            var at: usize = 0;
+            while (at < items.len) {
+                const item = &items[at];
+                const span = @min(@as(usize, item.style.span), widths.len);
+                if (column + span > widths.len and column > 0) {
+                    try rows.append(self.gpa, .{ .first = first, .end = at });
+                    first = at;
+                    column = 0;
+                    along = 0;
+                    continue;
+                }
+                item.along = along;
+                item.main = sum(widths[column..][0..span]) + between * @as(i32, @intCast(span - 1));
+                along += item.main.? + between;
+                column += span;
+                at += 1;
+                if (column >= widths.len) {
+                    try rows.append(self.gpa, .{ .first = first, .end = at });
+                    first = at;
+                    column = 0;
+                    along = 0;
+                }
+            }
+            if (first < items.len) try rows.append(self.gpa, .{ .first = first, .end = items.len });
+        }
+
+        /// How wide each of a grid's columns is: the lengths as they say,
+        /// and the shares dividing what the lengths and the gaps leave. As
+        /// many of one least width as fit, where the grid says that; one
+        /// column the width of the grid where it names none this reads.
+        fn columnsOf(self: *Self, tracks: page_mod.Tracks, wide: i32, between: i32) Error![]i32 {
+            if (self.resolved(tracks.fit, wide)) |least| {
+                const each = @max(least, 1);
+                const count: usize = @intCast(@max(@divTrunc(wide + between, each + between), 1));
+                const widths = try self.gpa.alloc(i32, count);
+                @memset(widths, @divTrunc(wide - between * @as(i32, @intCast(count - 1)), @as(i32, @intCast(count))));
+                return widths;
+            }
+            const named = tracks.named.slice();
+            const widths = try self.gpa.alloc(i32, @max(named.len, 1));
+            if (named.len == 0) {
+                widths[0] = wide;
+                return widths;
+            }
+            var fixed: i32 = between * @as(i32, @intCast(named.len - 1));
+            var shares: f32 = 0;
+            for (named) |track| switch (track) {
+                .length => |unit| if (self.resolved(unit, wide)) |length| {
+                    fixed += length;
+                } else {
+                    shares += 1;
+                },
+                .share => |share| shares += share,
+            };
+            const left: f32 = @floatFromInt(@max(wide - fixed, 0));
+            for (named, widths) |track, *width| {
+                const share: f32 = switch (track) {
+                    .share => |share| share,
+                    .length => |unit| if (self.resolved(unit, wide)) |length| {
+                        width.* = length;
+                        continue;
+                    } else 1,
+                };
+                width.* = if (shares > 0) @intFromFloat(@round(left * share / shares)) else 0;
+            }
+            return widths;
+        }
+
+        /// What a box's words would take at the least, which is its widest
+        /// word, and at the most, which is its longest line, with the room
+        /// the box keeps on its sides: what an item that says no width
+        /// starts from. Found once for each box and kept, since a box asks
+        /// it of every box it holds.
+        fn extentOf(self: *Self, index: u32) Error!Extent {
+            if (index < self.extents.len) {
+                if (self.extents[index]) |known| return known;
+            }
+            const style = self.page.containers.items[index].style;
+            var items = try self.gather(index);
+            defer items.deinit(self.gpa);
+            const sideways = style.display == .grid or (style.display == .flex and style.direction == .row);
+            const between = self.fixedOf(style.gap) orelse 0;
+            var out = Extent{};
+            for (items.items, 0..) |item, count| {
+                const held_by = if (item.container) |which| try self.extentOf(which) else self.blockExtent(self.page.blocks.items[item.block.?]);
+                const fixed = if (item.container != null) self.fixedOf(item.style.width) else null;
+                const least = fixed orelse held_by.least;
+                const most = fixed orelse held_by.most;
+                const before: i32 = if (count > 0) between else 0;
+                if (sideways) {
+                    out.most += most + before;
+                    // A row that cannot wrap needs every item's least at once.
+                    out.least = if (style.wrap or style.display == .grid) @max(out.least, least) else out.least + least + before;
+                } else {
+                    out.least = @max(out.least, least);
+                    out.most = @max(out.most, most);
+                }
+            }
+            const kept = self.sidesOf(style);
+            out.least += kept;
+            out.most += kept;
+            if (index < self.extents.len) self.extents[index] = out;
+            return out;
+        }
+
+        /// The room a box keeps on its two sides, in pixels where it says
+        /// them in pixels: its margin, its padding and its lines.
+        fn sidesOf(self: *const Self, style: page_mod.BoxStyle) i32 {
+            const units = [_]page_mod.Unit{
+                style.margin.left,       style.margin.right,       style.padding.left, style.padding.right,
+                style.border.left.width, style.border.right.width,
+            };
+            var total: i32 = 0;
+            for (units) |unit| total += self.fixedOf(unit) orelse 0;
+            return total;
+        }
+
+        /// A length in pixels where it is one on its own, and nothing where
+        /// it is a share of something not known yet.
+        fn fixedOf(self: *const Self, unit: page_mod.Unit) ?i32 {
+            return switch (unit) {
+                .px, .em => self.resolved(unit, 0),
+                .auto, .percent, .vw, .vh => null,
+            };
+        }
+
+        /// What one block's words would take at the least and at the most,
+        /// stepped in as deep as it sits. A table is taken to want the whole
+        /// window, and a rule nothing.
+        fn blockExtent(self: *const Self, block: Block) Extent {
+            const indent = @as(i32, block.depth) * self.spacing.indent;
+            var out: Extent = switch (block.kind) {
+                .table => .{ .least = 0, .most = self.viewport.w },
+                .rule => .{},
+                else => self.extentOfRuns(self.page.runsOf(block), self.viewport.w),
+            };
+            out.least += indent;
+            out.most += indent;
+            return out;
         }
 
         /// What a flex container holds, in the order it comes: each box
@@ -1203,6 +1409,7 @@ fn Placer(comptime Metrics: type) type {
             const value: f32 = switch (unit) {
                 .auto => return null,
                 .px => |px| px,
+                .em => |ems| ems * EM,
                 .percent => |share| share / 100 * @as(f32, @floatFromInt(base)),
                 .vw => |share| share / 100 * @as(f32, @floatFromInt(self.viewport.w)),
                 .vh => |share| share / 100 * @as(f32, @floatFromInt(self.viewport.h)),
@@ -1256,6 +1463,8 @@ fn Placer(comptime Metrics: type) type {
                 if (span.first > span.end) span.* = .{};
             }
             self.spans = spans;
+            self.extents = self.gpa.alloc(?Extent, boxes.len) catch return false;
+            @memset(self.extents, null);
             return spans[0].first == 0 and spans[0].end == self.page.blocks.items.len;
         }
 
@@ -1281,6 +1490,48 @@ const Extent = struct { least: i32 = 0, most: i32 = 0 };
 /// `first` up to `end`, which is past the last of them.
 const Owns = struct { first: u32 = 0, end: u32 = 0 };
 
+/// The items of one row of a flex or grid container: those from `first` up
+/// to `end`, among the container's.
+const Row = struct { first: usize, end: usize };
+
+/// Grow a row's items into the room it leaves over, in proportion to how
+/// each grows, or shrink them to what it lacks, in proportion to how each
+/// shrinks and how long it is, though not past its widest word; then set
+/// each along the row as `justify` says.
+fn fitRow(row: []Item, justify: page_mod.BoxStyle.Justify, wide: i32, between: i32) void {
+    const gaps = between * @as(i32, @intCast(row.len - 1));
+    var taken: i32 = gaps;
+    var growth: f32 = 0;
+    var weight: f32 = 0;
+    for (row) |item| {
+        taken += item.main.?;
+        growth += item.grow;
+        weight += item.shrink * @as(f32, @floatFromInt(item.main.?));
+    }
+    const free = wide - taken;
+    if (free > 0 and growth > 0) {
+        for (row) |*item| item.main.? += @intFromFloat(@round(@as(f32, @floatFromInt(free)) * item.grow / growth));
+    } else if (free < 0 and weight > 0) {
+        for (row) |*item| {
+            const cut: i32 = @intFromFloat(@round(@as(f32, @floatFromInt(-free)) * item.shrink * @as(f32, @floatFromInt(item.main.?)) / weight));
+            item.main = @max(item.main.? - cut, @min(item.least, item.main.?));
+        }
+    }
+    var total: i32 = gaps;
+    for (row) |item| total += item.main.?;
+    const left = @max(wide - total, 0);
+    var along: i32 = switch (justify) {
+        .start, .between => 0,
+        .center => @divTrunc(left, 2),
+        .end => left,
+    };
+    const extra: i32 = if (justify == .between and row.len > 1) @divTrunc(left, @as(i32, @intCast(row.len - 1))) else 0;
+    for (row) |*item| {
+        item.along = along;
+        along += item.main.? + between + extra;
+    }
+}
+
 /// One item of a flex container, before it is put where it goes: the box it
 /// is, or the one block of the container's own words it is; what it is given
 /// along the container's main axis, `main`, and across it, `cross`, where it
@@ -1292,6 +1543,15 @@ const Item = struct {
     style: page_mod.BoxStyle = .{},
     main: ?i32 = null,
     cross: ?i32 = null,
+    /// What its words would take at the least and at the most.
+    least: i32 = 0,
+    most: i32 = 0,
+    /// How it takes room left over and gives up room lacking, in proportion
+    /// to the others in its row.
+    grow: f32 = 0,
+    shrink: f32 = 1,
+    /// Where it goes along its row, from the row's start.
+    along: i32 = 0,
     wide: i32 = 0,
     tall: i32 = 0,
     x: i32 = 0,
@@ -2041,4 +2301,166 @@ test "a link's words are their own fragment beside the text around them" {
     try testing.expectEqualStrings("here", b.fragText(frags[1]));
     try testing.expectEqual(@as(i32, 24), frags[1].x);
     try testing.expectEqual(@as(i32, 24), frags[1].width);
+}
+
+test "a row that wraps begins another below its tallest item, with the gap between the rows" {
+    // Four boxes of thirty pixels in a row of a hundred, ten apart: two fit
+    // a row, and the second item's words take two lines.
+    var b = try flexed(100, .{ .display = .flex, .wrap = true, .gap = .{ .px = 10 } }, &.{
+        .{ .words = "aaaaa", .style = .{ .width = .{ .px = 30 } } },
+        .{ .words = "bbbb bbbb", .style = .{ .width = .{ .px = 30 } } },
+        .{ .words = "cc", .style = .{ .width = .{ .px = 30 } } },
+        .{ .words = "dd", .style = .{ .width = .{ .px = 30 } } },
+    });
+    defer b.deinit();
+    const placed = b.layout.placed.items;
+    try testing.expectEqual(@as(usize, 4), placed.len);
+    try testing.expectEqual(@as(i32, 0), placed[0].area.x);
+    try testing.expectEqual(@as(i32, 40), placed[1].area.x);
+    try testing.expectEqual(@as(i32, 0), placed[1].area.y);
+    try testing.expectEqual(@as(i32, 0), placed[2].area.x);
+    try testing.expectEqual(@as(i32, 46), placed[2].area.y);
+    try testing.expectEqual(@as(i32, 40), placed[3].area.x);
+    try testing.expectEqual(@as(i32, 46), placed[3].area.y);
+    // Every item of a row is drawn as tall as the row, and its words go
+    // with it.
+    try testing.expectEqual(@as(i32, 36), placed[0].area.h);
+    try testing.expectEqual(@as(i32, 18), placed[2].area.h);
+    try testing.expectEqual(@as(i32, 46), b.layout.lines.items[3].y);
+    try testing.expectEqual(@as(i32, 36 + 10 + 18), b.layout.height);
+}
+
+test "items that grow take the room a row leaves over, in proportion" {
+    var b = try flexed(300, flex, &.{
+        .{ .words = "aa", .style = .{ .grow = 1, .basis = .{ .px = 0 } } },
+        .{ .words = "bb", .style = .{ .grow = 2, .basis = .{ .px = 0 } } },
+    });
+    defer b.deinit();
+    const placed = b.layout.placed.items;
+    try testing.expectEqual(@as(i32, 100), placed[0].area.w);
+    try testing.expectEqual(@as(i32, 100), placed[1].area.x);
+    try testing.expectEqual(@as(i32, 200), placed[1].area.w);
+    // One that grows beside one that does not: the room past the other's
+    // words is all its own.
+    var one = try flexed(300, flex, &.{
+        .{ .words = "aa" },
+        .{ .words = "bb", .style = .{ .grow = 1 } },
+    });
+    defer one.deinit();
+    try testing.expectEqual(@as(i32, 12), one.layout.placed.items[0].area.w);
+    try testing.expectEqual(@as(i32, 288), one.layout.placed.items[1].area.w);
+}
+
+test "an item that does not shrink keeps what it starts from, and one that does gives up room, but not past its widest word" {
+    var b = try flexed(100, flex, &.{
+        .{ .words = "aa", .style = .{ .basis = .{ .px = 60 }, .shrink = 0 } },
+        .{ .words = "bb", .style = .{ .width = .{ .px = 60 } } },
+    });
+    defer b.deinit();
+    const placed = b.layout.placed.items;
+    try testing.expectEqual(@as(i32, 60), placed[0].area.w);
+    try testing.expectEqual(@as(i32, 60), placed[1].area.x);
+    try testing.expectEqual(@as(i32, 40), placed[1].area.w);
+    // Two words of twelve letters in a row of sixty: neither gives up the
+    // width of its word, so the second stands past the row's end.
+    var held = try flexed(60, flex, &.{ .{ .words = "aaaaaaaaaaaa" }, .{ .words = "bbbbbbbbbbbb" } });
+    defer held.deinit();
+    try testing.expectEqual(@as(i32, 60), held.layout.placed.items[0].area.w);
+    try testing.expectEqual(@as(i32, 60), held.layout.placed.items[1].area.x);
+}
+
+test "an item that says no width is as wide as its words would come to on one line, and no wider than the row" {
+    // Words in a row of two hundred: the second wraps rather than being
+    // squeezed, and is laid out at the width it ends with.
+    var b = try flexed(200, .{ .display = .flex, .wrap = true }, &.{
+        .{ .words = "aa" },
+        .{ .words = "bbbb bbbb bbbb bbbb bbbb bbbb bbbb bbbb bbbb bbbb bbbb bbbb bbbb bbbb bbbb bbbb bbbb bbbb bbbb bbbb" },
+    });
+    defer b.deinit();
+    const placed = b.layout.placed.items;
+    try testing.expectEqual(@as(i32, 12), placed[0].area.w);
+    try testing.expectEqual(@as(i32, 0), placed[1].area.x);
+    try testing.expectEqual(@as(i32, 18), placed[1].area.y);
+    try testing.expectEqual(@as(i32, 200), placed[1].area.w);
+    // Six words of five letters a line, at most.
+    try testing.expectEqual(@as(i32, 18 * 4), placed[1].area.h);
+    for (b.layout.lines.items[1..]) |line| {
+        for (b.layout.fragsOf(line)) |frag| try testing.expect(frag.x + frag.width <= 200);
+    }
+}
+
+test "a grid sets its items in the columns it names, a row as tall as its tallest cell" {
+    var columns = page_mod.Tracks{};
+    try columns.named.append(.{ .share = 1 });
+    try columns.named.append(.{ .share = 1 });
+    try columns.named.append(.{ .share = 1 });
+    var b = try flexed(320, .{ .display = .grid, .columns = columns, .gap = .{ .px = 10 } }, &.{
+        .{ .words = "aa" }, .{ .words = "bbbb bbbb bbbb bbbb" }, .{ .words = "cc" }, .{ .words = "dd" },
+    });
+    defer b.deinit();
+    const placed = b.layout.placed.items;
+    try testing.expectEqual(@as(usize, 4), placed.len);
+    for (placed[0..3], [_]i32{ 0, 110, 220 }) |item, x| {
+        try testing.expectEqual(x, item.area.x);
+        try testing.expectEqual(@as(i32, 100), item.area.w);
+        try testing.expectEqual(@as(i32, 0), item.area.y);
+        try testing.expectEqual(@as(i32, 36), item.area.h);
+    }
+    try testing.expectEqual(@as(i32, 0), placed[3].area.x);
+    try testing.expectEqual(@as(i32, 46), placed[3].area.y);
+    try testing.expectEqual(@as(i32, 64), b.layout.height);
+}
+
+test "a grid's columns are as long as they say, the shares dividing the rest, and a cell spans the columns it says" {
+    var columns = page_mod.Tracks{};
+    try columns.named.append(.{ .length = .{ .px = 160 } });
+    try columns.named.append(.{ .share = 1 });
+    var b = try flexed(400, .{ .display = .grid, .columns = columns, .gap = .{ .px = 16 } }, &.{
+        .{ .words = "nav" },
+        .{ .words = "main" },
+        .{ .words = "foot", .style = .{ .span = 2 } },
+    });
+    defer b.deinit();
+    const placed = b.layout.placed.items;
+    try testing.expectEqual(@as(i32, 160), placed[0].area.w);
+    try testing.expectEqual(@as(i32, 176), placed[1].area.x);
+    try testing.expectEqual(@as(i32, 224), placed[1].area.w);
+    try testing.expectEqual(@as(i32, 0), placed[2].area.x);
+    try testing.expectEqual(@as(i32, 34), placed[2].area.y);
+    try testing.expectEqual(@as(i32, 400), placed[2].area.w);
+
+    // As many columns as fit of one width: three of a hundred and fifty,
+    // fifteen apart, in four hundred and eighty.
+    var fit = try flexed(480, .{ .display = .grid, .columns = .{ .fit = .{ .px = 150 } }, .gap = .{ .px = 15 } }, &.{
+        .{ .words = "aa" }, .{ .words = "bb" }, .{ .words = "cc" }, .{ .words = "dd" },
+    });
+    defer fit.deinit();
+    try testing.expectEqual(@as(i32, 150), fit.layout.placed.items[0].area.w);
+    try testing.expectEqual(@as(i32, 330), fit.layout.placed.items[2].area.x);
+    try testing.expectEqual(@as(i32, 33), fit.layout.placed.items[3].area.y);
+}
+
+test "an item without a height of its own is drawn as tall as its row, ground and all, unless the row says otherwise" {
+    var b = try flexed(200, flex, &.{
+        .{ .words = "aa", .ground = @enumFromInt(1) },
+        .{ .words = "bbbb bbbb", .style = .{ .width = .{ .px = 30 } } },
+    });
+    defer b.deinit();
+    try testing.expectEqual(@as(i32, 36), b.layout.placed.items[0].area.h);
+    try testing.expectEqual(@as(i32, 36), b.layout.fills.items[0].area.h);
+    // Set at the start of the row instead, it is as tall as its words.
+    var topped = try flexed(200, .{ .display = .flex, .items = .start }, &.{
+        .{ .words = "aa", .ground = @enumFromInt(1) },
+        .{ .words = "bbbb bbbb", .style = .{ .width = .{ .px = 30 }, .self_align = .end } },
+    });
+    defer topped.deinit();
+    try testing.expectEqual(@as(i32, 18), topped.layout.placed.items[0].area.h);
+    try testing.expectEqual(@as(i32, 18), topped.layout.fills.items[0].area.h);
+    try testing.expectEqual(@as(i32, 0), topped.layout.placed.items[1].area.y);
+}
+
+test "an em is sixteen pixels" {
+    var b = try flexed(200, .{ .display = .flex, .gap = .{ .em = 1 } }, &.{ .{ .words = "aa" }, .{ .words = "bb" } });
+    defer b.deinit();
+    try testing.expectEqual(@as(i32, 28), b.layout.placed.items[1].area.x);
 }

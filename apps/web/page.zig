@@ -13,6 +13,7 @@
 //! is decided here, and is not something to find out on the panel.
 
 const std = @import("std");
+const Bounded = @import("lib").bounded.Bounded;
 const rgb = @import("lib").rgb;
 const Charset = @import("charset.zig").Charset;
 
@@ -64,30 +65,70 @@ pub const Colours = packed struct(u16) {
     ground: Swatch = .none,
 };
 
-/// A length as a stylesheet writes one: in the page's pixels, as a share of
-/// the box around it, or as a share of the window. Kept as written, and
-/// resolved when the page is laid out, where the box and the window are
-/// known.
+/// A length as a stylesheet writes one: in the page's pixels, in ems of the
+/// size a page's text starts at, as a share of the box around it, or as a
+/// share of the window. Kept as written, and resolved when the page is laid
+/// out, where the box and the window are known.
 pub const Unit = union(enum) {
     auto,
     px: f32,
+    em: f32,
     percent: f32,
     vw: f32,
     vh: f32,
 };
 
+/// The columns a grid container sets its items in: the tracks it names,
+/// each a length or a share of the room the lengths leave, or as many
+/// columns of one least width as fit, sharing the room.
+pub const Tracks = struct {
+    named: Bounded(Track, TRACKS_MAX) = .{},
+    /// `repeat(auto-fill, minmax(least, 1fr))` and its kin: nothing where
+    /// the columns are named one by one.
+    fit: Unit = .auto,
+
+    /// As many columns as a page is likely to name; a grid of more is a
+    /// table of data, which a page marks up as one.
+    pub const TRACKS_MAX = 12;
+
+    pub fn isEmpty(self: Tracks) bool {
+        return self.named.isEmpty() and self.fit == .auto;
+    }
+};
+
+pub const Track = union(enum) {
+    length: Unit,
+    /// A share of the room the lengths leave, in `fr`.
+    share: f32,
+};
+
 /// What a stylesheet says of a box that this reader lays out: whether it is
-/// a flex container, and the room it and its items are given.
+/// a flex or grid container, and the room it and its items are given.
 pub const BoxStyle = struct {
     display: Display = .@"inline",
     /// Which way a flex container's items run along its main axis.
     direction: Direction = .row,
-    /// The room a flex container leaves between its items.
+    /// Whether a flex container's items go on to another row when they do
+    /// not fit, rather than being squeezed on to one.
+    wrap: bool = false,
+    /// The room a flex or grid container leaves between its items.
     gap: Unit = .auto,
     /// Where a flex container's items go along its main axis.
     justify: Justify = .start,
     /// Where they go across it.
-    items: Items = .start,
+    items: Items = .stretch,
+    /// Where this box goes across its container's axis, where it says for
+    /// itself rather than taking what the container says.
+    self_align: ?Items = null,
+    /// How a flex item grows into the room left over, how it shrinks when
+    /// there is too little, and what it starts from before either.
+    grow: f32 = 0,
+    shrink: f32 = 1,
+    basis: Unit = .auto,
+    /// The columns a grid container sets its items in.
+    columns: Tracks = .{},
+    /// How many of a grid's columns this box spans.
+    span: u8 = 1,
     width: Unit = .auto,
     height: Unit = .auto,
     min_width: Unit = .auto,
@@ -126,14 +167,15 @@ pub const BoxStyle = struct {
         left: Line = .{},
     };
 
-    pub const Display = enum { block, @"inline", flex };
+    pub const Display = enum { block, @"inline", flex, grid };
     pub const Direction = enum { row, column };
     /// `space-between`: the room left over goes between the items, none of it
     /// outside them.
     pub const Justify = enum { start, center, end, between };
-    /// `stretch` is what a box without a size across the axis does anyway
-    /// here, since its words fill the room they are set in.
-    pub const Items = enum { start, center, end };
+    /// `stretch`, which is where a page that says nothing puts them: an item
+    /// without a size across the axis is drawn as tall, or as wide, as the
+    /// row it is in.
+    pub const Items = enum { start, center, end, stretch };
 };
 
 /// One retained CSS box. The boxes are kept in the order the walk arrives

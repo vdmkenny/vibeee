@@ -632,6 +632,53 @@ test "a rule's pseudo-class functions are read for the names inside them, and an
     try testing.expect(!std.mem.containsAtLeast(u8, after.text.items, 1, "first"));
 }
 
+test "a stylesheet's flex and grid words are read: the shorthand, wrapping, the columns a grid names and the columns a cell spans" {
+    const it = try opened(
+        "<!DOCTYPE html><html><body><div id=\"row\"><p id=\"a\">a</p><p id=\"b\">b</p></div>" ++
+            "<div id=\"grid\"><p id=\"c\">c</p></div><div id=\"fit\"><p>d</p></div></body></html>",
+        false,
+    );
+    defer it.end();
+    css.apply(heap, it.tree,
+        \\#row { display: flex; flex-flow: row wrap; gap: 1rem; align-items: center; }
+        \\#a { flex: 1; align-self: flex-end; }
+        \\#b { flex: 0 0 120px; }
+        \\#grid { display: grid; grid-template-columns: 160px repeat(2, 1fr) minmax(100px, 2fr); grid-gap: 8px; }
+        \\#c { grid-column: 1 / -1; }
+        \\#fit { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); }
+    , null, &rules);
+    var page = try it.page();
+    defer page.deinit(heap);
+    const boxes = page.containers.items;
+    var at: usize = 0;
+    while (at < boxes.len and boxes[at].style.display != .flex) at += 1;
+    try testing.expect(at + 5 < boxes.len);
+    const row = boxes[at].style;
+    try testing.expect(row.wrap);
+    try testing.expectEqual(page_mod.Unit{ .em = 1 }, row.gap);
+    try testing.expectEqual(page_mod.BoxStyle.Items.center, row.items);
+    const a = boxes[at + 1].style;
+    try testing.expectEqual(@as(f32, 1), a.grow);
+    try testing.expectEqual(@as(f32, 1), a.shrink);
+    try testing.expectEqual(page_mod.Unit{ .px = 0 }, a.basis);
+    try testing.expectEqual(@as(?page_mod.BoxStyle.Items, .end), a.self_align);
+    const b = boxes[at + 2].style;
+    try testing.expectEqual(@as(f32, 0), b.grow);
+    try testing.expectEqual(@as(f32, 0), b.shrink);
+    try testing.expectEqual(page_mod.Unit{ .px = 120 }, b.basis);
+    const grid = boxes[at + 3].style;
+    try testing.expectEqual(page_mod.BoxStyle.Display.grid, grid.display);
+    try testing.expectEqual(page_mod.Unit{ .px = 8 }, grid.gap);
+    const named = grid.columns.named.slice();
+    try testing.expectEqual(@as(usize, 4), named.len);
+    try testing.expectEqual(page_mod.Track{ .length = .{ .px = 160 } }, named[0]);
+    try testing.expectEqual(page_mod.Track{ .share = 1 }, named[1]);
+    try testing.expectEqual(page_mod.Track{ .share = 1 }, named[2]);
+    try testing.expectEqual(page_mod.Track{ .share = 2 }, named[3]);
+    try testing.expectEqual(@as(u8, 255), boxes[at + 4].style.span);
+    try testing.expectEqual(page_mod.Unit{ .px = 150 }, boxes[at + 5].style.columns.fit);
+}
+
 test "a box with room and a ground of its own is kept as a block with both, for the layout to set" {
     const it = try opened(
         "<!DOCTYPE html><html><body><p>plain</p><div class=\"card\"><p>inside</p></div>" ++

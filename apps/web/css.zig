@@ -76,12 +76,20 @@ pub fn flows(node: *const Node) bool {
 /// and the room it and its items are given, in the units the layout reads. A
 /// length in a unit it does not read is `auto`.
 pub fn boxStyle(node: *const Node, fallback: page_mod.BoxStyle.Display) page_mod.BoxStyle {
+    const flexing = flexOf(node);
     return .{
         .display = displayOf(node) orelse fallback,
         .direction = directionOf(node),
+        .wrap = wrapOf(node),
         .gap = gapOf(node),
         .justify = justifyOf(node),
         .items = itemsOf(node),
+        .self_align = selfOf(node),
+        .grow = flexing.grow,
+        .shrink = flexing.shrink,
+        .basis = flexing.basis,
+        .columns = tracksOf(node),
+        .span = spanOf(node),
         .width = lengthOf(node, .width),
         .height = lengthOf(node, .height),
         .min_width = lengthOf(node, .min_width),
@@ -150,11 +158,18 @@ fn colourOf(colour: *const lexbor.Colour) ?rgb.Colour {
 /// How far a box's corners are rounded, from `border-radius`, which
 /// upstream keeps as written: the first length of it, read as a width.
 fn radiusOf(node: *const Node) page_mod.Unit {
-    if (node.type != .element) return .auto;
-    const cascade = cascadeOf(node) orelse return .auto;
-    const declaration = lexbor.lxb_dom_element_style_by_name(node, "border-radius", "border-radius".len) orelse return .auto;
-    const custom = customOf(declaration) orelse return .auto;
-    return lengthIn(cascade.parser, "width", firstOf(custom.value.slice()));
+    const written = customValue(node, "border-radius") orelse return .auto;
+    return lengthIn(cascadeOf(node).?.parser, "width", firstOf(written));
+}
+
+/// What the page wrote for a property upstream keeps by name, where it
+/// wrote one: a gap, a radius or a grid's columns, which upstream does not
+/// read.
+fn customValue(node: *const Node, name: []const u8) ?[]const u8 {
+    if (node.type != .element or cascadeOf(node) == null) return null;
+    const declaration = lexbor.lxb_dom_element_style_by_name(node, name.ptr, name.len) orelse return null;
+    const custom = customOf(declaration) orelse return null;
+    return custom.value.slice();
 }
 
 /// The room on a box's four sides, from the `margin` or `padding` shorthand
@@ -193,6 +208,7 @@ fn displayOf(node: *const Node) ?page_mod.BoxStyle.Display {
     const display = valueOf(lexbor.Display, node, .display) orelse return null;
     for ([_]Keyword{ display.a, display.b, display.c }) |part| switch (part) {
         .flex, .inline_flex => return .flex,
+        .grid, .inline_grid => return .grid,
         .block => return .block,
         .@"inline", .inline_block, .contents => return .@"inline",
         else => {},
@@ -219,6 +235,7 @@ fn unitOf(length: *const lexbor.LengthPercentage) page_mod.Unit {
         .number => .{ .px = @floatCast(length.value.percentage.num) },
         .length => switch (length.value.length.unit) {
             .undef, .px => .{ .px = @floatCast(length.value.length.num) },
+            .em, .rem => .{ .em = @floatCast(length.value.length.num) },
             .vw => .{ .vw = @floatCast(length.value.length.num) },
             .vh => .{ .vh = @floatCast(length.value.length.num) },
             else => .auto,
@@ -228,13 +245,55 @@ fn unitOf(length: *const lexbor.LengthPercentage) page_mod.Unit {
 }
 
 /// Which way a flex container's items run: `flex-direction: column`, or
-/// across it reversed, which this reader reads as across it.
+/// across it reversed, which this reader reads as across it; from the
+/// `flex-flow` shorthand where the page wrote that instead.
 fn directionOf(node: *const Node) page_mod.BoxStyle.Direction {
-    const direction = valueOf(lexbor.Single, node, .flex_direction) orelse return .row;
-    return switch (direction.kind) {
+    const kind: Keyword = if (valueOf(lexbor.Single, node, .flex_direction)) |direction|
+        direction.kind
+    else if (valueOf(lexbor.FlexFlow, node, .flex_flow)) |flow|
+        flow.direction
+    else
+        return .row;
+    return switch (kind) {
         .column, .column_reverse => .column,
         else => .row,
     };
+}
+
+/// Whether a flex container's items go on to another row when they do not
+/// fit: `flex-wrap`, or the `flex-flow` shorthand, wrapping either way up.
+fn wrapOf(node: *const Node) bool {
+    const kind: Keyword = if (valueOf(lexbor.Single, node, .flex_wrap)) |wrap|
+        wrap.kind
+    else if (valueOf(lexbor.FlexFlow, node, .flex_flow)) |flow|
+        flow.wrap
+    else
+        return false;
+    return kind == .wrap or kind == .wrap_reverse;
+}
+
+/// How a flex item grows, shrinks and what it starts from.
+const Flexing = struct { grow: f32 = 0, shrink: f32 = 1, basis: page_mod.Unit = .auto };
+
+/// The `flex` shorthand, then the longhands written on their own. In the
+/// shorthand a growth written alone starts the item from nothing, a start
+/// written alone lets it grow, and `none` holds it at what it starts from.
+fn flexOf(node: *const Node) Flexing {
+    var flexing = Flexing{};
+    if (valueOf(lexbor.Flex, node, .flex)) |flex| switch (flex.kind) {
+        .undef => {
+            const grown = flex.grow.kind != .undef;
+            flexing.grow = if (grown) @floatCast(flex.grow.number.num) else 1;
+            flexing.shrink = if (flex.shrink.kind != .undef) @floatCast(flex.shrink.number.num) else 1;
+            flexing.basis = if (flex.basis.kind != .undef) unitOf(&flex.basis) else if (grown) .{ .px = 0 } else .auto;
+        },
+        .none => flexing = .{ .grow = 0, .shrink = 0, .basis = .auto },
+        else => {},
+    };
+    if (valueOf(lexbor.NumberType, node, .flex_grow)) |grow| flexing.grow = @floatCast(grow.number.num);
+    if (valueOf(lexbor.NumberType, node, .flex_shrink)) |shrink| flexing.shrink = @floatCast(shrink.number.num);
+    if (lengthMaybe(node, .flex_basis)) |basis| flexing.basis = basis;
+    return flexing;
 }
 
 /// Where a flex container's items go along its main axis, as
@@ -251,36 +310,174 @@ fn justifyOf(node: *const Node) page_mod.BoxStyle.Justify {
     };
 }
 
-/// Where they go across it, as `align-items` says.
+/// Where they go across it, as `align-items` says: stretched to the row
+/// where it says nothing, or something this reader does not tell apart.
 fn itemsOf(node: *const Node) page_mod.BoxStyle.Items {
-    const items = valueOf(lexbor.Single, node, .align_items) orelse return .start;
-    return switch (items.kind) {
+    const items = valueOf(lexbor.Single, node, .align_items) orelse return .stretch;
+    return crossOf(items.kind) orelse .stretch;
+}
+
+/// Where a box puts itself across its container's axis, as `align-self`
+/// says; nothing where it takes the container's word.
+fn selfOf(node: *const Node) ?page_mod.BoxStyle.Items {
+    const self_align = valueOf(lexbor.Single, node, .align_self) orelse return null;
+    return crossOf(self_align.kind);
+}
+
+fn crossOf(kind: Keyword) ?page_mod.BoxStyle.Items {
+    return switch (kind) {
+        .start, .flex_start => .start,
         .center => .center,
         .end, .flex_end => .end,
-        else => .start,
+        .stretch => .stretch,
+        else => null,
     };
 }
 
-/// The room a flex container leaves between its items, from `gap`, or from
-/// `row-gap` or `column-gap` alone where only one of them is written.
+/// The columns a grid names, from `grid-template-columns`, which upstream
+/// keeps as written: each a length read as a width, a share in `fr`, or
+/// `auto` and its kin, which are a share; `repeat()` names a run of them,
+/// and with `auto-fill` or `auto-fit` as many of one least width as fit.
+fn tracksOf(node: *const Node) page_mod.Tracks {
+    var tracks = page_mod.Tracks{};
+    var rest = customValue(node, "grid-template-columns") orelse return tracks;
+    const parser = cascadeOf(node).?.parser;
+    while (nextTerm(&rest)) |term| addTracks(&tracks, parser, term);
+    return tracks;
+}
+
+/// The tracks one term names: one, or the run a `repeat()` names.
+fn addTracks(tracks: *page_mod.Tracks, parser: *lexbor.CssParser, term: []const u8) void {
+    if (functionOf(term, "repeat")) |inside| {
+        const comma = std.mem.indexOfScalar(u8, inside, ',') orelse return;
+        const count = std.mem.trim(u8, inside[0..comma], &std.ascii.whitespace);
+        if (std.ascii.eqlIgnoreCase(count, "auto-fill") or std.ascii.eqlIgnoreCase(count, "auto-fit")) {
+            var listed = inside[comma + 1 ..];
+            tracks.fit = leastOf(parser, nextTerm(&listed) orelse return);
+            return;
+        }
+        for (0..std.fmt.parseInt(usize, count, 10) catch return) |_| {
+            var listed = inside[comma + 1 ..];
+            while (nextTerm(&listed)) |each| tracks.named.append(trackOf(parser, each)) catch return;
+        }
+        return;
+    }
+    tracks.named.append(trackOf(parser, term)) catch {};
+}
+
+/// One track: a share, or a length. A `minmax(least, most)` is its most
+/// where that is a share, and its least otherwise.
+fn trackOf(parser: *lexbor.CssParser, term: []const u8) page_mod.Track {
+    if (functionOf(term, "minmax")) |inside| {
+        const comma = std.mem.indexOfScalar(u8, inside, ',') orelse return .{ .share = 1 };
+        const most = std.mem.trim(u8, inside[comma + 1 ..], &std.ascii.whitespace);
+        if (shareOf(most)) |share| return .{ .share = share };
+        return trackOf(parser, std.mem.trim(u8, inside[0..comma], &std.ascii.whitespace));
+    }
+    if (shareOf(term)) |share| return .{ .share = share };
+    for ([_][]const u8{ "auto", "max-content", "min-content" }) |word| {
+        if (std.ascii.eqlIgnoreCase(term, word)) return .{ .share = 1 };
+    }
+    return .{ .length = lengthIn(parser, "width", term) };
+}
+
+/// The least width of a `minmax()`, or of a plain length, which is what as
+/// many columns as fit are counted by.
+fn leastOf(parser: *lexbor.CssParser, term: []const u8) page_mod.Unit {
+    if (functionOf(term, "minmax")) |inside| {
+        const comma = std.mem.indexOfScalar(u8, inside, ',') orelse return .auto;
+        return lengthIn(parser, "width", std.mem.trim(u8, inside[0..comma], &std.ascii.whitespace));
+    }
+    return lengthIn(parser, "width", term);
+}
+
+/// A share of the room, written `2fr`.
+fn shareOf(term: []const u8) ?f32 {
+    if (term.len < 3 or !std.ascii.endsWithIgnoreCase(term, "fr")) return null;
+    return std.fmt.parseFloat(f32, term[0 .. term.len - 2]) catch null;
+}
+
+/// What is inside `name(...)`, where `term` is that function.
+fn functionOf(term: []const u8, name: []const u8) ?[]const u8 {
+    if (term.len < name.len + 2 or !std.ascii.startsWithIgnoreCase(term, name)) return null;
+    if (term[name.len] != '(' or term[term.len - 1] != ')') return null;
+    return term[name.len + 1 .. term.len - 1];
+}
+
+/// The next term of a value, and the rest after it: a term ends at a space
+/// outside any parentheses, so a `repeat()` with spaces inside is one term.
+fn nextTerm(rest: *[]const u8) ?[]const u8 {
+    const text = std.mem.trimStart(u8, rest.*, &std.ascii.whitespace);
+    if (text.len == 0) return null;
+    var depth: usize = 0;
+    var end: usize = 0;
+    while (end < text.len) : (end += 1) {
+        switch (text[end]) {
+            '(' => depth += 1,
+            ')' => depth -|= 1,
+            ' ', '\t', '\n', '\r' => if (depth == 0) break,
+            else => {},
+        }
+    }
+    rest.* = text[end..];
+    return text[0..end];
+}
+
+/// How many of a grid's columns a box spans, from `grid-column`: `span n`,
+/// or the lines it runs from and to, `a / b`, with `-1` the row's end.
+fn spanOf(node: *const Node) u8 {
+    const written = customValue(node, "grid-column") orelse return 1;
+    var words = std.mem.tokenizeAny(u8, written, " \t/");
+    var from: ?i32 = null;
+    var span: ?i32 = null;
+    var spanning = false;
+    while (words.next()) |word| {
+        if (std.ascii.eqlIgnoreCase(word, "span")) {
+            spanning = true;
+            continue;
+        }
+        const n = std.fmt.parseInt(i32, word, 10) catch {
+            spanning = false;
+            continue;
+        };
+        if (spanning) {
+            span = n;
+        } else if (from == null) {
+            from = n;
+        } else if (n == -1) {
+            span = std.math.maxInt(u8);
+        } else if (n > from.?) {
+            span = n - from.?;
+        }
+        spanning = false;
+    }
+    return @intCast(std.math.clamp(span orelse 1, 1, std.math.maxInt(u8)));
+}
+
+/// The room a flex or grid container leaves between its items, from `gap`,
+/// or from `row-gap` or `column-gap` alone where only one of them is
+/// written, or from the names the grid's gap went by before.
 /// Upstream reads none of the three, so the value is kept as it was written
 /// and read back as the length of a `width`.
 fn gapOf(node: *const Node) page_mod.Unit {
-    if (node.type != .element or cascadeOf(node) == null) return .auto;
-    for ([_][]const u8{ "gap", "row-gap", "column-gap" }) |name| {
-        const declaration = lexbor.lxb_dom_element_style_by_name(node, name.ptr, name.len) orelse continue;
-        const custom = customOf(declaration) orelse continue;
-        return lengthIn(cascadeOf(node).?.parser, "width", firstOf(custom.value.slice()));
+    for (GAPS) |name| {
+        const written = customValue(node, name) orelse continue;
+        return lengthIn(cascadeOf(node).?.parser, "width", firstOf(written));
     }
     return .auto;
 }
 
-/// Whether a property upstream keeps by name is one of the three a gap may
-/// be written in.
+/// The names a gap may be written under, the last three being what the
+/// grid's gap was called before it was every container's.
+const GAPS = [_][]const u8{ "gap", "row-gap", "column-gap", "grid-gap", "grid-row-gap", "grid-column-gap" };
+
+/// Whether a property upstream keeps by name is one a gap may be written
+/// under.
 fn isGap(name: []const u8) bool {
-    return std.ascii.eqlIgnoreCase(name, "gap") or
-        std.ascii.eqlIgnoreCase(name, "row-gap") or
-        std.ascii.eqlIgnoreCase(name, "column-gap");
+    for (GAPS) |gap| {
+        if (std.ascii.eqlIgnoreCase(name, gap)) return true;
+    }
+    return false;
 }
 
 /// The first of the words a value is written in, which for a `gap` of one
@@ -746,7 +943,7 @@ fn honoured(style: *const lexbor.StyleRule) bool {
         if (rule.kind != .declaration) continue;
         const declaration: *const lexbor.Declaration = @fieldParentPtr("rule", rule);
         switch (declaration.property) {
-            .display, .width, .height, .min_width, .min_height, .max_width, .max_height, .flex_direction, .justify_content, .align_items, .visibility, .opacity, .color, .background_color, .text_align, .white_space, .margin, .margin_top, .margin_right, .margin_bottom, .margin_left, .padding, .padding_top, .padding_right, .padding_bottom, .padding_left, .border, .border_top, .border_right, .border_bottom, .border_left, .border_top_color, .border_right_color, .border_bottom_color, .border_left_color => return true,
+            .display, .width, .height, .min_width, .min_height, .max_width, .max_height, .flex, .flex_basis, .flex_direction, .flex_flow, .flex_grow, .flex_shrink, .flex_wrap, .justify_content, .align_items, .align_self, .visibility, .opacity, .color, .background_color, .text_align, .white_space, .margin, .margin_top, .margin_right, .margin_bottom, .margin_left, .padding, .padding_top, .padding_right, .padding_bottom, .padding_left, .border, .border_top, .border_right, .border_bottom, .border_left, .border_top_color, .border_right_color, .border_bottom_color, .border_left_color => return true,
             .custom => {
                 const custom = customOf(declaration) orelse continue;
                 const name = custom.name.slice();
@@ -754,6 +951,8 @@ fn honoured(style: *const lexbor.StyleRule) bool {
                     std.ascii.eqlIgnoreCase(name, "list-style-type") or
                     std.ascii.eqlIgnoreCase(name, "list-style") or
                     std.ascii.eqlIgnoreCase(name, "border-radius") or
+                    std.ascii.eqlIgnoreCase(name, "grid-template-columns") or
+                    std.ascii.eqlIgnoreCase(name, "grid-column") or
                     isGap(name)) return true;
             },
             else => {},
