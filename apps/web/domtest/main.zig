@@ -634,7 +634,7 @@ test "a rule's pseudo-class functions are read for the names inside them, and an
 test "a stylesheet's flex and grid words are read: the shorthand, wrapping, the columns a grid names and the columns a cell spans" {
     const it = try opened(
         "<!DOCTYPE html><html><body><div id=\"row\"><p id=\"a\">a</p><p id=\"b\">b</p></div>" ++
-            "<div id=\"grid\"><p id=\"c\">c</p></div><div id=\"fit\"><p>d</p></div></body></html>",
+            "<div id=\"grid\"><p id=\"c\">c</p></div><div id=\"fit\"><p>d</p></div><div id=\"most\"><p>e</p></div></body></html>",
         false,
     );
     defer it.end();
@@ -645,6 +645,7 @@ test "a stylesheet's flex and grid words are read: the shorthand, wrapping, the 
         \\#grid { display: grid; grid-template-columns: 160px repeat(2, 1fr) minmax(100px, 2fr); grid-gap: 8px; }
         \\#c { grid-column: 1 / -1; }
         \\#fit { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); }
+        \\#most { display: grid; grid-template-columns: minmax(0, max-content) minmax(100px, 300px) fit-content(200px); }
     , null, &rules);
     var page = try it.page();
     defer page.deinit(heap);
@@ -676,6 +677,13 @@ test "a stylesheet's flex and grid words are read: the shorthand, wrapping, the 
     try testing.expectEqual(page_mod.Track{ .share = 2 }, named[3]);
     try testing.expectEqual(@as(u8, 255), boxes[at + 4].style.span);
     try testing.expectEqual(page_mod.Unit{ .px = 150 }, boxes[at + 5].style.columns.fit);
+    // A minmax is its most: a share where that is left to the words, and
+    // a length where it is one.
+    const most = boxes[at + 7].style.columns.named.slice();
+    try testing.expectEqual(@as(usize, 3), most.len);
+    try testing.expectEqual(page_mod.Track{ .share = 1 }, most[0]);
+    try testing.expectEqual(page_mod.Track{ .length = .{ .px = 300 } }, most[1]);
+    try testing.expectEqual(page_mod.Track{ .share = 1 }, most[2]);
 }
 
 test "a sheet's variables stand for what its root sets, or the fallback, and a positioned box is out of the flow" {
@@ -763,10 +771,11 @@ test "a picture is fetched from the source its page gives for a window this wide
     try testing.expectEqualStrings("http://example.test/plain.jpg", page.string(page.pictures.items[3].source));
 }
 
-test "words a page hides from sight but not from a screen reader are not drawn" {
+test "words a page hides from sight but not from a screen reader are not drawn, and the other way round they are" {
     const it = try opened(
         "<!DOCTYPE html><html><body><a class=\"skip\">Skip to content</a><span class=\"cut\">Cut away</span>" ++
-            "<span class=\"small\">Small</span><span class=\"spilling\">Spilling</span><p>Shown</p></body></html>",
+            "<span class=\"small\">Small</span><span class=\"spilling\">Spilling</span><p>Shown</p>" ++
+            "<span aria-hidden=\"true\">Seen</span><span hidden>Gone</span></body></html>",
         false,
     );
     defer it.end();
@@ -783,6 +792,8 @@ test "words a page hides from sight but not from a screen reader are not drawn" 
     try testing.expect(!std.mem.containsAtLeast(u8, page.text.items, 1, "Small"));
     try testing.expect(std.mem.containsAtLeast(u8, page.text.items, 1, "Spilling"));
     try testing.expect(std.mem.containsAtLeast(u8, page.text.items, 1, "Shown"));
+    try testing.expect(std.mem.containsAtLeast(u8, page.text.items, 1, "Seen"));
+    try testing.expect(!std.mem.containsAtLeast(u8, page.text.items, 1, "Gone"));
 }
 
 test "a box with room and a ground of its own is kept as a block with both, for the layout to set" {

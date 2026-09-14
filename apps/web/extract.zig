@@ -871,13 +871,13 @@ fn textWithin(node: *Node) Label {
 
 /// The entry a list to choose from has chosen: the one it marks, or its
 /// first.
-/// Whether the page says an element is not to be seen: something it hides,
-/// from everyone or from anyone listening to it read, by an attribute or by
-/// its stylesheets.
+/// Whether the page says an element is not to be seen: something it hides
+/// by its `hidden` attribute or by its stylesheets. What it hides only from
+/// anyone listening to the page read, with `aria-hidden`, is drawn as any
+/// browser draws it: a page says the words a picture stands for once for
+/// listening and once for seeing, and this is the seeing.
 fn unread(node: *Node) bool {
-    return lexbor.hasAttribute(node, "hidden") or
-        lexbor.attributeIs(node, "aria-hidden", "true") or
-        !css.shows(node);
+    return lexbor.hasAttribute(node, "hidden") or !css.shows(node);
 }
 
 /// Where the page says its version for a window like `screen` is, written
