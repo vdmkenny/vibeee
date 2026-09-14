@@ -289,6 +289,10 @@ fn wantsBox(box: page_mod.Container) bool {
     const style = box.style;
     if (style.display == .flex or style.display == .grid or style.out_of_flow) return true;
     if (style.display == .@"inline") return false;
+    for ([_]page_mod.Unit{ style.height, style.min_height, style.max_height }) |unit| switch (unit) {
+        .px, .em, .vh => return true,
+        .auto, .percent, .vw => {},
+    };
     if (box.ground != .none) return true;
     const edges = [_]page_mod.Unit{
         style.margin.top,       style.margin.right,       style.margin.bottom,       style.margin.left,
@@ -530,6 +534,9 @@ fn Placer(comptime Metrics: type) type {
             self.left = inner_x;
             self.right = inner_x + inner_room;
             self.y += edges.top.width + padding.top;
+            const inner_top = self.y;
+            const first_line = self.out.lines.items.len;
+            const first_fill = self.out.fills.items.len;
 
             if (style.display == .flex or style.display == .grid) {
                 try self.flex(index, inner_x, inner_room);
@@ -556,11 +563,35 @@ fn Placer(comptime Metrics: type) type {
                 }
             }
 
+            // The box is as tall as it says where it says, held between the
+            // least and most it says; what its words came to otherwise. Words
+            // past a height it says are cut off where it says it clips, and
+            // keep the box open where it does not, since a face wider than
+            // the page's own takes more lines than the page allowed for.
+            const came = self.y - inner_top;
+            const said = if (self.upright(style.height)) |given| self.heldTall(given, style.min_height, style.max_height) else self.heldTall(came, style.min_height, style.max_height);
+            if (said < came and style.clips) self.clip(first_line, first_fill, inner_top + said);
+            self.y = inner_top + if (said < came and !style.clips) came else said;
+
             self.y += padding.bottom + edges.bottom.width;
             if (laid.fill) |fill| self.out.fills.items[fill].area.h = self.y - box_top;
             self.y += margin.bottom;
             self.owed = margin.bottom;
             return laid;
+        }
+
+        /// Cut off what a box holds at `bottom`: the lines below it are
+        /// emptied, and the grounds inside it stop there.
+        fn clip(self: *Self, first_line: usize, first_fill: usize, bottom: i32) void {
+            for (self.out.lines.items[first_line..]) |*line| {
+                if (line.y + line.height > bottom) {
+                    line.count = 0;
+                    line.height = 0;
+                }
+            }
+            for (self.out.fills.items[first_fill..]) |*fill| {
+                if (fill.area.y + fill.area.h > bottom) fill.area.h = @max(bottom - fill.area.y, 0);
+            }
         }
 
         /// Leave at least `wanted` room below what was set last, counting
@@ -1221,7 +1252,7 @@ fn Placer(comptime Metrics: type) type {
         /// the next column, or the next columns where it spans more, and on
         /// a new row where the columns run out.
         fn gridRows(self: *Self, rows: *std.ArrayList(Row), items: []Item, tracks: page_mod.Tracks, wide: i32, between: i32) Error!void {
-            const widths = try self.columnsOf(tracks, wide, between);
+            const widths = try self.columnsOf(tracks, items.len, wide, between);
             defer self.gpa.free(widths);
             var first: usize = 0;
             var column: usize = 0;
@@ -1254,12 +1285,14 @@ fn Placer(comptime Metrics: type) type {
 
         /// How wide each of a grid's columns is: the lengths as they say,
         /// and the shares dividing what the lengths and the gaps leave. As
-        /// many of one least width as fit, where the grid says that; one
-        /// column the width of the grid where it names none this reads.
-        fn columnsOf(self: *Self, tracks: page_mod.Tracks, wide: i32, between: i32) Error![]i32 {
+        /// many of one least width as fit, where the grid says that, though
+        /// no more than it has items to fill; one column the width of the
+        /// grid where it names none this reads.
+        fn columnsOf(self: *Self, tracks: page_mod.Tracks, items: usize, wide: i32, between: i32) Error![]i32 {
             if (self.resolved(tracks.fit, wide)) |least| {
                 const each = @max(least, 1);
-                const count: usize = @intCast(@max(@divTrunc(wide + between, each + between), 1));
+                const fit: usize = @intCast(@max(@divTrunc(wide + between, each + between), 1));
+                const count = @max(@min(fit, items), 1);
                 const widths = try self.gpa.alloc(i32, count);
                 @memset(widths, @divTrunc(wide - between * @as(i32, @intCast(count - 1)), @as(i32, @intCast(count))));
                 return widths;
@@ -2573,4 +2606,39 @@ test "a height that is a share of a height not known is no height at all" {
     var alone = try flexed(200, flex, &.{.{ .words = "aa", .style = .{ .height = .{ .percent = 100 } } }});
     defer alone.deinit();
     try testing.expectEqual(@as(i32, 18), alone.layout.height);
+}
+
+test "a box is as tall as it says, and what spills past that is cut off where it clips" {
+    // A box a hundred tall with one line of words leaves the next block
+    // below the hundred.
+    var tall = try flexed(200, .{ .display = .block }, &.{
+        .{ .words = "aa", .style = .{ .display = .block, .height = .{ .px = 100 } } },
+        .{ .words = "bb", .style = .{ .display = .block } },
+    });
+    defer tall.deinit();
+    try testing.expect(tall.layout.lines.items[1].y >= 100);
+
+    // Three lines of words in a box twenty tall that clips: one line stays,
+    // and the next block follows the twenty.
+    var cut = try flexed(44, .{ .display = .block }, &.{
+        .{ .words = "aaaa bbbb cccc", .style = .{ .display = .block, .height = .{ .px = 20 }, .clips = true } },
+        .{ .words = "dd", .style = .{ .display = .block } },
+    });
+    defer cut.deinit();
+    var kept: usize = 0;
+    for (cut.layout.lines.items[0..3]) |line| {
+        if (line.count > 0) kept += 1;
+    }
+    try testing.expectEqual(@as(usize, 1), kept);
+    try testing.expect(cut.layout.lines.items[3].y >= 20 and cut.layout.lines.items[3].y < 54);
+
+    // The same box that does not clip keeps every line, and the next block
+    // follows them.
+    var open = try flexed(44, .{ .display = .block }, &.{
+        .{ .words = "aaaa bbbb cccc", .style = .{ .display = .block, .height = .{ .px = 20 } } },
+        .{ .words = "dd", .style = .{ .display = .block } },
+    });
+    defer open.deinit();
+    for (open.layout.lines.items[0..3]) |line| try testing.expect(line.count > 0);
+    try testing.expect(open.layout.lines.items[3].y >= 54);
 }

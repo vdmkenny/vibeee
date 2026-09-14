@@ -705,6 +705,25 @@ test "a sheet's variables stand for what its root sets, or the fallback, and a p
     try testing.expect(boxes[at + 1].style.out_of_flow);
 }
 
+test "a box that cuts off what spills past it says so, whichever way overflow is written" {
+    const it = try opened("<!DOCTYPE html><html><body><p id=\"a\">a</p><p id=\"b\">b</p><p id=\"c\">c</p></body></html>", false);
+    defer it.end();
+    css.apply(heap, it.tree,
+        \\#a { overflow: hidden; height: 20px; }
+        \\#b { overflow-y: auto; height: 20px; }
+        \\#c { overflow: visible; height: 20px; }
+    , null, &rules);
+    var page = try it.page();
+    defer page.deinit(heap);
+    const boxes = page.containers.items;
+    var at: usize = 0;
+    while (at < boxes.len and boxes[at].style.height == .auto) at += 1;
+    try testing.expect(at + 2 < boxes.len);
+    try testing.expect(boxes[at].style.clips);
+    try testing.expect(boxes[at + 1].style.clips);
+    try testing.expect(!boxes[at + 2].style.clips);
+}
+
 test "a picture is fetched from the source its page gives for a window this wide, and a stand-in is passed over" {
     const it = try opened(
         "<!DOCTYPE html><html><body>" ++

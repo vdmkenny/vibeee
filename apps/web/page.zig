@@ -133,6 +133,9 @@ pub const BoxStyle = struct {
     /// to the window: laid out where it is, but taking no room, so what
     /// follows it goes where it would have gone without it.
     out_of_flow: bool = false,
+    /// Whether what spills past the height the box says is cut off rather
+    /// than shown: `overflow` hidden, clipped, or left to scroll.
+    clips: bool = false,
     width: Unit = .auto,
     height: Unit = .auto,
     min_width: Unit = .auto,

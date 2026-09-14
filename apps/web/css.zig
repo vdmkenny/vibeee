@@ -122,6 +122,7 @@ pub fn boxStyle(node: *const Node, fallback: page_mod.BoxStyle.Display) page_mod
         .columns = tracksOf(node),
         .span = spanOf(node),
         .out_of_flow = outOfFlow(node),
+        .clips = clipsOf(node),
         .width = lengthOf(node, .width),
         .height = lengthOf(node, .height),
         .min_width = lengthOf(node, .min_width),
@@ -298,6 +299,27 @@ fn directionOf(node: *const Node) page_mod.BoxStyle.Direction {
 fn outOfFlow(node: *const Node) bool {
     const position = valueOf(lexbor.Single, node, .position) orelse return false;
     return position.kind == .absolute or position.kind == .fixed;
+}
+
+/// Whether a box cuts off what spills past it: `overflow` hidden, clip,
+/// auto or scroll, on either axis or the shorthand, which upstream keeps
+/// as written.
+fn clipsOf(node: *const Node) bool {
+    if (customValue(node, "overflow")) |overflow| {
+        var words = std.mem.tokenizeAny(u8, overflow, &std.ascii.whitespace);
+        while (words.next()) |word| {
+            for ([_][]const u8{ "hidden", "clip", "auto", "scroll" }) |cut| {
+                if (std.ascii.eqlIgnoreCase(word, cut)) return true;
+            }
+        }
+    }
+    for ([_]lexbor.Property{ .overflow_x, .overflow_y }) |property| {
+        if (valueOf(lexbor.Single, node, property)) |overflow| switch (overflow.kind) {
+            .hidden, .clip, .auto, .scroll => return true,
+            else => {},
+        };
+    }
+    return false;
 }
 
 /// Whether a flex container's items go on to another row when they do not
