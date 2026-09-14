@@ -581,8 +581,11 @@ const Walker = struct {
     /// spacer, and is not kept; one with nowhere this browser can fetch it
     /// from is kept all the same, for what the page says it shows.
     fn picture(self: *Walker, node: *Node) Error!void {
-        const width = pixelsOf(node, "width");
-        const height = pixelsOf(node, "height");
+        // The stylesheet's size where it gives one, and the page's
+        // attributes where it does not.
+        const styled = css.pictureSize(node);
+        const width = styled.width orelse pixelsOf(node, "width");
+        const height = styled.height orelse pixelsOf(node, "height");
         if (@min(width orelse SEEN_MIN, height orelse SEEN_MIN) < SEEN_MIN) return;
 
         const alt = std.mem.trim(u8, lexbor.attribute(node, "alt") orelse "", &std.ascii.whitespace);

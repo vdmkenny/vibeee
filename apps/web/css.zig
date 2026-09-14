@@ -106,6 +106,37 @@ pub fn flows(node: *const Node) bool {
 /// What the cascade says of `node` as a box: whether it is a flex container,
 /// and the room it and its items are given, in the units the layout reads. A
 /// length in a unit it does not read is `auto`.
+/// The size a stylesheet gives a picture, in pixels where it gives one in
+/// pixels or ems: its width and height, each held under the most it says.
+/// Nothing for a side it leaves to the picture, or gives as a share.
+pub const PictureSize = struct { width: ?u16 = null, height: ?u16 = null };
+
+pub fn pictureSize(node: *const Node) PictureSize {
+    return .{
+        .width = pixelsOf(node, .width, .max_width),
+        .height = pixelsOf(node, .height, .max_height),
+    };
+}
+
+/// A length in whole pixels, held under the most the page says of it.
+fn pixelsOf(node: *const Node, property: lexbor.Property, most: lexbor.Property) ?u16 {
+    const cap = fixedPixels(lengthOf(node, most));
+    const given = fixedPixels(lengthOf(node, property)) orelse return cap;
+    return if (cap) |limit| @min(given, limit) else given;
+}
+
+/// What a length written in pixels or ems comes to, and nothing for one
+/// written any other way.
+fn fixedPixels(unit: page_mod.Unit) ?u16 {
+    const value: f32 = switch (unit) {
+        .px => |px| px,
+        .em => |ems| ems * 16,
+        .auto, .percent, .vw, .vh => return null,
+    };
+    if (!(value >= 0)) return null;
+    return @intFromFloat(@min(value, std.math.maxInt(u16)));
+}
+
 pub fn boxStyle(node: *const Node, fallback: page_mod.BoxStyle.Display) page_mod.BoxStyle {
     const flexing = flexOf(node);
     return .{

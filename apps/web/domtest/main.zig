@@ -812,6 +812,36 @@ test "a template's content is cloned into the page, and stays out of it on its o
     try testing.expectEqual(@as(usize, 1), std.mem.count(u8, page.text.items, "From the template"));
 }
 
+test "a picture is as large as the stylesheet says, in pixels or ems, under the most it says" {
+    const it = try opened(
+        "<!DOCTYPE html><html><body>" ++
+            "<img id=\"a\" src=\"a.png\" width=\"400\" height=\"300\">" ++
+            "<img id=\"b\" src=\"b.png\">" ++
+            "<img id=\"c\" src=\"c.png\" width=\"400\" height=\"300\">" ++
+            "<img id=\"d\" src=\"d.png\" width=\"400\" height=\"300\"></body></html>",
+        false,
+    );
+    defer it.end();
+    css.apply(heap, it.tree,
+        \\#a { width: 48px; height: 2em; }
+        \\#b { width: 100px; }
+        \\#c { max-width: 200px; }
+        \\#d { width: 50%; }
+    , null, &rules);
+    var page = try it.page();
+    defer page.deinit(heap);
+    const pictures = page.pictures.items;
+    try testing.expectEqual(@as(usize, 4), pictures.len);
+    try testing.expectEqual(@as(?u16, 48), pictures[0].width);
+    try testing.expectEqual(@as(?u16, 32), pictures[0].height);
+    try testing.expectEqual(@as(?u16, 100), pictures[1].width);
+    try testing.expectEqual(@as(?u16, null), pictures[1].height);
+    try testing.expectEqual(@as(?u16, 200), pictures[2].width);
+    try testing.expectEqual(@as(?u16, 300), pictures[2].height);
+    // A share is left to the layout, and the attributes stand.
+    try testing.expectEqual(@as(?u16, 400), pictures[3].width);
+}
+
 test "a box with room and a ground of its own is kept as a block with both, for the layout to set" {
     const it = try opened(
         "<!DOCTYPE html><html><body><p>plain</p><div class=\"card\"><p>inside</p></div>" ++
