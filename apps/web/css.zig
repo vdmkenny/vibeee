@@ -123,6 +123,7 @@ pub fn boxStyle(node: *const Node, fallback: page_mod.BoxStyle.Display) page_mod
         .span = spanOf(node),
         .out_of_flow = outOfFlow(node),
         .clips = clipsOf(node),
+        .float = floatOf(node),
         .width = lengthOf(node, .width),
         .height = lengthOf(node, .height),
         .min_width = lengthOf(node, .min_width),
@@ -299,6 +300,17 @@ fn directionOf(node: *const Node) page_mod.BoxStyle.Direction {
 fn outOfFlow(node: *const Node) bool {
     const position = valueOf(lexbor.Single, node, .position) orelse return false;
     return position.kind == .absolute or position.kind == .fixed;
+}
+
+/// Which side a box floats to, as `float` says, the start of a line being
+/// its left.
+fn floatOf(node: *const Node) page_mod.BoxStyle.Float {
+    const float = valueOf(lexbor.Float, node, .float) orelse return .none;
+    return switch (float.kind) {
+        .left, .inline_start => .left,
+        .right, .inline_end => .right,
+        else => .none,
+    };
 }
 
 /// Whether a box cuts off what spills past it: `overflow` hidden, clip,
@@ -1120,7 +1132,7 @@ fn honoured(style: *const lexbor.StyleRule) bool {
         if (rule.kind != .declaration) continue;
         const declaration: *const lexbor.Declaration = @fieldParentPtr("rule", rule);
         switch (declaration.property) {
-            .display, .position, .overflow_x, .overflow_y, .width, .height, .min_width, .min_height, .max_width, .max_height, .flex, .flex_basis, .flex_direction, .flex_flow, .flex_grow, .flex_shrink, .flex_wrap, .justify_content, .align_items, .align_self, .visibility, .opacity, .color, .background_color, .text_align, .white_space, .margin, .margin_top, .margin_right, .margin_bottom, .margin_left, .padding, .padding_top, .padding_right, .padding_bottom, .padding_left, .border, .border_top, .border_right, .border_bottom, .border_left, .border_top_color, .border_right_color, .border_bottom_color, .border_left_color => return true,
+            .display, .position, .float, .overflow_x, .overflow_y, .width, .height, .min_width, .min_height, .max_width, .max_height, .flex, .flex_basis, .flex_direction, .flex_flow, .flex_grow, .flex_shrink, .flex_wrap, .justify_content, .align_items, .align_self, .visibility, .opacity, .color, .background_color, .text_align, .white_space, .margin, .margin_top, .margin_right, .margin_bottom, .margin_left, .padding, .padding_top, .padding_right, .padding_bottom, .padding_left, .border, .border_top, .border_right, .border_bottom, .border_left, .border_top_color, .border_right_color, .border_bottom_color, .border_left_color => return true,
             .custom => {
                 const custom = customOf(declaration) orelse continue;
                 const name = custom.name.slice();

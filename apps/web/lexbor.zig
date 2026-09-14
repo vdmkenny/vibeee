@@ -530,6 +530,7 @@ pub const Property = enum(usize) {
     border_top_color = 0x0011,
     color = 0x0015,
     display = 0x0017,
+    float = 0x0020,
     flex = 0x0019,
     flex_basis = 0x001a,
     flex_direction = 0x001b,
@@ -592,6 +593,8 @@ pub const Keyword = enum(c_uint) {
     percentage = 0x0015,
     none = 0x001f,
     hidden = 0x0020,
+    inline_start = 0x002b,
+    inline_end = 0x002c,
     left = 0x002f,
     right = 0x0030,
     current_color = 0x0031,
@@ -781,6 +784,10 @@ pub const Flex = extern struct {
 /// The `flex-flow` shorthand: which way the items run, and whether they
 /// go on to another line.
 pub const FlexFlow = extern struct { direction: Keyword, wrap: Keyword };
+
+/// `float`: which side, and what upstream keeps for the page floats this
+/// browser does not read.
+pub const Float = extern struct { kind: Keyword, length: LengthType, snap: Keyword };
 
 /// A length, with its unit.
 pub const Length = extern struct { num: f64, is_float: bool, unit: Unit };

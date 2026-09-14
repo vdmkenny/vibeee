@@ -136,6 +136,9 @@ pub const BoxStyle = struct {
     /// Whether what spills past the height the box says is cut off rather
     /// than shown: `overflow` hidden, clipped, or left to scroll.
     clips: bool = false,
+    /// Which side the box floats to, where it floats: set beside the
+    /// floated boxes around it in a row, rather than below them.
+    float: Float = .none,
     width: Unit = .auto,
     height: Unit = .auto,
     min_width: Unit = .auto,
@@ -175,6 +178,7 @@ pub const BoxStyle = struct {
     };
 
     pub const Display = enum { block, @"inline", flex, grid };
+    pub const Float = enum { none, left, right };
     pub const Direction = enum { row, column };
     /// `space-between`: the room left over goes between the items, none of it
     /// outside them.

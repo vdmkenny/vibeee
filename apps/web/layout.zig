@@ -287,7 +287,7 @@ pub fn buildIn(gpa: std.mem.Allocator, page: *const Page, viewport: Viewport, sp
 /// paint or leave. One set inline among words is its words' line's.
 fn wantsBox(box: page_mod.Container) bool {
     const style = box.style;
-    if (style.display == .flex or style.display == .grid or style.out_of_flow) return true;
+    if (style.display == .flex or style.display == .grid or style.out_of_flow or style.float != .none) return true;
     if (style.display == .@"inline") return false;
     for ([_]page_mod.Unit{ style.height, style.min_height, style.max_height }) |unit| switch (unit) {
         .px, .em, .vh => return true,
@@ -552,6 +552,24 @@ fn Placer(comptime Metrics: type) type {
                             continue;
                         }
                         if (there.first <= at) {
+                            if (self.page.containers.items[next].style.float != .none) {
+                                // Boxes that float, one after another with
+                                // nothing of the box's own between them, are
+                                // set as one row that wraps.
+                                var floated: std.ArrayList(Item) = .empty;
+                                defer floated.deinit(self.gpa);
+                                var end = there.first;
+                                while (kid) |one| : (kid = kids.next()) {
+                                    const floating = self.page.containers.items[one].style;
+                                    const owned = self.owns(one);
+                                    if (floating.float == .none or owned.first != end) break;
+                                    try floated.append(self.gpa, .{ .container = one, .style = floating });
+                                    end = owned.end;
+                                }
+                                try self.floats(floated.items, inner_x, inner_room);
+                                at = @max(at, end);
+                                continue;
+                            }
                             kid = kids.next();
                             _ = try self.container(next, inner_x, inner_room, false);
                             at = @max(at, there.end);
@@ -1069,12 +1087,30 @@ fn Placer(comptime Metrics: type) type {
         /// their widest word.
         fn flex(self: *Self, index: u32, x: i32, room: i32) Error!void {
             const style = self.page.containers.items[index].style;
-            const down = style.display == .flex and style.direction == .column;
             // The room its items share is what it is given, where it says.
             const wide = @max(self.sized(style.width, style.min_width, style.max_width, room) orelse room, 0);
             var items = try self.gather(index);
             defer items.deinit(self.gpa);
-            if (items.items.len == 0) return;
+            try self.layRows(items.items, style, x, wide);
+        }
+
+        /// A run of floated boxes, set as one row that wraps: each as wide
+        /// as it says or as its words come to, and the row at the right
+        /// where every one of them floats right. What follows goes below
+        /// the row.
+        fn floats(self: *Self, items: []Item, x: i32, room: i32) Error!void {
+            var style = page_mod.BoxStyle{ .display = .flex, .wrap = true, .items = .start, .justify = .end };
+            for (items) |item| {
+                if (item.style.float == .left) style.justify = .start;
+            }
+            try self.layRows(items, style, x, room);
+        }
+
+        /// Set `items` in rows as the container `style` says, `wide` from
+        /// `x`: what a flex or grid container does with what it holds.
+        fn layRows(self: *Self, items: []Item, style: page_mod.BoxStyle, x: i32, wide: i32) Error!void {
+            const down = style.display == .flex and style.direction == .column;
+            if (items.len == 0) return;
 
             const between = self.resolved(style.gap, wide) orelse 0;
             const top = self.y;
@@ -1082,12 +1118,12 @@ fn Placer(comptime Metrics: type) type {
             defer self.previous = keep;
             const first_line = self.out.lines.items.len;
 
-            for (items.items) |*item| try self.measure(item, down, wide);
+            for (items) |*item| try self.measure(item, down, wide);
             // The items in the flow are the rows'; the ones out of it are
             // set over the container's start, taking no room.
-            var flowing: usize = items.items.len;
-            while (flowing > 0 and items.items[flowing - 1].style.out_of_flow) flowing -= 1;
-            for (items.items[flowing..]) |*item| {
+            var flowing: usize = items.len;
+            while (flowing > 0 and items[flowing - 1].style.out_of_flow) flowing -= 1;
+            for (items[flowing..]) |*item| {
                 item.x = x;
                 try self.lay(item, top, item.main orelse wide);
                 self.y = top;
@@ -1097,9 +1133,9 @@ fn Placer(comptime Metrics: type) type {
             if (down) {
                 for (0..flowing) |at| try rows.append(self.gpa, .{ .first = at, .end = at + 1 });
             } else if (style.display == .grid) {
-                try self.gridRows(&rows, items.items[0..flowing], style.columns, wide, between);
+                try self.gridRows(&rows, items[0..flowing], style.columns, wide, between);
             } else {
-                try self.flexRows(&rows, items.items[0..flowing], style.wrap, style.justify, wide, between);
+                try self.flexRows(&rows, items[0..flowing], style.wrap, style.justify, wide, between);
             }
 
             // Each row's items are set where they go along it, then
@@ -1108,7 +1144,7 @@ fn Placer(comptime Metrics: type) type {
             for (rows.items, 0..) |row, count| {
                 if (count > 0) y += between;
                 var across: i32 = 0;
-                for (items.items[row.first..row.end]) |*item| {
+                for (items[row.first..row.end]) |*item| {
                     const how = item.style.self_align orelse style.items;
                     const width = if (down) self.acrossOf(item, how, wide) else item.main.?;
                     item.x = x + (if (down) self.offsetOf(how, wide, width) else item.along);
@@ -1121,7 +1157,7 @@ fn Placer(comptime Metrics: type) type {
                         across = @max(across, item.cross orelse item.tall);
                     }
                 }
-                for (items.items[row.first..row.end]) |item| {
+                for (items[row.first..row.end]) |item| {
                     const how = item.style.self_align orelse style.items;
                     const area: Area = if (down)
                         .{ .x = item.x, .y = y, .w = self.acrossOf(&item, how, wide), .h = item.main.? }
@@ -1157,7 +1193,7 @@ fn Placer(comptime Metrics: type) type {
                     .end => left,
                 };
                 const extra: i32 = if (style.justify == .between and flowing > 1) @divTrunc(left, @as(i32, @intCast(flowing - 1))) else 0;
-                for (items.items[0..flowing], self.out.placed.items[self.out.placed.items.len - flowing ..]) |item, *placed| {
+                for (items[0..flowing], self.out.placed.items[self.out.placed.items.len - flowing ..]) |item, *placed| {
                     placed.area.y += along;
                     self.shift(item, 0, along);
                     along += extra;
@@ -2641,4 +2677,30 @@ test "a box is as tall as it says, and what spills past that is cut off where it
     defer open.deinit();
     for (open.layout.lines.items[0..3]) |line| try testing.expect(line.count > 0);
     try testing.expect(open.layout.lines.items[3].y >= 54);
+}
+
+test "boxes that float are set as a row, the ones floating right at its end, and what follows goes below" {
+    var left = try flexed(200, .{ .display = .block }, &.{
+        .{ .words = "aa", .style = .{ .display = .block, .float = .left, .width = .{ .px = 50 } } },
+        .{ .words = "bb", .style = .{ .display = .block, .float = .left, .width = .{ .px = 50 } } },
+        .{ .words = "cc", .style = .{ .display = .block, .float = .left, .width = .{ .px = 50 } } },
+        .{ .words = "dd", .style = .{ .display = .block } },
+    });
+    defer left.deinit();
+    const placed = left.layout.placed.items;
+    try testing.expectEqual(@as(usize, 3), placed.len);
+    for (placed, [_]i32{ 0, 50, 100 }) |item, x| {
+        try testing.expectEqual(x, item.area.x);
+        try testing.expectEqual(@as(i32, 0), item.area.y);
+    }
+    try testing.expect(left.layout.lines.items[3].y >= 18);
+
+    var right = try flexed(200, .{ .display = .block }, &.{
+        .{ .words = "aa", .style = .{ .display = .block, .float = .right, .width = .{ .px = 50 } } },
+        .{ .words = "bb", .style = .{ .display = .block, .float = .right, .width = .{ .px = 50 } } },
+        .{ .words = "dd", .style = .{ .display = .block } },
+    });
+    defer right.deinit();
+    try testing.expectEqual(@as(i32, 100), right.layout.placed.items[0].area.x);
+    try testing.expectEqual(@as(i32, 150), right.layout.placed.items[1].area.x);
 }

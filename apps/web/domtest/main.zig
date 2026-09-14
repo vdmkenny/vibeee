@@ -724,6 +724,25 @@ test "a box that cuts off what spills past it says so, whichever way overflow is
     try testing.expect(!boxes[at + 2].style.clips);
 }
 
+test "which side a box floats to is read, the start of a line being the left" {
+    const it = try opened("<!DOCTYPE html><html><body><p id=\"a\">a</p><p id=\"b\">b</p><p id=\"c\">c</p></body></html>", false);
+    defer it.end();
+    css.apply(heap, it.tree,
+        \\#a { float: left; }
+        \\#b { float: inline-end; }
+        \\#c { float: none; }
+    , null, &rules);
+    var page = try it.page();
+    defer page.deinit(heap);
+    const boxes = page.containers.items;
+    var at: usize = 0;
+    while (at < boxes.len and boxes[at].style.float == .none) at += 1;
+    try testing.expect(at + 2 < boxes.len);
+    try testing.expectEqual(page_mod.BoxStyle.Float.left, boxes[at].style.float);
+    try testing.expectEqual(page_mod.BoxStyle.Float.right, boxes[at + 1].style.float);
+    try testing.expectEqual(page_mod.BoxStyle.Float.none, boxes[at + 2].style.float);
+}
+
 test "a picture is fetched from the source its page gives for a window this wide, and a stand-in is passed over" {
     const it = try opened(
         "<!DOCTYPE html><html><body>" ++
