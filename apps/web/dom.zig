@@ -2186,6 +2186,12 @@ const reflected = [_]Reflected{
 fn jsReflectedGet(ctx: *Context, this: Value, magic: c_int) callconv(.c) Value {
     const node = nodeOf(this) orelse return qjs.undefinedValue();
     const which = reflected[@intCast(magic)];
+    // A template's content is the fragment holding what it was parsed
+    // with, which a script clones into the page.
+    if (std.mem.eql(u8, which.attribute, "content") and isTag(node, "TEMPLATE")) {
+        const it = documentOf(ctx) orelse return qjs.nullValue();
+        return wrapped(it, lexbor.lexbor_template_content(node) orelse return qjs.nullValue());
+    }
     // A list's value is its chosen entry's, and a text area's its words.
     if (std.mem.eql(u8, which.attribute, "value")) {
         if (isTag(node, "SELECT")) {

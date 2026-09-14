@@ -8,6 +8,7 @@
 #include "lexbor/dom/interfaces/document.h"
 #include "lexbor/dom/interfaces/element.h"
 #include "lexbor/dom/interfaces/node.h"
+#include "lexbor/html/interfaces/template_element.h"
 
 lxb_dom_node_t *lexbor_first_child(lxb_dom_node_t *node)
 {
@@ -42,4 +43,13 @@ lxb_dom_element_t *lexbor_collection_element(lxb_dom_collection_t *collection, s
 void *lexbor_destroy_text(lxb_dom_document_t *document, lxb_char_t *text)
 {
     return lxb_dom_document_destroy_text(document, text);
+}
+
+/* A template's contents: the fragment the parser put them in, which is not
+ * in the tree. The field sits past the element's own, which the Zig mirror
+ * does not lay out. */
+lxb_dom_node_t *lexbor_template_content(lxb_dom_node_t *node)
+{
+    lxb_html_template_element_t *template = (lxb_html_template_element_t *) node;
+    return template->content == NULL ? NULL : lxb_dom_interface_node(template->content);
 }

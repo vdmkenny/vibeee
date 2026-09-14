@@ -205,6 +205,8 @@ pub extern fn lexbor_parent(node: *Node) ?*Node;
 pub extern fn lexbor_collection_length(collection: *Collection) usize;
 pub extern fn lexbor_collection_element(collection: *Collection, at: usize) ?*Element;
 pub extern fn lexbor_destroy_text(document: *Document, text: [*]u8) ?*anyopaque;
+/// A template element's contents, as the fragment the parser keeps them in.
+pub extern fn lexbor_template_content(node: *Node) ?*Node;
 pub extern fn lxb_html_serialize_tree_str(node: *Node, out: *Text) c_int;
 
 /// A selector list, parsed: what `lxb_selectors_find` is given.

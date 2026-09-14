@@ -796,6 +796,22 @@ test "words a page hides from sight but not from a screen reader are not drawn, 
     try testing.expect(!std.mem.containsAtLeast(u8, page.text.items, 1, "Gone"));
 }
 
+test "a template's content is cloned into the page, and stays out of it on its own" {
+    const it = try opened(
+        "<!DOCTYPE html><html><body><template id=\"t\"><p class=\"made\">From the template</p></template>" ++
+            "<div id=\"into\"></div><script>var t = document.getElementById('t');" ++
+            "var copy = t.content.cloneNode(true); document.getElementById('into').appendChild(copy);" ++
+            "window.found = t.content.querySelector('.made') !== null;</script></body></html>",
+        true,
+    );
+    defer it.end();
+    try testing.expectEqualStrings("true", try it.run("String(window.found)"));
+    try testing.expectEqualStrings("1", try it.run("String(document.querySelectorAll('#into .made').length)"));
+    var page = try it.page();
+    defer page.deinit(heap);
+    try testing.expectEqual(@as(usize, 1), std.mem.count(u8, page.text.items, "From the template"));
+}
+
 test "a box with room and a ground of its own is kept as a block with both, for the layout to set" {
     const it = try opened(
         "<!DOCTYPE html><html><body><p>plain</p><div class=\"card\"><p>inside</p></div>" ++
