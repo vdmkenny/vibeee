@@ -1,33 +1,22 @@
-//! Checking a volume and repairing what can be repaired.
+//! Volume check and repair.
 //!
-//! FAT records the same fact twice. A directory record holds a file's first
-//! cluster and its size in bytes; the allocation table holds which clusters
-//! are in use. Writing a file updates both, and nothing keeps them
-//! consistent if power is lost between the two writes.
+//! FAT records a file's length twice, in the directory record and in the
+//! allocation table, and nothing keeps them consistent across a power cut.
+//! `fat.zig` writes data, then chain, then record, so an interrupted write
+//! leaves clusters marked used that no record names.
 //!
-//! `fat.zig` orders its writes as data, then chain, then record. Interrupted,
-//! that leaves clusters marked used that no record names. The data in them
-//! was never reachable, so nothing is lost; the space is, because nothing
-//! will free it. Power loss is common on this machine, so it accumulates.
+//! The check walks every chain reachable from the root, marking clusters,
+//! then sweeps the table. Unreached clusters marked used are freed. Chains
+//! longer than their record are cut back, sizes larger than their chain are
+//! reduced, and a chain that leaves the volume is ended at the last valid
+//! cluster. `fat/verdict.zig` decides which applies.
 //!
-//! This walks both sides and compares them. Every chain reachable from the
-//! root is followed and its clusters marked, then the table is swept for
-//! clusters marked used that the walk did not reach. Those are freed. A
-//! chain longer than its record's size is cut back, a size larger than its
-//! chain is reduced, and a chain that leaves the volume is ended at the last
-//! valid cluster. `fat/verdict.zig` decides which of those applies.
+//! Clusters claimed by two chains are reported and never repaired: the medium
+//! does not record which chain is correct. The caller keeps such a volume
+//! read-only.
 //!
-//! It does not guess. A cluster claimed by two chains cannot be assigned to
-//! one without taking it from the other, and the medium does not record
-//! which is correct. Those are counted and reported, and the caller should
-//! keep the volume read-only rather than let further writes compound the
-//! damage. The card can then be repaired on another machine, which is part
-//! of why this filesystem was chosen.
-//!
-//! Memory use is proportional to the volume's size, not its contents: a bit
-//! per cluster and a fixed stack of open directories. Every loop here is
-//! bounded by the cluster count, so a corrupt volume costs one sweep rather
-//! than hanging the machine.
+//! Memory: one bit per cluster plus a fixed stack of open directories. Every
+//! loop is bounded by the cluster count.
 
 const std = @import("std");
 const block = @import("../block.zig");
@@ -885,21 +874,13 @@ test "a boot sector no formatter would write is refused, not trapped on" {
 // ---------------------------------------------------------------------------
 // Fuzzing
 //
-// Run with `zig build fuzz`. Not part of `make check-all`: a fuzzer runs until
-// it is stopped, and the gate has to finish.
+// Run with `make fuzz`. Not in `make check-all`: a fuzzer runs until stopped.
 //
-// Random bytes are not a volume. A boot sector carries a signature, a sector
-// size this driver insists on and a cluster size that must be a power of two,
-// so a fuzzer inventing one from nothing would spend its whole run being
-// refused by the first four checks in `mount`. The volume is therefore built
-// here through the driver's own calls, and what the fuzzer chooses is the
-// damage done to it afterwards.
-//
-// The damage is described in the filesystem's own terms rather than as bytes,
-// so that the fuzzer's choices land where the format has meaning: a table
-// entry, a table entry in one copy only, or a byte anywhere. Given bytes
-// alone it would spend most of its budget rewriting file contents, which
-// nothing here reads.
+// Random bytes are not a volume; they fail the first checks in `mount`. The
+// volume is built through the driver's own calls and the search chooses the
+// damage: a table entry, a table entry in one copy, a record's first cluster
+// or size, a link to another cluster, or a byte anywhere. Byte damage alone
+// would mostly land in file contents, which nothing here reads.
 
 /// A way of damaging a volume.
 const Damage = union(enum) {
@@ -969,12 +950,11 @@ const Damage = union(enum) {
     }
 };
 
-/// What a damaged volume must still do.
+/// A damaged volume must mount or be refused, check without trapping, and
+/// settle: a second check finds nothing.
 ///
-/// The interesting half is the last of these. Repairing a volume is only
-/// worth anything if the result needs no further repair: a second check
-/// finding something means either a repair that did not hold or one that
-/// caused new damage. No single hand-written case establishes that.
+/// Settling is the property worth having. A second check finding something
+/// means a repair that did not hold, or one that caused new damage.
 fn checkOneDamagedVolume(from: Choices) anyerror!void {
     const gpa = testing.allocator;
     const image = try Image.init(gpa, 2);

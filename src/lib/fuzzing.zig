@@ -1,37 +1,20 @@
-//! Where a fuzz target's choices come from.
+//! Choice source for fuzz targets.
 //!
-//! A target here is a function that builds one input, runs the code under
-//! test on it, and asserts what must hold. What it does not do is decide the
-//! input: it asks for each part of it, and this says who answers.
+//! A target asks for each part of its input through `Choices`. Two
+//! implementations: the fuzzer's `Smith`, and a seeded generator for a bounded
+//! run of the same target in `make test`.
 //!
-//! Two answer. The fuzzer hands out values through a `std.testing.Smith`,
-//! searching for choices that reach code nothing else has. A seeded generator
-//! hands out values from a fixed seed, which finds far less but runs in
-//! `make test` and runs the same target.
+//! Do not feed a `Smith` random bytes. It has its own encoding: `eos` treats
+//! any non-zero byte as end of stream, and `value` and `index` return their
+//! minimum for almost every input.
 //!
-//! Both are needed because neither is enough on its own. The search is what
-//! finds the rare case, and it does not work on this toolchain
-//! (`make fuzz` says why). The seeded run is bounded and reproducible, which
-//! is what a gate needs, and is no good at all at finding anything rare.
-//!
-//! **Do not try to drive a `Smith` from random bytes.** It has an encoding of
-//! its own, so bytes put in do not map onto values that come out: `eos` reads
-//! one byte and calls any non-zero value the end of the stream, and `value`
-//! and `index` return their minimum for almost every input. A generator
-//! pointed at one produces the same trivial input every time, which is a test
-//! that passes without testing anything. That is what this union is for.
-//!
-//! Test-only, and in `lib` because the targets are not: they sit beside the
-//! code they test, in `kernel/`, in `arch/` and in `user/`, and this is the
-//! one place all three can reach. Nothing outside a test block names it, so
-//! nothing of it reaches the image.
+//! Test-only. In `lib` because targets live in `kernel/`, `arch/` and `user/`.
+//! Nothing outside a test block names it.
 
 const std = @import("std");
 
 pub const Choices = union(enum) {
-    /// The fuzzer, searching for inputs that reach new code.
     fuzzer: *std.testing.Smith,
-    /// A generator, for a bounded run of the same target.
     seeded: std.Random,
 
     /// Any value of an integer type.
@@ -42,7 +25,7 @@ pub const Choices = union(enum) {
         };
     }
 
-    /// A position in something `len` long. `len` must not be zero.
+    /// A position in something `len` long. `len` must be non-zero.
     pub fn below(self: Choices, len: usize) usize {
         return switch (self) {
             .fuzzer => |smith| smith.index(len),
@@ -50,7 +33,7 @@ pub const Choices = union(enum) {
         };
     }
 
-    /// A count from one to `at_most`, for how many times to do something.
+    /// A count from 1 to `at_most`.
     pub fn upTo(self: Choices, at_most: u8) u8 {
         return switch (self) {
             .fuzzer => |smith| smith.valueRangeAtMost(u8, 1, at_most),
@@ -58,7 +41,7 @@ pub const Choices = union(enum) {
         };
     }
 
-    /// One case of an enum, for choosing between kinds of input.
+    /// One case of an enum.
     pub fn one(self: Choices, comptime T: type) T {
         return switch (self) {
             .fuzzer => |smith| smith.value(T),
@@ -82,11 +65,9 @@ pub const Choices = union(enum) {
     }
 };
 
-/// Run `target` against a generator, `rounds` times, from a fixed seed.
+/// Run `target` against a generator, `rounds` times.
 ///
-/// What stands in for the search on a toolchain whose search does not build.
-/// The seed is written down rather than taken from the clock: a run that
-/// fails has to fail again on the next run, or there is nothing to debug.
+/// The seed is fixed, not taken from the clock, so a failing run repeats.
 pub fn seeded(
     comptime target: fn (Choices) anyerror!void,
     seed: u64,

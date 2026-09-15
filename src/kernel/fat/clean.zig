@@ -1,25 +1,15 @@
-//! Whether a volume was unmounted cleanly, and recording that it was.
+//! The flag saying a volume was unmounted cleanly.
 //!
-//! FAT has no journal, so the medium records nothing about a write that was
-//! interrupted. What it has is a flag meaning the volume was unmounted in an
-//! orderly way. Set it once the last write has reached the medium, clear it
-//! before the first, and a volume found with it clear was interrupted. That
-//! is the whole guarantee, and it is enough to decide whether
-//! `fat/check.zig` must run before the volume is used.
+//! Cleared before a mount's first write, set after its last write reaches the
+//! medium. A volume found with it clear was interrupted, and `fat/check.zig`
+//! runs before it is used.
 //!
-//! There are two such flags, because two families of system read different
-//! ones. The specification puts them in the top bits of the second table
-//! entry, which is reserved and holds nothing else. Most Unix
-//! implementations read a byte in the boot sector that the specification
-//! calls reserved. Both are written here, and either one clear is read as
-//! dirty. This filesystem was chosen so that another machine can read the
-//! card; a machine that disagreed with us about whether the card is clean
-//! would not repair it when we could not.
+//! Two flags, in two places, because two families of system read different
+//! ones: the top bits of the second table entry (the specification's), and a
+//! byte in the boot sector (most Unix implementations'). Both are written.
+//! Either one clear counts as dirty.
 //!
-//! FAT12 has neither. It predates both flags, its twelve-bit entries have no
-//! room for them, and no formatter writes the boot-sector byte on one. A
-//! FAT12 volume records nothing about how it was unmounted, which is why the
-//! union below has a width with no flags and why `State` has a third case.
+//! FAT12 has neither, so it records nothing and `State` has a third case.
 
 const std = @import("std");
 const block = @import("../block.zig");

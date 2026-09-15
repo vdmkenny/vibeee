@@ -707,20 +707,15 @@ test "what a network said about its protection is kept, not pointed at" {
 // ---------------------------------------------------------------------------
 // Fuzzing
 //
-// Every frame these read was written by somebody else and arrived over the
-// air. There is no handshake in front of a beacon: a station hears whatever
-// is transmitted near it, including from a transmitter that means it harm,
-// and the elements at the end of one are a run of lengths that the sender
-// chose. Walking those is the most exposed parsing in this system.
+// Run with `make fuzz`. Nothing authenticates a beacon, and its elements are
+// a run of lengths the sender chose, so this is the most exposed parsing here.
 //
-// The frame is built here with the shape a real one has and the search
-// chooses what is wrong with it, because a frame of random bytes fails the
-// version check in the first two bytes and reaches nothing.
+// A frame of random bytes fails the version check in its first two bytes. The
+// frame is built with a real one's shape and the search chooses what is wrong.
 //
-// What must hold is that a parser is total: for any bytes at all it answers
-// or declines, and never traps and never reads past what it was given. And
-// that it is deterministic, since a parser that answers differently the
-// second time is reading something that was never in the frame.
+// Two properties. Total: for any bytes a parser answers or declines, never
+// traps, never reads past the frame. Deterministic: a parser whose answer
+// changes on the second call is reading memory outside the frame.
 
 const fuzzing = @import("fuzzing.zig");
 const Choices = fuzzing.Choices;

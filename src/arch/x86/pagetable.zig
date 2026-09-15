@@ -481,23 +481,18 @@ test "an address falls in the entries that cover it" {
 // ---------------------------------------------------------------------------
 // Fuzzing
 //
-// This is the check that stands between a syscall and a program's own
-// mappings, so what it must never do is say yes about a page the program
-// could not reach itself. Written cases cover the ways that were thought of;
-// this compares the walk against a second one that has none of its
-// shortcuts.
+// Run with `make fuzz`.
 //
-// The walk skips a whole four megabytes when a directory entry covers them
-// and stops each inner loop at whichever comes first of the range's end and
-// the region's. The reference below does neither: it looks up one page at a
-// time and asks about each. Where the two disagree, the shortcut is wrong.
+// Differential: the walk against a second one with none of its shortcuts. The
+// walk skips four megabytes when a directory entry covers them and stops each
+// inner loop at the nearer of the range's end and the region's; the reference
+// looks up one page at a time. A disagreement means a shortcut is wrong.
 //
-// **Addresses stay inside thirty-two bits**, because that is the width the
-// machine has. On the host a `usize` is wider, so a range that would wrap on
-// the machine merely gets large here, and the walk would index the directory
-// past its end for an address no real program could name. The one case worth
-// keeping is a length that overflows a `usize` outright, which is what a
-// wrapping range looks like from inside the check.
+// Addresses stay within thirty-two bits, the machine's width. On the host a
+// `usize` is wider, so a range that would wrap on the machine merely grows
+// here and the walk would index the directory past its end for an address no
+// program could name. A length that overflows a `usize` outright is kept: that
+// is what a wrapping range looks like from inside the check.
 
 const fuzzing = @import("lib").fuzzing;
 const Choices = fuzzing.Choices;

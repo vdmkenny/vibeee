@@ -57,8 +57,8 @@ knows when this was last true, and the tree knows how big it is.
 | Block layer | [`block.zig`](../src/kernel/block.zig) | Device registry, MBR partition parsing. |
 | Block cache | [`bcache.zig`](../src/kernel/bcache.zig) | Read cache with hit reporting. |
 | FAT | [`fat.zig`](../src/kernel/fat.zig), [`fat/alloc.zig`](../src/kernel/fat/alloc.zig) | FAT12/16/32, VFAT long names, timestamps. Read and write: cluster allocation across all FAT copies, chain extension, create, append, truncate to a length, unlink, and rename. Renaming moves the record, never the content: replacing repoints the entry already carrying the name in one sector write. |
-| Clean unmount | [`fat/clean.zig`](../src/kernel/fat/clean.zig) | The flag saying a volume was unmounted in an orderly way. Cleared before the first write of a mount and set after the last one has reached the medium, so a volume interrupted in between is found dirty. Both places it lives are written, the specification's bits at the top of the second table entry and the boot-sector byte most Unix implementations read, and either one clear counts as dirty. FAT12 has neither and is checked every mount instead. |
-| Volume check | [`fat/check.zig`](../src/kernel/fat/check.zig), [`fat/verdict.zig`](../src/kernel/fat/verdict.zig) | What `mount` runs by itself on a volume that was not unmounted cleanly, and what the `check` command asks for by hand. Every chain reachable from the root is walked and its clusters marked, then the table is swept: a cluster marked used that nothing reaches is freed, a chain longer than its record is cut back, a size larger than its chain is reduced, a chain that leaves the volume or loops is ended at the last cluster really on it, and copies of the table that disagree are brought back into step. A cluster two chains claim is reported and never repaired, since assigning it to either takes it from the other; the volume is mounted read-only instead. Which repair a difference calls for is decided in `verdict.zig`, which touches no medium, so each case is a test rather than a volume damaged to reach it. Memory is a bit per cluster and a fixed stack of open directories, and every walk is bounded by the cluster count. |
+| Clean unmount | [`fat/clean.zig`](../src/kernel/fat/clean.zig) | The flag saying a volume was unmounted cleanly. Cleared before a mount's first write, set after its last write reaches the medium. Written in both places systems read it: the specification's bits at the top of the second table entry, and the boot-sector byte. Either one clear counts as dirty. FAT12 has neither and is checked every mount. |
+| Volume check | [`fat/check.zig`](../src/kernel/fat/check.zig), [`fat/verdict.zig`](../src/kernel/fat/verdict.zig) | Runs at mount on a volume not unmounted cleanly, and on demand as `check`. Walks every chain reachable from the root marking clusters, then sweeps the table. Unreached clusters marked used are freed; a chain longer than its record is cut back; a size larger than its chain is reduced; a chain that leaves the volume or loops is ended at the last valid cluster; table copies that disagree are re-synchronised. Clusters two chains claim are reported and never repaired, since the medium does not record which is correct, and the volume is mounted read-only. `verdict.zig` decides which repair applies and does no I/O, so each case is a table entry rather than a volume damaged to reach it. Memory: one bit per cluster plus a fixed stack of open directories, every loop bounded by the cluster count. |
 | Mount table | [`vfs.zig`](../src/kernel/vfs.zig) | Longest-prefix resolution, open-file counting, read-only enforcement per mount and per device. Every write goes through here. Userspace attaches and detaches volumes with the `mount` capability. |
 | ATA | [`drv/block/ata.zig`](../src/drv/block/ata.zig) | PIO. No DMA. |
 | Ramdisk | [`drv/block/ramdisk.zig`](../src/drv/block/ramdisk.zig) | Backs the boot-to-RAM rootfs. |
@@ -104,7 +104,7 @@ firmware left.
 |---|---|---|
 | `init` | [`user/init.zig`](../src/user/init.zig) | PID 1. Manifest parsing, dependency order, readiness, restart policy, orphan reaping. A service is in one phase of its life at a time, and a service that promised a name is up only once the name is registered: one that lets the window pass is put down, and the restart policy judges the miss like any other failure to start. `svc` shows `starting` while it is waited on, and `stopping` for one asked to stop that has not gone: a service is asked first, through the quit event every service watches, and ended outright only when it has not gone within three seconds. The wait for a promised name is a wait on the registry's own event rather than a poll. The boot line can hold a service down (`nonet`, `nohw`) or start one late (`netlate`), which is how a suspect driver is kept off the machine, or brought up under the watchdog, from outside where only the boot line can reach. |
 | `vsh` | [`user/vsh.zig`](../src/user/vsh.zig) | Builtins, program lookup in `/bin`, multicall dispatch, pipelines, `>` and `>>` redirection. Line editing with history and completion; the prompt shortens home to `~` and carries the last command's status in the colour of its arrow. |
-| Tools | [`user/tools/`](../src/user/tools/) | `ls cp mv rm mkdir cat hexdump file find tree grep head tail wc sort pack unpack page free top kill log irq devices display disk mount unmount svc cfg date eeefetch smbios sysinfo net backlight battery vol ser`. `log -f` stays and prints what is said next, waiting on the record's own event rather than asking again. What a line is comes from [`ulib.lines`](../src/user/lib/lines.zig) and what is under a directory from [`ulib.walk`](../src/user/lib/walk.zig), so the text commands and the three that walk a tree cannot each mean something different by it. `pack` writes ustar, checked against a real archiver in both directions. |
+| Tools | [`user/tools/`](../src/user/tools/) | `ls cp mv rm mkdir cat hexdump file find tree grep head tail wc sort pack unpack page free top kill log irq devices display disk mount unmount check svc cfg date eeefetch smbios sysinfo net backlight battery vol ser`. `log -f` stays and prints what is said next, waiting on the record's own event rather than asking again. What a line is comes from [`ulib.lines`](../src/user/lib/lines.zig) and what is under a directory from [`ulib.walk`](../src/user/lib/walk.zig), so the text commands and the three that walk a tree cannot each mean something different by it. `pack` writes ustar, checked against a real archiver in both directions. |
 | `cfgd` | [`user/cfgd/`](../src/user/cfgd/) | The one writer of the settings store. Validates against a schema fixed at build time, writes the domain's file, and signals an event per domain so a change reaches whoever is watching. |
 | `platd` | [`user/platd/`](../src/user/platd/) | The platform service: what the BIOS and the embedded controller still own. uACPI interprets the tables in a process with the driver and power capabilities and nothing else. What runs on it: the embedded controller (`ec`), battery, backlight, hotkeys, the parts of the machine the firmware can switch, sleep states, power off through the firmware's own methods, and the interrupt model: it answers PCI routing questions from `_PRT`. The backlight and the switchable parts each have a standard backend and a vendor one behind a single interface, so a machine whose panel offers no `_BCM` and whose radio has no node of its own is served by the same op as one that does. Which maker a machine is, is a row in [`vendor.zig`](../src/user/platd/vendor.zig) with the maker's own file under `vendor/`: recognition, the greeting its firmware expects, its notification numbering and whichever features it offers. Nothing outside that file and that row names a maker, so a machine of a make this build has never met is a file and a row. The EC ports, the battery mislabel and the power-management no-touch ranges come from the kernel's quirk registry through `sysinfo`, so `platd` holds no machine knowledge of its own. Registers its service name once the firmware is fully settled (see the bring-up model below). Two firmware gates are held shut here, and everything on-demand works without either: the system control interrupt opens onto a burst of methods that is not yet understood, and the vendor greeting that would move the top-row keys onto this system's side of the firmware writes a trap port whose handler on this unit sometimes never returns. So the panel, the battery, the switchable parts and the routing answer when asked, and nothing arrives unasked: no notification, no lid or mains notice, and no key. The keys themselves work, because the firmware keeps handling them in system management mode, which is what the closed greeting leaves it doing; what this service would add to them is decoded and wired and opens with the gates. |
 | `devmgd` | [`user/devmgd/`](../src/user/devmgd/) | The one authority on which driver drives which device. Reads `/lib/drivers/*.man` manifests (each naming hardware by PCI id or class, and one home for its driver: a standalone binary it starts and stops, or a service that claims the assignment), walks the bus, and records the bindings. Resident and event-driven: services ask what they were assigned, `driver` lists and controls the standalone ones, and a rescan asks the kernel to walk the bus again before it reads the manifests, so it binds both a driver newly dropped in and hardware that was not there at boot. No service compiles in a PCI id. |
@@ -236,39 +236,32 @@ beside the driver that is the only thing reading them, and its tests run from
   prove a file is in the run is to make one of its tests fail on purpose and watch the
   suite go red
   across all eight masks.
-- `make fuzz` searches the host tests rather than running each once, driving every
-  target that calls `std.testing.fuzz`. It does not work on Zig 0.16.0: the compiler's
-  own test runner fails to build in fuzz mode, and a four-line project with one fuzz
-  test fails identically, so there is nothing here to fix. Each target therefore has a
-  seeded counterpart beside it, driving the same code from a generator through the one
-  `Choices` union in [`lib/fuzzing.zig`](../src/lib/fuzzing.zig), and those run in
-  `make test`. A target builds a plausible input and lets the search choose what is
-  wrong with it, described in the format's own terms rather than as bytes: an input
-  assembled from arbitrary numbers fails the first check it meets and reaches none of
-  the arithmetic underneath, which is where the failures are. There are five, each over
-  something written by somebody else:
-  - **A volume**, in [`fat/check.zig`](../src/kernel/fat/check.zig): built through the
-    driver, damaged, and required to mount, check and settle, where settling means a
-    second check finds nothing. Every branch of the checker is reached, cross-linked
-    clusters included.
-  - **A boot sector**, in the same file: fields pushed to where the arithmetic over
-    them stops being arithmetic. It found two, both fixed: a table size that overflowed
-    where the data area starts, and a volume claiming more sectors than its medium.
-  - **A program image**, in [`elf/plan.zig`](../src/kernel/elf/plan.zig): a plan that
-    comes back is checked against everything the loader will assume of it, since the
-    loader asks nothing again. Every segment's bytes inside the file, nothing reaching
-    the kernel's half or the page at zero, no two segments sharing a page, and the entry
-    inside something executable.
-  - **A receive page**, in [`netd/rxpage.zig`](../src/user/netd/rxpage.zig): records as
-    the Attansic L1E writes them, then interfered with. The walk must always move on or
-    stop, and a frame it hands out must lie inside the page it was given.
-  - **A management frame**, in [`lib/mlme.zig`](../src/lib/mlme.zig): the only parsing
-    here with no handshake in front of it. Every parser must answer or decline for any
-    bytes at all, and answer the same way twice.
-  - **A page table**, in [`arch/x86/pagetable.zig`](../src/arch/x86/pagetable.zig):
-    the check standing between a syscall and a program's own mappings, compared against
-    a second walk with none of its shortcuts. Where the two disagree, the shortcut is
-    wrong.
+- `make fuzz` drives every target that calls `std.testing.fuzz`. It does not work on
+  Zig 0.16.0: the compiler's test runner fails to build in fuzz mode, and a four-line
+  project with one fuzz test fails the same way. Each target therefore has a seeded
+  counterpart that runs in `make test`, driving the same code through the `Choices`
+  union in [`lib/fuzzing.zig`](../src/lib/fuzzing.zig). Targets build a plausible input
+  and let the search choose what is wrong with it, in the format's own terms rather than
+  as bytes; an input of arbitrary numbers fails the first check it meets. Five targets,
+  each over input from outside the machine:
+  - **Volume**, [`fat/check.zig`](../src/kernel/fat/check.zig): built through the
+    driver, damaged, then required to mount, check, and settle (a second check finds
+    nothing). Reaches every branch of the checker, cross-linked clusters included.
+  - **Boot sector**, same file: each field pushed past where its check holds. Found two
+    defects, both fixed: a table size that overflowed the data-area calculation, and a
+    volume claiming more sectors than its medium.
+  - **Program image**, [`elf/plan.zig`](../src/kernel/elf/plan.zig): a returned plan is
+    checked against everything the loader assumes without asking again. Segment bytes
+    inside the file, nothing in the kernel's half or the page at zero, no two segments
+    sharing a page, entry inside an executable segment.
+  - **Receive page**, [`netd/rxpage.zig`](../src/user/netd/rxpage.zig): records as the
+    Attansic L1E writes them, then tampered with. The walk must always advance or stop,
+    and a returned frame must lie inside the page.
+  - **Management frame**, [`lib/mlme.zig`](../src/lib/mlme.zig): unauthenticated input
+    off the air. Every parser answers or declines for any bytes, and answers the same
+    way twice.
+  - **Page table**, [`arch/x86/pagetable.zig`](../src/arch/x86/pagetable.zig):
+    differential against a walk with none of its shortcuts.
 - `zig build check`: the layering rules, and a check that no module imports something it never uses.
 - `make check-all`: the gate a change passes before it is done. The tree is formatted as
   `zig fmt` formats it, the layering holds, the host tests pass, both images build, the root

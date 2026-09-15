@@ -1,15 +1,12 @@
-//! What a check decides. No medium is involved.
+//! What a volume check decides, with no I/O.
 //!
-//! A FAT volume records a file's length in two places. The directory record
-//! holds the first cluster and the size in bytes; the allocation table holds
-//! the chain of clusters. Checking a volume means comparing the two, and
-//! each way they can differ has one correct repair.
+//! FAT records a file's length twice: the directory record holds the first
+//! cluster and the size in bytes, the allocation table holds the chain. Each
+//! way the two can differ has one correct repair.
 //!
-//! Picking the repair is arithmetic over two small descriptions, so it is
-//! separated from `fat/check.zig`. Reaching a branch there needs a volume
-//! damaged in exactly one way; here each branch is a case in a table.
-//! `fat/check.zig` keeps the parts that need a medium: reading the chain and
-//! writing the repair.
+//! Separated from `fat/check.zig` so each case is a table entry rather than a
+//! volume damaged to reach it. `fat/check.zig` keeps the I/O: reading the
+//! chain and writing the repair.
 //!
 //! Nothing here allocates, reads or writes.
 

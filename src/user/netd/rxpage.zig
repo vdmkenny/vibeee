@@ -352,16 +352,14 @@ test "the record is the shape the part writes" {
 // ---------------------------------------------------------------------------
 // Fuzzing
 //
-// The part writes into this page and the walk reads it, so the page is the
-// boundary between a driver and silicon nobody here can emulate. A page of
-// random bytes fails the sequence check on its first record and stops, so the
-// page is filled with records a working part would write and the search
-// chooses what to change about them.
+// Run with `make fuzz`. No emulator carries this silicon.
 //
-// What must hold is that the walk always makes progress or stops, and that a
-// frame it hands out lies inside the page it was given. Those two together
-// are what keeps a part that has gone wrong from becoming a service that
-// spins or reads someone else's memory.
+// A page of random bytes fails the sequence check on its first record, so the
+// page is filled with records a working part would write and the search
+// chooses what to change.
+//
+// Two properties: the walk always advances or stops, and a frame it returns
+// lies inside the page it was given.
 
 const fuzzing = lib.fuzzing;
 const Choices = fuzzing.Choices;

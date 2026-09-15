@@ -184,10 +184,13 @@ screen includes a QR-encoded register dump; a photograph of it is useful for dia
 Known gaps:
 
 - Power-off reaches ACPI S5 but does not complete the final hardware power cut.
-- Wi-Fi scans, joins a WPA2 network and takes a DHCP lease on the machine; carrying
+- Wi-Fi scans, joins a WPA2 network and takes a DHCP lease on the machine. Carrying
   traffic over the radio is not confirmed.
-- Suspend to memory runs start to finish in the emulator and has not been tried on the
-  machine, where the display driver still has to restore the panel timing firmware set.
+- Suspend to memory runs in the emulator only. The display driver does not yet restore
+  the panel timing set by firmware.
+- Filesystems are FAT with no journal. A volume not unmounted cleanly is checked and
+  repaired at mount; clusters claimed by two files are reported, not repaired, and that
+  volume is mounted read-only.
 - Touchpad tap, scrolling, and gestures are not implemented.
 
 This is unaudited hobby OS software. Test it on overwriteable media and hardware you can

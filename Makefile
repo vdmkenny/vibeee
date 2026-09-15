@@ -528,23 +528,15 @@ test: qr-verify
 	$(ZIG) build test
 	$(ZIG) build test-hero test-echat test-eeemod test-roll
 
-# The same tests, searched rather than run once each.
+# Drive the fuzz targets. Not in `test` or `check-all`: a fuzzer runs until
+# stopped.
 #
-# `--fuzz` is the build system's own flag: it instruments the tests for
-# coverage and drives every one that calls `std.testing.fuzz` until it finds a
-# failure or is stopped. Not part of `check-all` for that reason, and not part
-# of `test`: the gate has to finish.
+# Does not work on Zig 0.16.0: the compiler's test runner fails to build in
+# fuzz mode, passing the wrong `StackTrace` to `writeStackTrace`. A four-line
+# project with one fuzz test fails the same way. The targets still compile
+# under `test`, and each has a seeded counterpart that runs there.
 #
-# **This does not work on Zig 0.16.0.** The compiler's own test runner fails to
-# build in fuzz mode, passing the wrong `StackTrace` to `writeStackTrace`; a
-# four-line project with one fuzz test and no dependencies fails the same way,
-# so there is nothing here to fix. The targets are written and compiled by
-# `test` regardless, and each has a seeded counterpart beside it that drives
-# the same code from a generator, which is what covers the property until the
-# search works.
-#
-# LIMIT bounds it, in iterations, with a K/M/G suffix allowed. Without one it
-# runs until interrupted.
+# LIMIT bounds the run in iterations, K/M/G suffix allowed.
 #
 #   make fuzz
 #   make fuzz LIMIT=200K

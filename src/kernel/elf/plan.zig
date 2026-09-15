@@ -484,22 +484,18 @@ test "an image asking for more segments than a plan holds is refused" {
 // ---------------------------------------------------------------------------
 // Fuzzing
 //
-// Random bytes are not a program image: they fail the first four checks above
-// and never reach the arithmetic, which is where the interesting failures are.
-// So the image is built here with the shape a linker gives one, and what the
-// search chooses is the numbers in its fields.
+// Run with `make fuzz`.
 //
-// The numbers are drawn from the places where the checks live rather than
-// from the whole of thirty-two bits: inside the file, on a page boundary,
-// just below where the kernel starts, and just below the top of the address
-// space. The last of those is the threat this file's own header describes, a
-// file naming an offset near the top and a length that carries the sum around
-// to zero.
+// Random bytes fail the first four checks above and never reach the
+// arithmetic. The image is built with a linker's shape and the search chooses
+// its field values, drawn from the regions the checks guard: inside the file,
+// page-aligned, just below `kernel_base`, and just below the top of the
+// address space.
 
 const fuzzing = @import("lib").fuzzing;
 const Choices = fuzzing.Choices;
 
-/// A field value, from the regions where a check could be got past.
+/// A field value, drawn from the regions the checks guard.
 fn field(from: Choices) u32 {
     return switch (from.one(enum { nearby, inside, page, near_kernel, near_top, anything })) {
         // A short move, which is what reaches a collision between two
