@@ -3,4 +3,5 @@
 
 test {
     _ = @import("domtest/main.zig");
+    _ = @import("intl.zig");
 }

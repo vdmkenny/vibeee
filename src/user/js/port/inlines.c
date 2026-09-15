@@ -48,3 +48,13 @@ int qjs_tag(JSValueConst value)
 {
     return JS_VALUE_GET_NORM_TAG(value);
 }
+
+JSValue qjs_throw_type(JSContext *ctx, const char *text)
+{
+    return JS_ThrowTypeError(ctx, "%s", text);
+}
+
+JSValue qjs_throw_range(JSContext *ctx, const char *text)
+{
+    return JS_ThrowRangeError(ctx, "%s", text);
+}

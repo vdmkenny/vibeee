@@ -24,7 +24,7 @@ pub const Atom = u32;
 
 /// Whether a value is one word or two.
 ///
-/// On a machine with 64-bit pointers, which is what this reader is tested on,
+/// On a machine with 64-bit pointers, which is what the host tests run on,
 /// a value is two words: what it is, and what kind of thing it is. Vibeee has
 /// 32-bit pointers, and there upstream folds the two into one 64-bit word, the
 /// kind in the top half: it calls that NAN-boxing. Both are mirrored here, and
@@ -83,6 +83,12 @@ pub fn nullValue() Value {
 
 pub fn undefinedValue() Value {
     return nothing(.undefined);
+}
+
+/// What a call gives back once it has thrown: the exception is held by the
+/// context, and this says to look there.
+pub fn exceptionValue() Value {
+    return nothing(.exception);
 }
 
 /// How a C function is called by the engine: as an ordinary function, or to
@@ -244,6 +250,8 @@ extern fn qjs_int(ctx: *Context, value: i32) Value;
 extern fn qjs_uint(ctx: *Context, value: u32) Value;
 extern fn qjs_float(ctx: *Context, value: f64) Value;
 extern fn qjs_tag(value: Value) c_int;
+extern fn qjs_throw_type(ctx: *Context, text: [*:0]const u8) Value;
+extern fn qjs_throw_range(ctx: *Context, text: [*:0]const u8) Value;
 
 pub const dup = qjs_dup;
 pub const free = qjs_free;
@@ -278,7 +286,39 @@ pub fn isObject(value: Value) bool {
 // The engine's own calls
 // ---------------------------------------------------------------------------
 
+/// What the engine has taken, as upstream counts it: the bytes and counts
+/// of each kind of thing it holds.
+pub const MemoryUsage = extern struct {
+    malloc_size: i64,
+    malloc_limit: i64,
+    memory_used_size: i64,
+    malloc_count: i64,
+    memory_used_count: i64,
+    atom_count: i64,
+    atom_size: i64,
+    str_count: i64,
+    str_size: i64,
+    obj_count: i64,
+    obj_size: i64,
+    prop_count: i64,
+    prop_size: i64,
+    shape_count: i64,
+    shape_size: i64,
+    js_func_count: i64,
+    js_func_size: i64,
+    js_func_code_size: i64,
+    js_func_pc2line_count: i64,
+    js_func_pc2line_size: i64,
+    c_func_count: i64,
+    array_count: i64,
+    fast_array_count: i64,
+    fast_array_elements: i64,
+    binary_object_count: i64,
+    binary_object_size: i64,
+};
+
 extern fn JS_NewRuntime() ?*Runtime;
+extern fn JS_ComputeMemoryUsage(rt: *Runtime, usage: *MemoryUsage) void;
 extern fn JS_FreeRuntime(rt: *Runtime) void;
 extern fn JS_SetMemoryLimit(rt: *Runtime, limit: usize) void;
 extern fn JS_SetMaxStackSize(rt: *Runtime, stack_size: usize) void;
@@ -314,6 +354,8 @@ extern fn JS_NewAtom(ctx: *Context, name: [*:0]const u8) Atom;
 extern fn JS_FreeAtom(ctx: *Context, atom: Atom) void;
 extern fn JS_DefinePropertyGetSet(ctx: *Context, into: Value, atom: Atom, get: Value, set: Value, flags: c_int) c_int;
 extern fn JS_SetPropertyFunctionList(ctx: *Context, into: Value, tab: [*]const ListEntry, len: c_int) c_int;
+extern fn JS_DefinePropertyValueStr(ctx: *Context, into: Value, name: [*:0]const u8, value: Value, flags: c_int) c_int;
+extern fn JS_IsArray(ctx: *Context, value: Value) c_int;
 
 extern fn JS_GetPropertyStr(ctx: *Context, from: Value, name: [*:0]const u8) Value;
 extern fn JS_SetPropertyStr(ctx: *Context, into: Value, name: [*:0]const u8, value: Value) c_int;
@@ -339,6 +381,9 @@ extern fn js_free(ctx: *Context, held: ?*anyopaque) void;
 pub const newRuntime = JS_NewRuntime;
 pub const freeRuntime = JS_FreeRuntime;
 pub const setMemoryLimit = JS_SetMemoryLimit;
+/// Count what the runtime holds: a walk over all of it, for a report rather
+/// than for every pass.
+pub const memoryUsage = JS_ComputeMemoryUsage;
 pub const setMaxStackSize = JS_SetMaxStackSize;
 /// Measure the stack from here: what the stack limit is counted down from.
 pub const updateStackTop = JS_UpdateStackTop;
@@ -367,6 +412,11 @@ pub const newError = JS_NewError;
 pub const throw = JS_Throw;
 pub const throwOutOfMemory = JS_ThrowOutOfMemory;
 
+/// Throw a `TypeError` saying `text`, as a call the script made wrongly does.
+pub const throwType = qjs_throw_type;
+/// Throw a `RangeError` saying `text`, as a value a call cannot take does.
+pub const throwRange = qjs_throw_range;
+
 pub const newClassId = JS_NewClassID;
 pub const newClass = JS_NewClass;
 /// What every object of a class inherits: given once, and taken by every
@@ -375,6 +425,10 @@ pub const setClassProto = JS_SetClassProto;
 pub const setNode = JS_SetOpaque;
 pub const nodeOf = JS_GetOpaque;
 pub const addList = JS_SetPropertyFunctionList;
+/// Give an object a property with the flags given, nought being one a
+/// script can neither list, change nor take away. Takes the value.
+pub const defineStr = JS_DefinePropertyValueStr;
+pub const isArray = JS_IsArray;
 
 pub const atomOf = JS_NewAtom;
 pub const freeAtom = JS_FreeAtom;

@@ -37,6 +37,7 @@ const cookie = @import("cookie.zig");
 const css = @import("css.zig");
 const form_mod = @import("form.zig");
 const http = @import("http.zig");
+const intl = @import("intl.zig");
 const lexbor = @import("lexbor.zig");
 const links = @import("links.zig");
 const media = @import("media.zig");
@@ -287,6 +288,7 @@ fn documentOf(ctx: *Context) ?*Document {
 /// scripts.
 pub fn open(machine: *js.Machine, tree: *lexbor.Document, rules: *const css.Rules, address: []const u8, host: Host) ?*Document {
     const ctx = machine.open() orelse return null;
+    intl.install(ctx);
     var heap = Heap{ .ctx = ctx };
     const it = heap.allocator().create(Document) catch {
         machine.close(ctx);

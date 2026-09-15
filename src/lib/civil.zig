@@ -92,9 +92,13 @@ pub fn fromEpoch(seconds: i64) Civil {
 }
 
 /// 0 = Sunday. 1970-01-01 was a Thursday, hence the offset.
-pub fn weekday(seconds: i64) u3 {
-    const days = @divFloor(seconds, SECONDS_PER_DAY);
+pub fn weekdayFromDays(days: i32) u3 {
     return @intCast(@mod(days + 4, 7));
+}
+
+/// 0 = Sunday, from seconds since the epoch.
+pub fn weekday(seconds: i64) u3 {
+    return weekdayFromDays(@intCast(@divFloor(seconds, SECONDS_PER_DAY)));
 }
 
 pub const DAY_NAMES = [7][]const u8{ "Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat" };
