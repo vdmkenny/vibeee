@@ -371,6 +371,10 @@ fn Placer(comptime Metrics: type) type {
         extents: []?Extent = &.{},
         /// Whether any box was set out of the flow.
         lifted: bool = false,
+        /// How tall the box about to be set is, where the page names both
+        /// the top and the bottom it is positioned from and no height of
+        /// its own: what the two leave between them.
+        stretched: ?i32 = null,
         /// The boxes out of the flow that are still to set, innermost box
         /// last: each is set once the box it is positioned against has been,
         /// since how far down a share of that box reaches is known only
@@ -475,6 +479,8 @@ fn Placer(comptime Metrics: type) type {
             const style = self.page.containers.items[one.box].style;
             const left = self.resolved(style.inset.left, frame.w);
             const right = self.resolved(style.inset.right, frame.w);
+            const top = self.resolved(style.inset.top, frame.h);
+            const bottom = self.resolved(style.inset.bottom, frame.h);
 
             var room = one.room;
             if (self.sized(style.width, style.min_width, style.max_width, frame.w)) |wide| {
@@ -487,6 +493,13 @@ fn Placer(comptime Metrics: type) type {
                 x = frame.x + edge;
             } else if (right) |edge| {
                 x = frame.x + frame.w - edge - room;
+            }
+
+            // A box that names both its top and its bottom and no height of
+            // its own is as tall as the two leave between them, as it is as
+            // wide as the two sides it names leave.
+            if (style.height == .auto and top != null and bottom != null) {
+                self.stretched = @max(frame.h - top.? - bottom.?, 0);
             }
 
             const keep_y = self.y;
@@ -507,8 +520,6 @@ fn Placer(comptime Metrics: type) type {
             self.right = keep_right;
             self.lifted = true;
 
-            const top = self.resolved(style.inset.top, frame.h);
-            const bottom = self.resolved(style.inset.bottom, frame.h);
             const down = if (top) |edge|
                 frame.y + edge - one.y
             else if (bottom) |edge|
@@ -626,6 +637,10 @@ fn Placer(comptime Metrics: type) type {
 
             const kept = self.page.containers.items[index];
             const style = kept.style;
+            // The height a positioned box was given is this box's and no
+            // box's under it.
+            const stretched = self.stretched;
+            self.stretched = null;
             // An item of a flex box is a box whatever it says it is.
             const boxed = item or style.display != .@"inline";
             const margin = if (boxed) self.roomOf(style.margin, room) else Room{};
@@ -732,7 +747,7 @@ fn Placer(comptime Metrics: type) type {
             // keep the box open where it does not, since a face wider than
             // the page's own takes more lines than the page allowed for.
             const came = self.y - inner_top;
-            const said = if (self.upright(style.height)) |given| self.heldTall(given, style.min_height, style.max_height) else self.heldTall(came, style.min_height, style.max_height);
+            const said = if (stretched orelse self.upright(style.height)) |given| self.heldTall(given, style.min_height, style.max_height) else self.heldTall(came, style.min_height, style.max_height);
             if (said < came and style.clips) self.clip(first_line, first_fill, inner_top + said);
             self.y = inner_top + if (said < came and !style.clips) came else said;
 
@@ -2942,6 +2957,26 @@ test "a positioned box is set against the nearest box above it that positions" {
     try expectWordAt(&b, "aa", 0, 82);
     try expectWordAt(&b, "bb", 0, 182);
     try testing.expectEqual(@as(i32, 200), b.layout.height);
+}
+
+test "a positioned box that names both its sides is as wide and as tall as they leave" {
+    const from = page_mod.BoxStyle{ .display = .block, .position = .relative, .height = .{ .px = 100 } };
+    var b = try flexed(200, from, &.{
+        .{ .words = "aa", .ground = @enumFromInt(1), .style = .{
+            .display = .block,
+            .position = .absolute,
+            .inset = .{ .top = .{ .px = 10 }, .bottom = .{ .px = 20 }, .left = .{ .px = 30 }, .right = .{ .px = 40 } },
+        } },
+    });
+    defer b.deinit();
+    try expectWordAt(&b, "aa", 30, 10);
+    // Two hundred less thirty and forty across, a hundred less ten and
+    // twenty down: the box itself, and what stands below it.
+    try testing.expectEqual(@as(usize, 1), b.layout.fills.items.len);
+    const fill = b.layout.fills.items[0].area;
+    try testing.expectEqual(@as(i32, 130), fill.w);
+    try testing.expectEqual(@as(i32, 70), fill.h);
+    try testing.expectEqual(@as(i32, 100), b.layout.height);
 }
 
 test "a box the page moves from where the flow put it keeps the room it had" {
