@@ -1737,24 +1737,24 @@ fn scriptsText(buf: []u8) []const u8 {
     const report = dom.reportOf(doc);
     if (script_job == .own) return std.fmt.bufPrint(buf, "scripts {d}, more coming", .{report.ran}) catch "scripts coming";
     if (report.ran == 0) return "no scripts";
-    if (report.error_last.len > 0) {
-        const line = report.error_last[0 .. std.mem.indexOfScalar(u8, report.error_last, '\n') orelse report.error_last.len];
-        return std.fmt.bufPrint(buf, "scripts {d}: {s}", .{ report.ran, line[0..@min(line.len, 72)] }) catch "scripts threw";
-    }
-    if (report.missing_count > 0) {
-        return std.fmt.bufPrint(buf, "scripts {d}, no {s} (+{d})", .{ report.ran, report.missing_last, report.missing_count - 1 }) catch "scripts";
-    }
+    var w: std.Io.Writer = .fixed(buf);
+    w.print("scripts {d}", .{report.ran}) catch return "scripts";
     // How long they have held the browser, where that is long enough for a
     // person to have noticed, and what the longest stretch of it was.
     if (report.longest_us >= std.time.us_per_s) {
-        return std.fmt.bufPrint(buf, "scripts {d}, {d} s, longest {d} s in {s}", .{
-            report.ran,
+        w.print(", {d} s, longest {d} s in {s}", .{
             report.ran_us / std.time.us_per_s,
             report.longest_us / std.time.us_per_s,
             report.longest_what,
-        }) catch "scripts";
+        }) catch {};
     }
-    return std.fmt.bufPrint(buf, "scripts {d}", .{report.ran}) catch "scripts";
+    if (report.error_last.len > 0) {
+        const line = report.error_last[0 .. std.mem.indexOfScalar(u8, report.error_last, '\n') orelse report.error_last.len];
+        w.print(": {s}", .{line[0..@min(line.len, 72)]}) catch {};
+    } else if (report.missing_count > 0) {
+        w.print(", no {s} (+{d})", .{ report.missing_last, report.missing_count - 1 }) catch {};
+    }
+    return w.buffered();
 }
 
 /// What the page on screen cost to fetch, or how far down it the view is
