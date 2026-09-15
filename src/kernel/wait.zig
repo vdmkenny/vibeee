@@ -25,6 +25,7 @@
 //! happened.
 
 const std = @import("std");
+const hal = @import("hal.zig");
 const sched = @import("sched.zig");
 
 /// Most queues a single `blockOn` can cover, which is the same number the
@@ -113,6 +114,14 @@ pub fn blockOn(queues: []const *Queue, deadline_us: ?u64) Timeout!usize {
     // syscall, where it can be ended safely, instead of blocking again on
     // something that may never arrive.
     if (self.killed) return error.TimedOut;
+
+    // A wait whose deadline has already passed does not sleep. The caller
+    // asked to look rather than to wait, and a thread put to sleep here waits
+    // for a tick before it can look again, which is a tenth of a second for
+    // every ten things it looks at.
+    if (deadline_us) |deadline| {
+        if (deadline <= hal.monotonicMicros()) return error.TimedOut;
+    }
 
     var waiters: [MAX_QUEUES]Waiter = undefined;
     for (queues, 0..) |q, i| {
