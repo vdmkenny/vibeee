@@ -840,15 +840,19 @@ pub fn build(b: *std.Build) void {
                 // Vendored C, built as its authors build it: the checks a
                 // debug build of Zig puts into C it compiles would stop the
                 // engine on arithmetic upstream means, a shift into the sign
-                // bit among it, and the target is built without them.
+                // bit among it, and the target is built without them. Built
+                // optimised, as the target builds it: an unoptimised engine
+                // has frames many times the size, and how deep a page's
+                // scripts may call would not be what it is on the machine.
                 .flags = &.{
                     "-std=gnu11",
+                    "-O2",
                     "-DCONFIG_VERSION=\"2026-06-04\"",
                     "-Dalloca=__builtin_alloca",
                     "-fno-sanitize=undefined",
                 },
             });
-            const dom_test_step = b.step("test-dom", "Test the reader's document, with QuickJS and lexbor built for this machine");
+            const dom_test_step = b.step("test-dom", "Test the browser's document, with QuickJS and lexbor built for this machine");
             dom_test_step.dependOn(&b.addRunArtifact(dom_test).step);
 
             // The character-journal model, on the host: the whole of a

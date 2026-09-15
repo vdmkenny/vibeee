@@ -875,6 +875,119 @@ test "Headers is a class with its methods on its prototype, keeping names whatev
     try testing.expectEqualStrings("2", try it.run("String(new Headers(new Headers({a: '1', b: '2'})).entries().length)"));
 }
 
+test "Intl writes numbers, dates, lists and relative times as English does, and reads back what it was asked" {
+    const it = try opened(with(""), true);
+    defer it.end();
+    try testing.expectEqualStrings("1,234,567.891", try it.run("new Intl.NumberFormat().format(1234567.891)"));
+    try testing.expectEqualStrings("$1,234.50", try it.run("new Intl.NumberFormat('en-US', {style: 'currency', currency: 'USD'}).format(1234.5)"));
+    try testing.expectEqualStrings("12%", try it.run("new Intl.NumberFormat('en', {style: 'percent'}).format(0.12)"));
+    try testing.expectEqualStrings("1.2K", try it.run("new Intl.NumberFormat('en', {notation: 'compact'}).format(1234)"));
+    try testing.expectEqualStrings("1.01", try it.run("new Intl.NumberFormat('en', {maximumFractionDigits: 2}).format(1.005)"));
+    try testing.expectEqualStrings("1,2", try it.run("[1, 2].map(new Intl.NumberFormat().format).join(',')"));
+    try testing.expectEqualStrings("integer:1 group:, integer:234 decimal:. fraction:5", try it.run("new Intl.NumberFormat().formatToParts(1234.5).map(function (p) { return p.type + ':' + p.value }).join(' ')"));
+    try testing.expectEqualStrings("1,234.5", try it.run("(1234.5).toLocaleString()"));
+    try testing.expectEqualStrings("3", try it.run("String(new Intl.NumberFormat('de-DE').resolvedOptions().maximumFractionDigits)"));
+    try testing.expectEqualStrings("de-DE", try it.run("new Intl.NumberFormat('de-DE').resolvedOptions().locale"));
+
+    try testing.expectEqualStrings("9/14/2026", try it.run("new Intl.DateTimeFormat('en-US').format(new Date(Date.UTC(2026, 8, 14, 15, 4, 5)))"));
+    try testing.expectEqualStrings("Monday, September 14, 2026 at 3:04 PM", try it.run("new Intl.DateTimeFormat('en-US', {dateStyle: 'full', timeStyle: 'short'}).format(Date.UTC(2026, 8, 14, 15, 4, 5))"));
+    try testing.expectEqualStrings("Sep 14, 2026, 3:04:05 PM", try it.run("new Date(Date.UTC(2026, 8, 14, 15, 4, 5)).toLocaleString('en-US', {dateStyle: 'medium', timeStyle: 'medium'})"));
+    try testing.expectEqualStrings("9/14/2026, 3:04:05 PM", try it.run("new Date(Date.UTC(2026, 8, 14, 15, 4, 5)).toLocaleString()"));
+    try testing.expectEqualStrings("15:04", try it.run("new Date(Date.UTC(2026, 8, 14, 15, 4, 5)).toLocaleTimeString('en-US', {hour: '2-digit', minute: '2-digit', hour12: false})"));
+    try testing.expectEqualStrings("September 14", try it.run("new Date(Date.UTC(2026, 8, 14)).toLocaleDateString('en-US', {month: 'long', day: 'numeric'})"));
+    try testing.expectEqualStrings("UTC", try it.run("Intl.DateTimeFormat().resolvedOptions().timeZone"));
+    try testing.expectEqualStrings("month:September literal:  day:14", try it.run("new Intl.DateTimeFormat('en', {month: 'long', day: 'numeric'}).formatToParts(Date.UTC(2026, 8, 14)).map(function (p) { return p.type + ':' + p.value }).join(' ')"));
+    try testing.expectEqualStrings("Invalid time value", try it.run("try { new Intl.DateTimeFormat().format(NaN) } catch (e) { e.message }"));
+    try testing.expectEqualStrings("string", try it.run("typeof new Intl.DateTimeFormat().format()"));
+
+    try testing.expectEqualStrings("one other few", try it.run("var pr = new Intl.PluralRules('en'); var po = new Intl.PluralRules('en', {type: 'ordinal'}); [pr.select(1), pr.select(2), po.select(3)].join(' ')"));
+    try testing.expectEqualStrings("a, b, and c", try it.run("new Intl.ListFormat('en').format(['a', 'b', 'c'])"));
+    try testing.expectEqualStrings("a or b", try it.run("new Intl.ListFormat('en', {type: 'disjunction'}).format(['a', 'b'])"));
+    try testing.expectEqualStrings("yesterday|in 3 days|2 hours ago", try it.run("var rf = new Intl.RelativeTimeFormat('en', {numeric: 'auto'}); [rf.format(-1, 'day'), rf.format(3, 'days'), rf.format(-2, 'hour')].join('|')"));
+    try testing.expectEqualStrings("a,B,c", try it.run("['c', 'B', 'a'].sort(new Intl.Collator('en').compare).join(',')"));
+    try testing.expectEqualStrings("en Latn US en-Latn-US", try it.run("var l = new Intl.Locale('EN-latn-us').maximize(); [l.language, l.script, l.region, l.toString()].join(' ')"));
+    try testing.expectEqualStrings("undefined", try it.run("String(new Intl.Locale('en').script)"));
+    try testing.expectEqualStrings("en-US,nl-BE", try it.run("Intl.DateTimeFormat.supportedLocalesOf(['en-US', 'nl_be']).join(',')"));
+    try testing.expectEqualStrings("true", try it.run("String(new Intl.NumberFormat() instanceof Intl.NumberFormat && Intl.NumberFormat.prototype.constructor === Intl.NumberFormat)"));
+    try testing.expectEqualStrings("0", try it.run("String(Object.keys(new Intl.NumberFormat()).length)"));
+}
+
+test "a page is loading while its scripts run, and complete once it is told it is loaded" {
+    var read: dom.Scripts = .{};
+    defer read.deinit(heap);
+    const it = try opened(
+        "<!DOCTYPE html><html><head><script>var seen = [document.readyState];" ++
+            "document.addEventListener('DOMContentLoaded', function () { seen.push('dom:' + document.readyState) });" ++
+            "window.addEventListener('load', function () { seen.push('load:' + document.readyState) });</script>" ++
+            "<script src=\"https://example.org/late.js\"></script></head><body></body></html>",
+        false,
+    );
+    defer it.end();
+    // The first script has run and the second is still to come.
+    try testing.expectEqualStrings("loading", try it.run("document.readyState"));
+    try testing.expectEqual(dom.Loading.waiting, dom.loadNext(it.doc, &.{}));
+    try testing.expectEqualStrings("loading", try it.run("document.readyState"));
+
+    const fetched = [_]dom.Fetched{.{ .address = "https://example.org/late.js", .text = "seen.push('late:' + document.readyState);" }};
+    try testing.expectEqual(dom.Loading.done, dom.loadNext(it.doc, &fetched));
+    try testing.expectEqualStrings("loading,late:loading,dom:interactive,load:complete", try it.run("seen.join(',')"));
+    try testing.expectEqualStrings("complete", try it.run("document.readyState"));
+}
+
+test "a posted message reaches the window on a later loop, and a channel's ports each other" {
+    clock_us = 0;
+    const it = try opened(with(
+        \\var got = []; window.addEventListener('message', function (e) { got.push('w:' + e.data + ':' + (e.source === window)); });
+        \\window.onmessage = function (e) { got.push('on:' + e.data); };
+        \\var ch = new MessageChannel(); ch.port1.onmessage = function (e) { got.push('p1:' + e.data); };
+        \\ch.port2.addEventListener('message', function (e) { got.push('p2:' + e.data); }); ch.port2.start();
+        \\window.postMessage('hello', '*'); ch.port2.postMessage(1); ch.port1.postMessage({ n: 2 });
+    ), true);
+    defer it.end();
+    try testing.expectEqual(@as(?u32, 0), dom.waits(it.doc));
+    try testing.expectEqualStrings("", try it.run("got.join(' ')"));
+    try testing.expect(dom.loop(it.doc));
+    try testing.expectEqualStrings("w:hello:true on:hello p1:1 p2:[object Object]", try it.run("got.join(' ')"));
+    try testing.expect(dom.waits(it.doc) == null);
+    // A message posted while one is delivered follows it, in the same loop.
+    try testing.expectEqualStrings("undefined", try it.run("got = []; window.addEventListener('message', function (e) { if (e.data === 'a') window.postMessage('b', '*'); }); window.postMessage('a', '*'); String(undefined)"));
+    try testing.expect(dom.loop(it.doc));
+    try testing.expectEqualStrings("w:a:true on:a w:b:true on:b", try it.run("got.join(' ')"));
+}
+
+test "a page script tells its element it has loaded, or that it could not be fetched" {
+    var read: dom.Scripts = .{};
+    defer read.deinit(heap);
+    const it = try opened(
+        "<!DOCTYPE html><html><head><script>var seen = [];</script>" ++
+            "<script src=\"https://example.org/a.js\" onload=\"seen.push('loaded ' + this.getAttribute('src'))\" onerror=\"seen.push('failed')\"></script>" ++
+            "<script src=\"https://example.org/gone.js\" onload=\"seen.push('loaded gone')\" onerror=\"seen.push('failed gone')\"></script>" ++
+            "</head><body></body></html>",
+        false,
+    );
+    defer it.end();
+    const fetched = [_]dom.Fetched{
+        .{ .address = "https://example.org/a.js", .text = "seen.push('ran');" },
+        .{ .address = "https://example.org/gone.js", .text = "" },
+    };
+    try testing.expectEqual(dom.Loading.done, dom.loadNext(it.doc, &fetched));
+    try testing.expectEqualStrings("ran|loaded https://example.org/a.js|failed gone", try it.run("seen.join('|')"));
+}
+
+test "performance answers its entry queries with lists, and DOMParser gives a document of its own" {
+    const it = try opened(with(""), true);
+    defer it.end();
+    try testing.expectEqualStrings("0 0 true", try it.run("[performance.getEntriesByType('navigation').length, performance.getEntriesByName('x').length, Array.isArray(performance.getEntries())].join(' ')"));
+    try testing.expectEqualStrings("Tom & Jerry <3", try it.run("new DOMParser().parseFromString('Tom &amp; Jerry &lt;3', 'text/html').documentElement.textContent"));
+    try testing.expectEqualStrings("9 #document 1 HTML BODY HEAD", try it.run("var d = new DOMParser().parseFromString('<p id=\"a\">one</p><p>two</p>', 'text/html'); [d.nodeType, d.nodeName, d.documentElement.nodeType, d.documentElement.nodeName, d.body.nodeName, d.head.nodeName].join(' ')"));
+    try testing.expectEqualStrings("2 one two", try it.run("var ps = d.body.querySelectorAll('p'); [ps.length, ps[0].textContent, d.getElementById('a').nextSibling.textContent].join(' ')"));
+    try testing.expectEqualStrings("undefined", try it.run("String(d.body.body)"));
+    // The page's own tree is untouched by it.
+    try testing.expectEqualStrings("true", try it.run("var before = document.querySelectorAll('p').length; new DOMParser().parseFromString('<p>x</p><p>y</p>', 'text/html'); String(document.querySelectorAll('p').length === before)"));
+    // Past the most kept, the oldest is let go, and what was kept of it reads as nothing.
+    try testing.expectEqualStrings("null", try it.run("var first = new DOMParser().parseFromString('<b>first</b>', 'text/html').body; for (var i = 0; i < 70; i++) new DOMParser().parseFromString('<i>' + i + '</i>', 'text/html'); String(first.firstChild)"));
+}
+
 test "a box with room and a ground of its own is kept as a block with both, for the layout to set" {
     const it = try opened(
         "<!DOCTYPE html><html><body><p>plain</p><div class=\"card\"><p>inside</p></div>" ++
