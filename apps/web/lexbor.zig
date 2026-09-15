@@ -535,6 +535,9 @@ pub const SelectorList = extern struct {
 
 /// The properties this browser acts on, numbered as upstream numbers them.
 pub const Property = enum(usize) {
+    /// A declaration upstream dropped: it knows the property and could make
+    /// nothing of the value written for it.
+    undef = 0x0000,
     /// One upstream does not read, kept by name with its value as written.
     custom = 0x0001,
     align_items = 0x0003,

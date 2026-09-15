@@ -2517,6 +2517,25 @@ fn jsNewImage(ctx: *Context, _: Value, _: c_int, _: [*]const Value) callconv(.c)
     return wrap(it, lexbor.nodeOf(made));
 }
 
+/// `CSS.supports`: whether the browser reads a declaration, which a page
+/// asks before it takes the path that needs one. Asked as a property and
+/// the value written for it, or as one condition the way a `@supports` rule
+/// writes it.
+fn jsSupports(ctx: *Context, _: Value, argc: c_int, argv: [*]const Value) callconv(.c) Value {
+    const no = qjs.newBool(ctx, 0);
+    const it = documentOf(ctx) orelse return no;
+    const cascade = lexbor.domOf(it.tree).css orelse return no;
+    const first = argument(ctx, argc, argv, 0) orelse return no;
+    defer qjs.freeText(ctx, first.ptr);
+    const second = argument(ctx, argc, argv, 1);
+    defer if (second) |value| qjs.freeText(ctx, value.ptr);
+    const reads = if (second) |value|
+        css.supports(cascade.parser, first, value)
+    else
+        css.honours(cascade.parser, first);
+    return qjs.newBool(ctx, @intFromBool(reads));
+}
+
 /// `matchMedia`: what a stylesheet's query says of the window the page is
 /// in, which is the same question the browser asks of its stylesheets.
 fn jsMedia(ctx: *Context, _: Value, argc: c_int, argv: [*]const Value) callconv(.c) Value {
@@ -4081,6 +4100,12 @@ fn furnish(it: *Document) void {
     inline for (.{ "mark", "measure", "clearMarks", "clearMeasures", "clearResourceTimings" }) |name| give(ctx, clock, name, 1, &jsNothing);
     inline for (.{ "getEntries", "getEntriesByName", "getEntriesByType" }) |name| give(ctx, clock, name, 1, &jsEmptyList);
     _ = qjs.setStr(ctx, global, "performance", clock);
+
+    // `CSS`: what a page asks the browser about its stylesheets before it
+    // takes a path that needs one of them read.
+    const styles = qjs.newObject(ctx);
+    give(ctx, styles, "supports", 2, &jsSupports);
+    _ = qjs.setStr(ctx, global, "CSS", styles);
 
     // Consent bootstraps ask for a frame in `window.frames` before they make
     // it: an empty list lets them go on.

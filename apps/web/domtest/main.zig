@@ -277,6 +277,34 @@ test "the page says where it is, and what the browser is called" {
     try says("", "String(matchMedia('(max-width: 700px)').matches)", "true");
 }
 
+test "the page can ask which declarations the browser reads" {
+    try says("", "String(CSS.supports('display', 'flex'))", "true");
+    try says("", "String(CSS.supports('display', 'banana'))", "false");
+    try says("", "String(CSS.supports('gallop', '4px'))", "false");
+    // A variable stands for whatever the page set it to, and is written into
+    // the sheet before the cascade reads it.
+    try says("", "String(CSS.supports('color', 'var(--test, red)'))", "true");
+    try says("", "String(CSS.supports('--own', 'red'))", "true");
+    // What upstream keeps by name and the browser goes on to read.
+    try says("", "String(CSS.supports('overflow', 'hidden'))", "true");
+    try says("", "String(CSS.supports('gap', '4px'))", "true");
+}
+
+test "a support condition joins its sides the way a stylesheet writes them" {
+    try says("", "String(CSS.supports('(display: flex)'))", "true");
+    try says("", "String(CSS.supports('(display: flex) and (color: red)'))", "true");
+    try says("", "String(CSS.supports('(display: flex) and (display: banana)'))", "false");
+    try says("", "String(CSS.supports('(display: banana) or (color: red)'))", "true");
+    try says("", "String(CSS.supports('not (display: banana)'))", "true");
+    try says("", "String(CSS.supports('((display: flex))'))", "true");
+    // Mixing the two words without brackets to say which binds first is not
+    // a condition, and neither is a question about anything but a
+    // declaration.
+    try says("", "String(CSS.supports('(display: flex) and (color: red) or (color: blue)'))", "false");
+    try says("", "String(CSS.supports('selector(a > b)'))", "false");
+    try says("", "String(CSS.supports('display: flex'))", "false");
+}
+
 test "what is not here is an empty shape, and is noted" {
     const it = try opened(with("getComputedStyle(document.body).getPropertyValue('color'); document.body.getBoundingClientRect();"), true);
     defer it.end();

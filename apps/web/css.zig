@@ -1136,22 +1136,22 @@ const Variables = struct {
         }
         try out.appendSlice(gpa, text[at..]);
     }
-
-    /// Where the parenthesis or brace opened at `open` closes, counting the
-    /// ones inside it, or nothing where it never does.
-    fn closing(text: []const u8, open: usize) ?usize {
-        const shut: u8 = if (text[open] == '{') '}' else ')';
-        var depth: usize = 0;
-        for (text[open..], open..) |c, index| {
-            if (c == '{' or c == '(') depth += 1;
-            if (c == '}' or c == ')') {
-                depth -= 1;
-                if (depth == 0) return if (c == shut) index else null;
-            }
-        }
-        return null;
-    }
 };
+
+/// Where the parenthesis or brace opened at `open` closes, counting the
+/// ones inside it, or nothing where it never does.
+fn closing(text: []const u8, open: usize) ?usize {
+    const shut: u8 = if (text[open] == '{') '}' else ')';
+    var depth: usize = 0;
+    for (text[open..], open..) |c, index| {
+        if (c == '{' or c == '(') depth += 1;
+        if (c == '}' or c == ')') {
+            depth -= 1;
+            if (depth == 0) return if (c == shut) index else null;
+        }
+    }
+    return null;
+}
 
 /// Match every rule again against `root` and everything under it, as a
 /// browser does where a script has put a piece of page in: what the sheets
@@ -1240,26 +1240,165 @@ fn honoured(style: *const lexbor.StyleRule) bool {
     while (at) |rule| : (at = rule.next) {
         if (rule.kind != .declaration) continue;
         const declaration: *const lexbor.Declaration = @fieldParentPtr("rule", rule);
-        switch (declaration.property) {
-            .display, .position, .float, .overflow_x, .overflow_y, .width, .height, .min_width, .min_height, .max_width, .max_height, .flex, .flex_basis, .flex_direction, .flex_flow, .flex_grow, .flex_shrink, .flex_wrap, .justify_content, .align_items, .align_self, .visibility, .opacity, .color, .background_color, .text_align, .white_space, .margin, .margin_top, .margin_right, .margin_bottom, .margin_left, .padding, .padding_top, .padding_right, .padding_bottom, .padding_left, .border, .border_top, .border_right, .border_bottom, .border_left, .border_top_color, .border_right_color, .border_bottom_color, .border_left_color => return true,
-            .custom => {
-                const custom = customOf(declaration) orelse continue;
-                const name = custom.name.slice();
-                if (std.ascii.eqlIgnoreCase(name, "background") or
-                    std.ascii.eqlIgnoreCase(name, "list-style-type") or
-                    std.ascii.eqlIgnoreCase(name, "list-style") or
-                    std.ascii.eqlIgnoreCase(name, "border-radius") or
-                    std.ascii.eqlIgnoreCase(name, "grid-template-columns") or
-                    std.ascii.eqlIgnoreCase(name, "grid-column") or
-                    std.ascii.eqlIgnoreCase(name, "overflow") or
-                    std.ascii.eqlIgnoreCase(name, "clip") or
-                    std.ascii.eqlIgnoreCase(name, "clip-path") or
-                    isGap(name)) return true;
-            },
-            else => {},
-        }
+        if (acted(declaration)) return true;
     }
     return false;
+}
+
+/// Whether one declaration is a property this browser acts on: one named in
+/// the properties upstream reads for it, or one upstream kept by name that
+/// it goes on to read. Upstream reads more than this browser draws, and a
+/// rule that says only those says nothing here.
+fn acted(declaration: *const lexbor.Declaration) bool {
+    return switch (declaration.property) {
+        .undef => false,
+        .custom => named: {
+            const custom = customOf(declaration) orelse break :named false;
+            break :named readsNamed(custom.name.slice());
+        },
+        else => |property| std.enums.tagName(lexbor.Property, property) != null,
+    };
+}
+
+/// The properties upstream keeps by name that this browser goes on to read,
+/// and the names a gap may be written under.
+const NAMED = [_][]const u8{
+    "background",  "list-style-type",       "list-style", "border-radius",
+    "grid-column", "grid-template-columns", "overflow",   "clip",
+    "clip-path",
+} ++ GAPS;
+
+/// Whether `name` is one of those.
+fn readsNamed(name: []const u8) bool {
+    for (NAMED) |known| {
+        if (std.ascii.eqlIgnoreCase(name, known)) return true;
+    }
+    return false;
+}
+
+/// Whether this browser acts on declarations of `property`, whatever the
+/// value says: the properties upstream reads for it, and those it goes on to
+/// read from what upstream kept by name.
+fn readsProperty(name: []const u8) bool {
+    for (READ) |property| {
+        if (sameProperty(name, property)) return true;
+    }
+    return readsNamed(name);
+}
+
+/// The properties upstream reads for this browser, named as they are named
+/// here: with an underscore where a stylesheet writes a dash.
+const READ = properties: {
+    const fields = @typeInfo(lexbor.Property).@"enum".fields;
+    var names: [fields.len][]const u8 = undefined;
+    var count = 0;
+    for (fields) |field| {
+        if (std.mem.eql(u8, field.name, "undef") or std.mem.eql(u8, field.name, "custom")) continue;
+        names[count] = field.name;
+        count += 1;
+    }
+    const kept = names[0..count].*;
+    break :properties kept;
+};
+
+/// Whether a stylesheet's `name` is the property named `here`, which writes
+/// each of the name's dashes as an underscore.
+fn sameProperty(name: []const u8, here: []const u8) bool {
+    if (name.len != here.len) return false;
+    for (name, here) |wrote, letter| {
+        const same = if (letter == '_') wrote == '-' else std.ascii.toLower(wrote) == letter;
+        if (!same) return false;
+    }
+    return true;
+}
+
+/// How much of a declaration this browser will read to answer for it.
+const DECLARATION_MAX = 256;
+
+/// Whether this browser reads `property: value`, which is what a page asks
+/// when it asks the browser whether it supports a declaration. A variable
+/// stands for whatever the page set it to, and is written into the sheet
+/// before upstream reads it, so a value written as one stands or falls with
+/// the property alone.
+pub fn supports(parser: *lexbor.CssParser, property: []const u8, value: []const u8) bool {
+    const name = std.mem.trim(u8, property, &std.ascii.whitespace);
+    const written = std.mem.trim(u8, value, &std.ascii.whitespace);
+    if (name.len == 0 or written.len == 0) return false;
+    if (std.mem.startsWith(u8, name, "--")) return true;
+    if (!readsProperty(name)) return false;
+    if (std.mem.indexOf(u8, written, "var(") != null) return true;
+    var buf: [DECLARATION_MAX]u8 = undefined;
+    const declaration = std.fmt.bufPrint(&buf, "{s}:{s}", .{ name, written }) catch return false;
+    const list = lexbor.lxb_css_declaration_list_parse(parser, declaration.ptr, declaration.len) orelse return false;
+    const first = list.first orelse return false;
+    if (first.kind != .declaration) return false;
+    return acted(@fieldParentPtr("rule", first));
+}
+
+/// Whether this browser reads what `condition` asks for, written the way a
+/// `@supports` rule writes it: a declaration in brackets, those joined by
+/// `and` or `or`, and any of them turned around by `not`. Anything else a
+/// condition may hold, such as a selector or a font format, is nothing this
+/// browser claims.
+pub fn honours(parser: *lexbor.CssParser, condition: []const u8) bool {
+    var rest = std.mem.trim(u8, condition, &std.ascii.whitespace);
+    return joined(parser, &rest) and rest.len == 0;
+}
+
+/// One side of a condition and every `and` or `or` after it, read out of
+/// `rest`. A condition joins its sides with one word or the other, never
+/// both without brackets to say which binds first.
+fn joined(parser: *lexbor.CssParser, rest: *[]const u8) bool {
+    var answer = notted(parser, rest);
+    var all: ?bool = null;
+    while (true) {
+        const both = took(rest, "and");
+        if (!both and !took(rest, "or")) return answer;
+        if (all) |was| {
+            if (was != both) return false;
+        } else all = both;
+        const next = notted(parser, rest);
+        answer = if (both) answer and next else answer or next;
+    }
+}
+
+/// One side of a condition, turned around by as many `not`s as it carries.
+fn notted(parser: *lexbor.CssParser, rest: *[]const u8) bool {
+    if (took(rest, "not")) return !notted(parser, rest);
+    return bracketed(parser, rest);
+}
+
+/// What one pair of brackets holds: another condition where it opens with a
+/// bracket, and a declaration otherwise.
+fn bracketed(parser: *lexbor.CssParser, rest: *[]const u8) bool {
+    skipSpace(rest);
+    if (rest.len == 0 or rest.*[0] != '(') return false;
+    const close = closing(rest.*, 0) orelse {
+        rest.* = "";
+        return false;
+    };
+    var inside = std.mem.trim(u8, rest.*[1..close], &std.ascii.whitespace);
+    rest.* = rest.*[close + 1 ..];
+    if (inside.len == 0) return false;
+    if (inside[0] == '(' or std.ascii.startsWithIgnoreCase(inside, "not ")) {
+        return joined(parser, &inside) and inside.len == 0;
+    }
+    const colon = std.mem.indexOfScalar(u8, inside, ':') orelse return false;
+    return supports(parser, inside[0..colon], inside[colon + 1 ..]);
+}
+
+/// Take `keyword` off the front of `rest` where it stands there whole.
+fn took(rest: *[]const u8, keyword: []const u8) bool {
+    skipSpace(rest);
+    if (!std.ascii.startsWithIgnoreCase(rest.*, keyword)) return false;
+    const after = rest.*[keyword.len..];
+    if (after.len > 0 and !std.ascii.isWhitespace(after[0]) and after[0] != '(') return false;
+    rest.* = after;
+    return true;
+}
+
+fn skipSpace(rest: *[]const u8) void {
+    rest.* = std.mem.trimStart(u8, rest.*, &std.ascii.whitespace);
 }
 
 /// Upstream's named colours, in its order, which is alphabetical.
