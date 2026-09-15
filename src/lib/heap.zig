@@ -2,8 +2,8 @@
 //!
 //! Requests of two kilobytes and less come from size classes, each twice the
 //! width of the last, and a block given back goes on its class's list for the
-//! next request of that width. Larger requests are cut from the pieces at the
-//! size they ask for, and a block given back is merged with whatever free
+//! next request of that width. Larger requests are cut from free memory at
+//! the size they ask for, and a block given back is merged with whatever free
 //! memory touches it, so what a program lets go of can be handed out again at
 //! any size.
 //!
@@ -17,11 +17,13 @@
 //! for. Nothing goes back to the source: a program's memory is its high-water
 //! mark.
 //!
-//! Free memory is a list of holes in address order, first fit. A block is cut
-//! from the front of a hole, so the rest of the hole is right behind it and a
-//! block that grows can often grow where it is. The holes a program's use
-//! leaves number a few dozen, which a walk covers faster than a tree over
-//! them could be kept in order.
+//! Free memory is found and merged without a walk, which is what lets a
+//! program churn through hundreds of thousands of blocks at a steady rate.
+//! Every block carries its span in front of it and every free block carries
+//! it behind as well, so the blocks either side of one given back are found
+//! by arithmetic. Free blocks hang on bins by width, each bin holding those
+//! from its width up to twice it, so a request takes the first block of the
+//! first bin above it and knows it fits.
 //!
 //! Holds no lock. A program whose threads allocate keeps them out of it at the
 //! same time.
@@ -32,7 +34,7 @@ const std = @import("std");
 pub const ALIGN = 16;
 
 /// The widest class. Past it a request is cut to its size, because a class
-/// that wide would waste more to its rounding than a hole costs to keep.
+/// that wide would waste more to its rounding than free memory costs to keep.
 const CLASS_MAX = 2048;
 const CLASSES = 8; // 16, 32, 64, 128, 256, 512, 1024, 2048
 
@@ -44,21 +46,74 @@ const RUN = 16 * 1024;
 const PIECE_FIRST = 64 * 1024;
 pub const PIECE_MAX = 4 * 1024 * 1024;
 
-/// The least a hole is kept at when a block is cut from it. Less than this is
-/// given to the block instead: a hole that small serves no request, and every
-/// hole is a step on every walk of the list.
+/// The least a free block is: its header, the links that hold it on its bin,
+/// and its footer. Less than this is given to the block in front of it
+/// instead, so nothing too small to hold those is ever free.
 const HOLE_MIN = 256;
+
+/// How many bins free blocks hang on: the first holds those of `HOLE_MIN` up
+/// to twice it, each after it twice the last, and the last holds everything
+/// wider, which is a piece's worth and more.
+const BINS = 16;
+
+/// Where the first bin starts, as a shift.
+const BIN_FIRST = @ctz(@as(usize, HOLE_MIN));
+
+/// How far into a bin a request looks for a block wide enough before it takes
+/// one from a wider bin instead. The blocks in a request's own bin are within
+/// a factor of two of it, so a few of them are looked at rather than all.
+const FIT_SCAN = 8;
 
 /// In front of every block.
 const Header = extern struct {
     kind: Kind,
-    /// How many bytes the block spans, this header included.
-    span: usize,
+    /// How many bytes the block spans, this header included, and whether the
+    /// block in front of it is free. Every span is a whole number of
+    /// alignments, so the lowest bit is the mark's to use.
+    marked: usize,
+
+    const FREE_BEFORE: usize = 1;
+
+    fn span(self: *const Header) usize {
+        return self.marked & ~FREE_BEFORE;
+    }
+
+    fn write(self: *Header, kind: Kind, bytes: usize, free_before: bool) void {
+        self.kind = kind;
+        self.marked = bytes | @intFromBool(free_before);
+    }
+
+    fn setSpan(self: *Header, bytes: usize) void {
+        self.marked = bytes | (self.marked & FREE_BEFORE);
+    }
+
+    fn freeBefore(self: *const Header) bool {
+        return self.marked & FREE_BEFORE != 0;
+    }
+
+    fn markFreeBefore(self: *Header, yes: bool) void {
+        self.marked = (self.marked & ~FREE_BEFORE) | @intFromBool(yes);
+    }
+
+    fn end(self: *Header) [*]u8 {
+        return @as([*]u8, @ptrCast(self)) + self.span();
+    }
+
+    /// The block right behind this one, which is a piece's edge at the end
+    /// of one.
+    fn behind(self: *Header) *Header {
+        return headerAt(self.end());
+    }
 };
 
 const Kind = enum(u32) {
     /// Cut from a piece at the size it was asked for.
     cut = std.math.maxInt(u32),
+    /// Free memory, on one of the bins.
+    hole = std.math.maxInt(u32) - 1,
+    /// The end of a piece: a header with nothing after it, which the block
+    /// in front of it stops at.
+    edge = std.math.maxInt(u32) - 2,
     /// One of the classes, by index.
     _,
 };
@@ -72,19 +127,36 @@ const Spare = extern struct {
     next: ?*Spare,
 };
 
-/// Free memory: how far it goes, and the next hole after it.
-const Hole = extern struct {
-    next: ?*Hole,
-    span: usize,
-
-    fn end(self: *const Hole) usize {
-        return @intFromPtr(self) + self.span;
-    }
+/// What holds a free block on its bin, written where a block in use holds
+/// what was put in it.
+const Links = extern struct {
+    previous: ?[*]u8,
+    next: ?[*]u8,
 };
 
 comptime {
     std.debug.assert(@sizeOf(Header) <= HEADER);
-    std.debug.assert(@sizeOf(Hole) <= HEADER);
+    std.debug.assert(@sizeOf(Spare) <= HEADER);
+    std.debug.assert(HEADER + @sizeOf(Links) + ALIGN <= HOLE_MIN);
+    std.debug.assert(HOLE_MIN == @as(usize, 1) << BIN_FIRST);
+}
+
+fn linksOf(block: [*]u8) *Links {
+    return @ptrCast(@alignCast(block + HEADER));
+}
+
+/// The span a free block keeps at its end, where the block behind it reads
+/// it to find its front.
+fn footerOf(block: [*]u8, span: usize) *usize {
+    return @ptrCast(@alignCast(block + span - ALIGN));
+}
+
+/// The bin a block of `span` hangs on. Nothing narrower than `HOLE_MIN` is
+/// ever free, so the first bin is where the narrowest go.
+fn binOf(span: usize) usize {
+    std.debug.assert(span >= HOLE_MIN);
+    const shift = @bitSizeOf(usize) - 1 - @clz(span);
+    return @min(BINS - 1, shift - BIN_FIRST);
 }
 
 /// A heap over memory from `Source`, which has one method: `take(bytes)`,
@@ -99,8 +171,8 @@ pub fn Heap(comptime Source: type) type {
         spares: [CLASSES]?*Spare = @splat(null),
         /// What is left of the run small blocks are cut from.
         run: []u8 = &.{},
-        /// Free memory, in address order.
-        holes: ?*Hole = null,
+        /// Free blocks, by width.
+        bins: [BINS]?[*]u8 = @splat(null),
         /// How large the next shared piece is.
         piece: usize = PIECE_FIRST,
 
@@ -122,9 +194,10 @@ pub fn Heap(comptime Source: type) type {
             // Read before anything is written over them: a spare's link goes
             // where the kind was.
             const kind = header.kind;
-            const span = header.span;
+            const span = header.span();
             switch (kind) {
                 .cut => self.giveBack(block[0..span]),
+                .hole, .edge => unreachable,
                 _ => {
                     const class: u3 = @intCast(@intFromEnum(kind));
                     const spare: *Spare = @ptrCast(@alignCast(block));
@@ -141,8 +214,8 @@ pub fn Heap(comptime Source: type) type {
         pub fn resize(self: *Self, pointer: [*]u8, size: usize) bool {
             const need = needFor(size) orelse return false;
             const header = headerOf(pointer);
-            if (header.kind != .cut) return need <= header.span;
-            if (need <= header.span) {
+            if (header.kind != .cut) return need <= header.span();
+            if (need <= header.span()) {
                 self.shrink(header, need);
                 return true;
             }
@@ -167,141 +240,195 @@ pub fn Heap(comptime Source: type) type {
                 self.spares[class] = spare.next;
                 break :reused @ptrCast(spare);
             } else self.fromRun(width) orelse return null;
-            headerAt(block).* = .{ .kind = @enumFromInt(class), .span = width };
+            // The mark stays as it was: what stands in front of a block is
+            // the tiling's business and not the block's.
+            headerAt(block).kind = @enumFromInt(class);
+            headerAt(block).setSpan(width);
             return block;
         }
 
         fn fromRun(self: *Self, width: usize) ?[*]u8 {
             if (self.run.len < width) {
-                // Too little for this class, and perhaps of use to another
-                // request once merged with what it touches.
-                const left = self.run;
-                self.run = &.{};
-                self.giveBack(left);
+                self.abandonRun();
                 self.run = self.take(RUN) orelse return null;
             }
             const block = self.run.ptr;
             self.run = self.run[width..];
+            // Each block cut from the run stands in front of the next, so
+            // nothing in a run is ever free to the tiling.
+            headerAt(block).write(.cut, width, headerAt(block).freeBefore());
+            if (self.run.len > 0) headerAt(self.run.ptr).write(.cut, self.run.len, false);
             return block;
+        }
+
+        /// Let go of what is left of the run: as free memory where there is
+        /// enough of it to be, and otherwise as a block nothing holds, which
+        /// keeps the blocks either side of it able to find each other.
+        fn abandonRun(self: *Self) void {
+            const left = self.run;
+            self.run = &.{};
+            if (left.len == 0) return;
+            if (left.len < HOLE_MIN) {
+                headerAt(left.ptr).write(.cut, left.len, headerAt(left.ptr).freeBefore());
+                return;
+            }
+            self.giveBack(left);
         }
 
         fn cut(self: *Self, need: usize) ?[*]u8 {
             const span = self.take(need) orelse return null;
-            headerAt(span.ptr).* = .{ .kind = .cut, .span = span.len };
+            headerAt(span.ptr).kind = .cut;
             return span.ptr;
         }
 
-        /// `need` bytes of free memory, from the holes or from a new piece: a
-        /// little more where what would be left is too small to keep.
+        /// `need` bytes of free memory, from the bins or from a new piece,
+        /// as a block in use: a little more where what would be left of the
+        /// block it came from is too small to keep.
         fn take(self: *Self, need: usize) ?[]u8 {
             if (self.fit(need)) |span| return span;
             if (!self.fetch(need)) return null;
             return self.fit(need);
         }
 
+        /// A free block of at least `need` bytes, taken off its bin and made
+        /// a block in use. The first of the bin above what is asked for fits
+        /// whatever its width; the bin the request itself falls in holds
+        /// blocks either side of it, so a few of those are looked at first.
         fn fit(self: *Self, need: usize) ?[]u8 {
-            var link: *?*Hole = &self.holes;
-            while (link.*) |hole| : (link = &hole.next) {
-                if (hole.span < need) continue;
-                const start: [*]u8 = @ptrCast(hole);
-                const next = hole.next;
-                const left = hole.span - need;
-                if (left < HOLE_MIN) {
-                    link.* = next;
-                    return start[0 .. need + left];
-                }
-                // The front is taken and the rest stays a hole, so a block
-                // that grows finds free memory right behind it.
-                const rest: *Hole = @ptrCast(@alignCast(start + need));
-                rest.* = .{ .next = next, .span = left };
-                link.* = rest;
-                return start[0..need];
+            const bin = binOf(@max(need, HOLE_MIN));
+            var looked: usize = 0;
+            var at = self.bins[bin];
+            while (at) |block| : (at = linksOf(block).next) {
+                if (headerAt(block).span() >= need) return self.claim(block, need);
+                looked += 1;
+                if (looked == FIT_SCAN) break;
+            }
+            for (self.bins[bin + 1 ..]) |wider| {
+                if (wider) |block| return self.claim(block, need);
+            }
+            // Nothing wider is free, so the rest of the request's own bin is
+            // worth the walk before a piece is asked for.
+            while (at) |block| : (at = linksOf(block).next) {
+                if (headerAt(block).span() >= need) return self.claim(block, need);
             }
             return null;
         }
 
+        /// Take `block` off its bin and make the front of it a block in use
+        /// of `need` bytes, the rest staying free where there is enough of
+        /// it to be.
+        fn claim(self: *Self, block: [*]u8, need: usize) []u8 {
+            const span = headerAt(block).span();
+            self.unlink(block);
+            const left = span - need;
+            if (left < HOLE_MIN) {
+                headerAt(block).write(.cut, span, false);
+                headerAt(block).behind().markFreeBefore(false);
+                return block[0..span];
+            }
+            headerAt(block).write(.cut, need, false);
+            // The front is taken and the rest stays free, so a block that
+            // grows finds free memory right behind it.
+            self.hang(block + need, left);
+            return block[0..need];
+        }
+
         /// Ask the source for a piece with room for `need`.
         fn fetch(self: *Self, need: usize) bool {
-            const own = need > PIECE_MAX / 2;
-            const piece = self.source.take(if (own) need else @max(self.piece, need)) orelse return false;
+            const want = need + ALIGN;
+            const own = want > PIECE_MAX / 2;
+            const piece = self.source.take(if (own) want else @max(self.piece, want)) orelse return false;
             std.debug.assert(std.mem.isAligned(@intFromPtr(piece.ptr), ALIGN));
             std.debug.assert(piece.len % ALIGN == 0);
             if (!own and self.piece < PIECE_MAX) self.piece *= 2;
-            self.giveBack(piece);
+            // The last alignment of a piece says where it ends, so a block
+            // at the end of one never reads past it.
+            const body = piece[0 .. piece.len - ALIGN];
+            headerAt(body.ptr + body.len).write(.edge, 0, false);
+            self.hang(body.ptr, body.len);
             return true;
         }
 
-        /// Make `span` a hole, merged with any hole it touches.
-        fn giveBack(self: *Self, span: []u8) void {
-            if (span.len < @sizeOf(Hole)) return;
-            const at = @intFromPtr(span.ptr);
+        /// Make the block at `at` free memory of `span` bytes and hang it on
+        /// its bin. Nothing in front of it is free, since free memory that
+        /// touches is merged.
+        fn hang(self: *Self, at: [*]u8, span: usize) void {
+            headerAt(at).write(.hole, span, false);
+            footerOf(at, span).* = span;
+            headerAt(at).behind().markFreeBefore(true);
+            const bin = binOf(span);
+            linksOf(at).* = .{ .previous = null, .next = self.bins[bin] };
+            if (self.bins[bin]) |first| linksOf(first).previous = at;
+            self.bins[bin] = at;
+        }
 
-            var before: ?*Hole = null;
-            var after = self.holes;
-            while (after) |hole| {
-                if (@intFromPtr(hole) > at) break;
-                before = hole;
-                after = hole.next;
-            }
-            // Overlapping a hole is a block given back twice.
-            std.debug.assert(before == null or before.?.end() <= at);
-            std.debug.assert(after == null or at + span.len <= @intFromPtr(after.?));
-
-            const node: *Hole = @ptrCast(@alignCast(span.ptr));
-            node.* = .{ .next = after, .span = span.len };
-            var merged = node;
-            if (before) |previous| {
-                if (previous.end() == at) {
-                    previous.span += span.len;
-                    merged = previous;
-                } else {
-                    previous.next = node;
-                }
+        /// Take a free block off its bin, leaving its header as it is.
+        fn unlink(self: *Self, at: [*]u8) void {
+            const links = linksOf(at);
+            if (links.previous) |previous| {
+                linksOf(previous).next = links.next;
             } else {
-                self.holes = node;
+                self.bins[binOf(headerAt(at).span())] = links.next;
             }
-            if (after) |next| {
-                if (merged.end() == @intFromPtr(next)) {
-                    merged.span += next.span;
-                    merged.next = next.next;
-                }
+            if (links.next) |next| linksOf(next).previous = links.previous;
+        }
+
+        /// Make `span` free memory, merged with the free memory it touches.
+        /// Its header says what stands in front of it, which the caller has
+        /// written where the span was not a block already.
+        fn giveBack(self: *Self, span: []u8) void {
+            var at = span.ptr;
+            var total = span.len;
+            if (headerAt(at).freeBefore()) {
+                const before = footerOf(at, 0).*;
+                at -= before;
+                total += before;
+                std.debug.assert(headerAt(at).kind == .hole);
+                std.debug.assert(headerAt(at).span() == before);
+                self.unlink(at);
             }
+            const after = at + total;
+            if (headerAt(after).kind == .hole) {
+                total += headerAt(after).span();
+                self.unlink(after);
+            }
+            self.hang(at, total);
         }
 
         /// Give back the end of a cut block it no longer needs, where that
-        /// is enough to keep as a hole.
+        /// is enough to keep as free memory.
         fn shrink(self: *Self, header: *Header, need: usize) void {
-            if (header.span - need < HOLE_MIN) return;
+            const span = header.span();
+            // What is left behind has to be worth keeping, and what the
+            // block keeps has to be enough to be free memory itself when it
+            // is given back in its turn.
+            if (span - need < HOLE_MIN or need < HOLE_MIN) return;
             const block: [*]u8 = @ptrCast(header);
-            const tail = block[need..header.span];
-            header.span = need;
-            self.giveBack(tail);
+            header.setSpan(need);
+            headerAt(block + need).write(.cut, span - need, false);
+            self.giveBack(block[need..span]);
         }
 
-        /// Grow a cut block into the hole right behind it, when there is one
-        /// and it is large enough.
+        /// Grow a cut block into the free memory right behind it, when there
+        /// is some and it is large enough.
         fn extend(self: *Self, header: *Header, need: usize) bool {
-            const end = @intFromPtr(header) + header.span;
-            const more = need - header.span;
-            var link: *?*Hole = &self.holes;
-            while (link.*) |hole| : (link = &hole.next) {
-                const at = @intFromPtr(hole);
-                if (at < end) continue;
-                if (at > end or hole.span < more) return false;
-                const next = hole.next;
-                const left = hole.span - more;
-                if (left < HOLE_MIN) {
-                    header.span += hole.span;
-                    link.* = next;
-                } else {
-                    const rest: *Hole = @ptrFromInt(end + more);
-                    rest.* = .{ .next = next, .span = left };
-                    link.* = rest;
-                    header.span = need;
-                }
-                return true;
+            const span = header.span();
+            const after = header.end();
+            const behind = headerAt(after);
+            if (behind.kind != .hole) return false;
+            const more = need - span;
+            if (behind.span() < more) return false;
+            const room = behind.span();
+            self.unlink(after);
+            const left = room - more;
+            if (left < HOLE_MIN) {
+                header.setSpan(span + room);
+                header.behind().markFreeBefore(false);
+            } else {
+                header.setSpan(need);
+                self.hang(after + more, left);
             }
-            return false;
+            return true;
         }
     };
 }
@@ -336,7 +463,7 @@ fn headerOf(pointer: [*]u8) *Header {
 /// How many bytes the block at `pointer` holds, which may be more than it
 /// was asked for.
 fn capacityOf(pointer: [*]u8) usize {
-    return headerOf(pointer).span - HEADER;
+    return headerOf(pointer).span() - HEADER;
 }
 
 // ---------------------------------------------------------------------------
@@ -370,18 +497,52 @@ const Pieces = struct {
 
 const TestHeap = Heap(Pieces);
 
-/// Every hole in address order, none touching the next, which a missed merge
-/// would leave. Answers with the free bytes they come to.
-fn holesChecked(heap: *const TestHeap) !usize {
+/// Walk every piece block by block: each block's span tiles the piece, each
+/// block's mark says truly whether the block in front of it is free, no two
+/// free blocks touch, and every free block's footer says what its header
+/// says. Answers with the free bytes they come to.
+fn freeChecked(heap: *const TestHeap) !usize {
     var total: usize = 0;
-    var last_end: usize = 0;
-    var it = heap.holes;
-    while (it) |hole| : (it = hole.next) {
-        try testing.expect(@intFromPtr(hole) > last_end);
-        last_end = hole.end();
-        total += hole.span;
+    for (heap.source.taken.items) |piece| {
+        const start: [*]u8 = piece.ptr;
+        const edge = start + piece.len - ALIGN;
+        var at = start;
+        var free_before = false;
+        while (@intFromPtr(at) < @intFromPtr(edge)) {
+            const header = headerAt(at);
+            const span = header.span();
+            try testing.expectEqual(free_before, header.freeBefore());
+            try testing.expect(span >= ALIGN and span % ALIGN == 0);
+            try testing.expect(@intFromPtr(at) + span <= @intFromPtr(edge));
+            free_before = header.kind == .hole;
+            if (free_before) {
+                try testing.expectEqual(span, footerOf(at, span).*);
+                total += span;
+            }
+            at += span;
+        }
+        try testing.expectEqual(@intFromPtr(edge), @intFromPtr(at));
+        try testing.expectEqual(Kind.edge, headerAt(edge).kind);
+        try testing.expectEqual(free_before, headerAt(edge).freeBefore());
     }
     return total;
+}
+
+/// How many free blocks hang on the bins, each on the bin for its width.
+fn freeBlocks(heap: *const TestHeap) !usize {
+    var count: usize = 0;
+    for (heap.bins, 0..) |bin, index| {
+        var at = bin;
+        var previous: ?[*]u8 = null;
+        while (at) |block| : (at = linksOf(block).next) {
+            try testing.expectEqual(Kind.hole, headerAt(block).kind);
+            try testing.expectEqual(index, binOf(headerAt(block).span()));
+            try testing.expectEqual(previous, linksOf(block).previous);
+            previous = block;
+            count += 1;
+        }
+    }
+    return count;
 }
 
 fn piecesTotal(heap: *const TestHeap) usize {
@@ -432,9 +593,10 @@ test "a large block given back merges with the holes either side of it" {
     heap.free(c);
     heap.free(b);
 
-    // One hole from where `a` was to the end of the piece.
-    try testing.expectEqual(piecesTotal(&heap), try holesChecked(&heap));
-    try testing.expect(heap.holes.?.next == null);
+    // One run of free memory from where `a` was to the end of the piece,
+    // the last alignment of it aside, which says where the piece ends.
+    try testing.expectEqual(piecesTotal(&heap) - ALIGN, try freeChecked(&heap));
+    try testing.expectEqual(@as(usize, 1), try freeBlocks(&heap));
     try testing.expectEqual(a, heap.alloc(30_000).?);
 }
 
@@ -539,7 +701,8 @@ test "churn leaves every block intact and every byte accounted for" {
             live[slot] = .{ .block = heap.alloc(size).?, .len = size, .seed = seed };
             fill.run(live[slot].?);
         }
-        _ = try holesChecked(&heap);
+        _ = try freeChecked(&heap);
+        _ = try freeBlocks(&heap);
     }
 
     for (live) |maybe| {
@@ -549,7 +712,9 @@ test "churn leaves every block intact and every byte accounted for" {
     }
     // Every byte of every piece is free again but for the runs the classes
     // were cut from, which stay with the classes.
-    const runs = piecesTotal(&heap) - try holesChecked(&heap);
-    try testing.expect(runs % ALIGN == 0);
-    try testing.expect(runs <= 8 * RUN + heap.run.len);
+    const spoken_for = piecesTotal(&heap) - try freeChecked(&heap);
+    try testing.expect(spoken_for % ALIGN == 0);
+    // The runs the classes were cut from stay with the classes, and each
+    // piece keeps an alignment for its edge.
+    try testing.expect(spoken_for <= 8 * RUN + heap.run.len + ALIGN * heap.source.taken.items.len);
 }
