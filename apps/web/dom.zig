@@ -1296,6 +1296,11 @@ fn jsSetNothing(_: *Context, _: Value, _: Value) callconv(.c) Value {
 }
 
 /// An empty object, for a page that makes something and expects a shape.
+/// A list with nothing in it.
+fn jsEmptyList(ctx: *Context, _: Value, _: c_int, _: [*]const Value) callconv(.c) Value {
+    return qjs.newArray(ctx);
+}
+
 fn jsEmpty(ctx: *Context, _: Value, _: c_int, _: [*]const Value) callconv(.c) Value {
     return qjs.newObject(ctx);
 }
@@ -3927,9 +3932,13 @@ fn furnish(it: *Document) void {
     _ = qjs.setStr(ctx, history, "state", qjs.nullValue());
     _ = qjs.setStr(ctx, global, "history", history);
 
+    // `performance`: the clock, and the entries a page asks for, of which
+    // there are none: a list with nothing in it, which is what the entries
+    // of a kind a browser does not record are.
     const clock = qjs.newObject(ctx);
     give(ctx, clock, "now", 0, &jsNow);
-    inline for (.{ "mark", "measure", "getEntriesByName", "getEntriesByType" }) |name| give(ctx, clock, name, 1, &jsNothing);
+    inline for (.{ "mark", "measure", "clearMarks", "clearMeasures", "clearResourceTimings" }) |name| give(ctx, clock, name, 1, &jsNothing);
+    inline for (.{ "getEntries", "getEntriesByName", "getEntriesByType" }) |name| give(ctx, clock, name, 1, &jsEmptyList);
     _ = qjs.setStr(ctx, global, "performance", clock);
 
     // Consent bootstraps ask for a frame in `window.frames` before they make
