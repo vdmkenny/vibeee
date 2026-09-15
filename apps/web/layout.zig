@@ -264,6 +264,10 @@ pub fn buildIn(gpa: std.mem.Allocator, page: *const Page, viewport: Viewport, sp
     errdefer out.deinit(gpa);
 
     var p = Placer(@TypeOf(metrics)){ .gpa = gpa, .page = page, .out = &out, .metrics = metrics, .spacing = spacing, .viewport = viewport };
+    defer {
+        p.waiting.deinit(gpa);
+        p.fastened.deinit(gpa);
+    }
     try p.whole();
 
     // A box out of the flow leaves its lines where what follows it goes
@@ -288,7 +292,13 @@ pub fn buildIn(gpa: std.mem.Allocator, page: *const Page, viewport: Viewport, sp
 /// paint or leave. One set inline among words is its words' line's.
 fn wantsBox(box: page_mod.Container) bool {
     const style = box.style;
-    if (style.display == .flex or style.display == .grid or style.out_of_flow or style.float != .none) return true;
+    if (style.display == .flex or style.display == .grid or style.lifted() or style.float != .none) return true;
+    // A box the page moves from where the flow puts it is moved as a box.
+    if (style.positions()) {
+        for ([_]page_mod.Unit{ style.inset.top, style.inset.right, style.inset.bottom, style.inset.left }) |unit| {
+            if (unit != .auto) return true;
+        }
+    }
     if (style.display == .@"inline") return false;
     for ([_]page_mod.Unit{ style.height, style.min_height, style.max_height }) |unit| switch (unit) {
         .px, .em, .vh => return true,
@@ -361,6 +371,13 @@ fn Placer(comptime Metrics: type) type {
         extents: []?Extent = &.{},
         /// Whether any box was set out of the flow.
         lifted: bool = false,
+        /// The boxes out of the flow that are still to set, innermost box
+        /// last: each is set once the box it is positioned against has been,
+        /// since how far down a share of that box reaches is known only
+        /// then.
+        waiting: std.ArrayList(Waiting) = .empty,
+        /// Those fixed to the window, which the page itself sets.
+        fastened: std.ArrayList(Waiting) = .empty,
         /// Which way the block's lines lean.
         alignment: page_mod.Alignment = .start,
         /// The table cell being set, among the page's, while one is.
@@ -416,6 +433,125 @@ fn Placer(comptime Metrics: type) type {
             }
             if (!boxed) return self.blocks(0, self.page.blocks.items.len);
             _ = try self.container(0, 0, @max(self.viewport.w, 0), false);
+            // A box fixed to the window is set against the window as the
+            // page opens on it, whatever is around it in the page.
+            const window = Area{ .x = 0, .y = 0, .w = self.viewport.w, .h = self.viewport.h };
+            var at: usize = 0;
+            while (at < self.fastened.items.len) : (at += 1) {
+                const one = self.fastened.items[at];
+                try self.set(one, window);
+            }
+            self.fastened.clearRetainingCapacity();
+        }
+
+        /// Wait to set the box `which`, which the page takes out of the
+        /// flow: what follows it goes where it would have gone without it,
+        /// and it is set once the box it is positioned against has been.
+        fn wait(self: *Self, which: u32, x: i32, room: i32) Error!void {
+            const one = Waiting{ .box = which, .x = x, .room = room, .y = self.y };
+            const style = self.page.containers.items[which].style;
+            try (if (style.position == .fixed) &self.fastened else &self.waiting).append(self.gpa, one);
+        }
+
+        /// Set the boxes waiting on `frame`, the box they are positioned
+        /// against, now that how tall it is is known. A box that is itself
+        /// positioned is what its own waiting boxes are set against, so each
+        /// takes its own away as it goes.
+        fn settle(self: *Self, from: usize, frame: Area) Error!void {
+            var at = from;
+            while (at < self.waiting.items.len) : (at += 1) {
+                const one = self.waiting.items[at];
+                try self.set(one, frame);
+            }
+            self.waiting.shrinkRetainingCapacity(from);
+        }
+
+        /// Set one box against `frame`: as wide as it says, or as what the
+        /// two sides it names leave between them, at the side it names, and
+        /// then moved down to where the top or the bottom it names puts it.
+        /// It is set where the flow had reached, since how tall it is, which
+        /// a bottom is measured back from, is known only once it is.
+        fn set(self: *Self, one: Waiting, frame: Area) Error!void {
+            const style = self.page.containers.items[one.box].style;
+            const left = self.resolved(style.inset.left, frame.w);
+            const right = self.resolved(style.inset.right, frame.w);
+
+            var room = one.room;
+            if (self.sized(style.width, style.min_width, style.max_width, frame.w)) |wide| {
+                room = wide;
+            } else if (left != null and right != null) {
+                room = @max(frame.w - left.? - right.?, 0);
+            }
+            var x = one.x;
+            if (left) |edge| {
+                x = frame.x + edge;
+            } else if (right) |edge| {
+                x = frame.x + frame.w - edge - room;
+            }
+
+            const keep_y = self.y;
+            const keep_owed = self.owed;
+            const keep_previous = self.previous;
+            const keep_left = self.left;
+            const keep_right = self.right;
+            const before = self.mark();
+            self.y = one.y;
+            self.owed = 0;
+            self.previous = null;
+            _ = try self.container(one.box, x, room, false);
+            const tall = self.y - one.y;
+            self.y = keep_y;
+            self.owed = keep_owed;
+            self.previous = keep_previous;
+            self.left = keep_left;
+            self.right = keep_right;
+            self.lifted = true;
+
+            const top = self.resolved(style.inset.top, frame.h);
+            const bottom = self.resolved(style.inset.bottom, frame.h);
+            const down = if (top) |edge|
+                frame.y + edge - one.y
+            else if (bottom) |edge|
+                frame.y + frame.h - edge - tall - one.y
+            else
+                0;
+            self.move(before, 0, down);
+        }
+
+        /// How much of the layout has been written.
+        fn mark(self: *const Self) Written {
+            return .{
+                .lines = self.out.lines.items.len,
+                .fills = self.out.fills.items.len,
+                .boxes = self.out.boxes.items.len,
+                .placed = self.out.placed.items.len,
+                .tables = self.out.tables.items.len,
+            };
+        }
+
+        /// Move everything written since `from` by `across` and `down`.
+        fn move(self: *Self, from: Written, across: i32, down: i32) void {
+            if (across == 0 and down == 0) return;
+            for (self.out.lines.items[from.lines..]) |*line| {
+                line.y += down;
+                for (self.out.frags.items[line.first..][0..line.count]) |*frag| frag.x += across;
+            }
+            for (self.out.fills.items[from.fills..]) |*fill| {
+                fill.area.x += across;
+                fill.area.y += down;
+            }
+            for (self.out.boxes.items[from.boxes..]) |*cell| {
+                cell.area.x += across;
+                cell.area.y += down;
+            }
+            for (self.out.placed.items[from.placed..]) |*one| {
+                one.area.x += across;
+                one.area.y += down;
+            }
+            for (self.out.tables.items[from.tables..]) |*grid| {
+                grid.area.x += across;
+                grid.area.y += down;
+            }
         }
 
         /// The blocks `first` up to `last`, one after another down the page.
@@ -497,18 +633,6 @@ fn Placer(comptime Metrics: type) type {
             const edges = if (boxed) self.edgesOf(style.border, room) else Fill.Edges{};
             const lined = edges.top.width > 0 or edges.right.width > 0 or edges.bottom.width > 0 or edges.left.width > 0;
 
-            // A box out of the flow is set where it is and then stepped
-            // back over, so what follows it goes where it would have gone.
-            const before_y = self.y;
-            const before_owed = self.owed;
-            const before_previous = self.previous;
-            defer if (style.out_of_flow) {
-                self.y = before_y;
-                self.owed = before_owed;
-                self.previous = before_previous;
-                self.lifted = true;
-            };
-
             if (self.previous) |before| self.leave(gap(self.spacing, before, self.page.blocks.items[span.first]));
             self.leave(margin.top);
             self.previous = null;
@@ -543,6 +667,10 @@ fn Placer(comptime Metrics: type) type {
             const first_line = self.out.lines.items.len;
             const first_fill = self.out.fills.items.len;
             const first_afloat = self.floating.len;
+            // The boxes met under this one that are positioned against it,
+            // which it sets once how tall it is is known.
+            const first_waiting = self.waiting.items.len;
+            const before = self.mark();
 
             if (style.display == .flex or style.display == .grid) {
                 try self.flex(index, inner_x, inner_room);
@@ -558,6 +686,12 @@ fn Placer(comptime Metrics: type) type {
                             continue;
                         }
                         if (there.first <= at) {
+                            if (self.page.containers.items[next].style.lifted()) {
+                                try self.wait(next, inner_x, inner_room);
+                                kid = kids.next();
+                                at = @max(at, there.end);
+                                continue;
+                            }
                             if (self.page.containers.items[next].style.float != .none) {
                                 // Boxes that float, one after another with
                                 // nothing of the box's own between them, are
@@ -604,6 +738,29 @@ fn Placer(comptime Metrics: type) type {
 
             self.y += padding.bottom + edges.bottom.width;
             if (laid.fill) |fill| self.out.fills.items[fill].area.h = self.y - box_top;
+
+            // The boxes positioned against this one are set now that it is,
+            // against the box its lines are drawn inside. The page itself is
+            // what a box under no positioned box is set against.
+            if (style.positions() or index == 0) {
+                try self.settle(first_waiting, .{
+                    .x = box_x + edges.left.width,
+                    .y = box_top + edges.top.width,
+                    .w = @max(box_w - edges.left.width - edges.right.width, 0),
+                    .h = @max(self.y - edges.bottom.width - box_top - edges.top.width, 0),
+                });
+            }
+            // A box the page moves from where the flow put it keeps the room
+            // it was given and is drawn where the page moved it to.
+            if (style.position == .relative or style.position == .sticky) {
+                const across = self.resolved(style.inset.left, room) orelse
+                    if (self.resolved(style.inset.right, room)) |edge| -edge else 0;
+                const down = self.upright(style.inset.top) orelse
+                    if (self.upright(style.inset.bottom)) |edge| -edge else 0;
+                self.move(before, across, down);
+                if (across != 0 or down != 0) self.lifted = true;
+            }
+
             self.y += margin.bottom;
             self.owed = margin.bottom;
             return laid;
@@ -1175,15 +1332,12 @@ fn Placer(comptime Metrics: type) type {
             const first_line = self.out.lines.items.len;
 
             for (items) |*item| try self.measure(item, down, wide);
-            // The items in the flow are the rows'; the ones out of it are
-            // set over the container's start, taking no room.
+            // The items in the flow are the rows'; the ones out of it are no
+            // items of a row, and are set against the box they are
+            // positioned from once how tall that box is is known.
             var flowing: usize = items.len;
-            while (flowing > 0 and items[flowing - 1].style.out_of_flow) flowing -= 1;
-            for (items[flowing..]) |*item| {
-                item.x = x;
-                try self.lay(item, top, item.main orelse wide);
-                self.y = top;
-            }
+            while (flowing > 0 and items[flowing - 1].style.lifted()) flowing -= 1;
+            for (items[flowing..]) |*item| try self.wait(item.container.?, x, wide);
             var rows: std.ArrayList(Row) = .empty;
             defer rows.deinit(self.gpa);
             if (down) {
@@ -1522,7 +1676,7 @@ fn Placer(comptime Metrics: type) type {
                 }
                 if (which) |next| {
                     const style = self.page.containers.items[next].style;
-                    try (if (style.out_of_flow) &lifted else &items).append(self.gpa, .{ .container = next, .style = style });
+                    try (if (style.lifted()) &lifted else &items).append(self.gpa, .{ .container = next, .style = style });
                     at = @max(at, self.owns(next).end);
                     continue;
                 }
@@ -1732,6 +1886,21 @@ fn fitRow(row: []Item, justify: page_mod.BoxStyle.Justify, wide: i32, between: i
 /// along the container's main axis, `main`, and across it, `cross`, where it
 /// is given anything; and what its words came to, `wide` and `tall`, set
 /// from `x` and `y`, before they were moved to where it goes.
+/// A box out of the flow waiting to be set: which of the page's boxes it is,
+/// and where the flow had reached when it was met, which is where a side the
+/// page leaves unsaid keeps it.
+const Waiting = struct { box: u32, x: i32, room: i32, y: i32 };
+
+/// How much of a layout was written before something was set, so that what
+/// it came to can be moved to where it goes.
+const Written = struct {
+    lines: usize,
+    fills: usize,
+    boxes: usize,
+    placed: usize,
+    tables: usize,
+};
+
 const Item = struct {
     container: ?u32 = null,
     block: ?u32 = null,
@@ -2662,7 +2831,7 @@ test "an em is sixteen pixels" {
 
 test "a box out of the flow is set where it is and takes no room, in a column and in a row" {
     var column = try flexed(200, .{ .display = .block }, &.{
-        .{ .words = "aa", .style = .{ .display = .block, .out_of_flow = true } },
+        .{ .words = "aa", .style = .{ .display = .block, .position = .absolute } },
         .{ .words = "bb", .style = .{ .display = .block } },
     });
     defer column.deinit();
@@ -2675,7 +2844,7 @@ test "a box out of the flow is set where it is and takes no room, in a column an
 
     var row = try flexed(200, flex, &.{
         .{ .words = "aa" },
-        .{ .words = "cc", .style = .{ .out_of_flow = true } },
+        .{ .words = "cc", .style = .{ .position = .absolute } },
         .{ .words = "bb" },
     });
     defer row.deinit();
@@ -2691,6 +2860,108 @@ test "a box out of the flow is set where it is and takes no room, in a column an
         if (frags.len > 0 and std.mem.eql(u8, row.fragText(frags[0]), "cc")) lifted = line.y == 0 and frags[0].x == 0;
     }
     try testing.expect(lifted);
+}
+
+/// Where `word` was drawn, which once a box has been lifted is no longer
+/// told by which line came first.
+fn expectWordAt(b: *Built, word: []const u8, x: i32, y: i32) !void {
+    for (b.layout.lines.items) |line| {
+        const frags = b.layout.fragsOf(line);
+        if (frags.len == 0 or !std.mem.eql(u8, b.fragText(frags[0]), word)) continue;
+        try testing.expectEqual(x, frags[0].x);
+        try testing.expectEqual(y, line.y);
+        return;
+    }
+    return error.NotDrawn;
+}
+
+test "a positioned box goes where its sides say, against the box it is positioned from" {
+    // The box they are positioned from is two hundred wide and a hundred
+    // tall, and says so.
+    const from = page_mod.BoxStyle{ .display = .block, .position = .relative, .height = .{ .px = 100 } };
+    var b = try flexed(200, from, &.{
+        .{ .words = "aa", .style = .{
+            .display = .block,
+            .position = .absolute,
+            .width = .{ .px = 60 },
+            .inset = .{ .top = .{ .px = 20 }, .left = .{ .px = 30 } },
+        } },
+        .{ .words = "bb", .style = .{ .display = .block } },
+    });
+    defer b.deinit();
+    try expectWordAt(&b, "aa", 30, 20);
+    // The box after it goes where it would have gone without it.
+    try expectWordAt(&b, "bb", 0, 0);
+    try testing.expectEqual(@as(i32, 100), b.layout.height);
+
+    // The far sides are measured back from the far sides of that box, and a
+    // share is a share of it: a fifth down and a quarter across.
+    var far = try flexed(200, from, &.{
+        .{ .words = "aa", .style = .{
+            .display = .block,
+            .position = .absolute,
+            .width = .{ .px = 60 },
+            .inset = .{ .bottom = .{ .px = 10 }, .right = .{ .px = 20 } },
+        } },
+        .{ .words = "bb", .style = .{
+            .display = .block,
+            .position = .absolute,
+            .width = .{ .px = 60 },
+            .inset = .{ .top = .{ .percent = 20 }, .left = .{ .percent = 25 } },
+        } },
+    });
+    defer far.deinit();
+    try expectWordAt(&far, "aa", 120, 72);
+    try expectWordAt(&far, "bb", 50, 20);
+}
+
+test "a positioned box is set against the nearest box above it that positions" {
+    // Two cards of a hundred pixels, each with its words set against its own
+    // foot, which is what a card with a picture and a headline over it is.
+    var b = Built{};
+    defer b.deinit();
+    const gpa = testing.allocator;
+    const card = page_mod.BoxStyle{ .display = .block, .position = .relative, .height = .{ .px = 100 } };
+    const over = page_mod.BoxStyle{ .display = .block, .position = .absolute, .inset = .{ .bottom = .{ .px = 0 } } };
+    try b.page.containers.append(gpa, .{ .style = .{ .display = .block }, .end = 5 });
+    try b.page.containers.append(gpa, .{ .style = card, .parent = 0, .end = 3 });
+    try b.page.containers.append(gpa, .{ .style = over, .parent = 1, .end = 3 });
+    try b.page.containers.append(gpa, .{ .style = card, .parent = 0, .end = 5 });
+    try b.page.containers.append(gpa, .{ .style = over, .parent = 3, .end = 5 });
+    var builder = page_mod.Builder{ .gpa = gpa, .page = &b.page };
+    for ([_]u32{ 2, 4 }, [_][]const u8{ "aa", "bb" }) |owner, words| {
+        builder.owner = owner;
+        try builder.boundary(.{});
+        try builder.words(words);
+    }
+    try builder.finish();
+    b.layout = try build(gpa, &b.page, 200, eighteen, Fixed{});
+
+    // Each headline sits at the foot of its own card, not of the page.
+    try expectWordAt(&b, "aa", 0, 82);
+    try expectWordAt(&b, "bb", 0, 182);
+    try testing.expectEqual(@as(i32, 200), b.layout.height);
+}
+
+test "a box the page moves from where the flow put it keeps the room it had" {
+    const held = [_]Held{
+        .{ .words = "aa", .style = .{ .display = .block, .position = .relative, .inset = .{ .top = .{ .px = 5 }, .left = .{ .px = 7 } } } },
+        .{ .words = "bb", .style = .{ .display = .block } },
+    };
+    var moved = try flexed(200, .{ .display = .block }, &held);
+    defer moved.deinit();
+    var still = try flexed(200, .{ .display = .block }, &.{
+        .{ .words = "aa", .style = .{ .display = .block } },
+        .{ .words = "bb", .style = .{ .display = .block } },
+    });
+    defer still.deinit();
+    // It is drawn where the page moved it to.
+    try testing.expectEqual(still.layout.lines.items[0].y + 5, moved.layout.lines.items[0].y);
+    try testing.expectEqual(still.line(0)[0].x + 7, moved.line(0)[0].x);
+    // What follows it, and how tall the page is, are as they were.
+    try testing.expectEqual(still.layout.lines.items[1].y, moved.layout.lines.items[1].y);
+    try testing.expectEqual(still.line(1)[0].x, moved.line(1)[0].x);
+    try testing.expectEqual(still.layout.height, moved.layout.height);
 }
 
 test "a height that is a share of a height not known is no height at all" {

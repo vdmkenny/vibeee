@@ -155,7 +155,8 @@ pub fn boxStyle(node: *const Node, fallback: page_mod.BoxStyle.Display) page_mod
         .basis = flexing.basis,
         .columns = tracksOf(node),
         .span = spanOf(node),
-        .out_of_flow = outOfFlow(node),
+        .position = positionOf(node),
+        .inset = insetOf(node),
         .clips = clipsOf(node),
         .float = floatOf(node),
         .width = lengthOf(node, .width),
@@ -328,12 +329,31 @@ fn directionOf(node: *const Node) page_mod.BoxStyle.Direction {
     };
 }
 
-/// Whether a box is taken out of the flow: `position: absolute`, or `fixed`,
-/// which this browser lays out where the box is rather than where the
-/// window's edge is, but without room in the flow either way.
-fn outOfFlow(node: *const Node) bool {
-    const position = valueOf(lexbor.Single, node, .position) orelse return false;
-    return position.kind == .absolute or position.kind == .fixed;
+/// Where the page says a box is set: in the flow, moved from where the flow
+/// put it, or against the box it is positioned from. A box fixed to the
+/// window is set against the window as the page opens on it, which is where
+/// it stands until the page is scrolled.
+fn positionOf(node: *const Node) page_mod.BoxStyle.Position {
+    const position = valueOf(lexbor.Single, node, .position) orelse return .static;
+    return switch (position.kind) {
+        .relative => .relative,
+        .absolute => .absolute,
+        .fixed => .fixed,
+        .sticky => .sticky,
+        else => .static,
+    };
+}
+
+/// How far a positioned box's sides are from those of the box it is
+/// positioned from, where the page says. A side it leaves unsaid is `auto`,
+/// which leaves that side where the flow put it.
+fn insetOf(node: *const Node) page_mod.BoxStyle.Edges {
+    return .{
+        .top = lengthOf(node, .top),
+        .right = lengthOf(node, .right),
+        .bottom = lengthOf(node, .bottom),
+        .left = lengthOf(node, .left),
+    };
 }
 
 /// Which side a box floats to, as `float` says, the start of a line being

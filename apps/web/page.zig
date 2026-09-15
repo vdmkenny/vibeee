@@ -129,10 +129,13 @@ pub const BoxStyle = struct {
     columns: Tracks = .{},
     /// How many of a grid's columns this box spans.
     span: u8 = 1,
-    /// Whether the box is out of the flow, positioned absolutely or fixed
-    /// to the window: laid out where it is, but taking no room, so what
-    /// follows it goes where it would have gone without it.
-    out_of_flow: bool = false,
+    /// Where the box is set: in the flow where the page says nothing, moved
+    /// from where the flow put it by what it says, or out of the flow and
+    /// set against the box it is positioned from.
+    position: Position = .static,
+    /// How far the box's sides are from that box's, where it says. A side
+    /// left unsaid keeps the box where the flow had reached.
+    inset: Edges = .{},
     /// Whether what spills past the height the box says is cut off rather
     /// than shown: `overflow` hidden, clipped, or left to scroll.
     clips: bool = false,
@@ -176,6 +179,20 @@ pub const BoxStyle = struct {
         bottom: Line = .{},
         left: Line = .{},
     };
+
+    pub const Position = enum { static, relative, absolute, fixed, sticky };
+
+    /// Whether the box is taken out of the flow, so that what follows it
+    /// goes where it would have gone without it.
+    pub fn lifted(self: BoxStyle) bool {
+        return self.position == .absolute or self.position == .fixed;
+    }
+
+    /// Whether the boxes under it that are positioned are positioned
+    /// against this one.
+    pub fn positions(self: BoxStyle) bool {
+        return self.position != .static;
+    }
 
     pub const Display = enum { block, @"inline", flex, grid };
     pub const Float = enum { none, left, right };

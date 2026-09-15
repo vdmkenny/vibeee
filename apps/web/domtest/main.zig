@@ -791,8 +791,8 @@ test "a sheet's variables stand for what its root sets, or the fallback, and a p
     try testing.expectEqual(page_mod.Unit{ .px = 4 }, a.margin.top);
     try testing.expectEqual(page_mod.Unit{ .px = 300 }, a.width);
     try testing.expect(std.mem.findScalar(rgb.Colour, page.palette.items, .hex(0x123456)) != null);
-    try testing.expect(!a.out_of_flow);
-    try testing.expect(boxes[at + 1].style.out_of_flow);
+    try testing.expect(!a.lifted());
+    try testing.expect(boxes[at + 1].style.lifted());
 }
 
 test "a box that cuts off what spills past it says so, whichever way overflow is written" {
