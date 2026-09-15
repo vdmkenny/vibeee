@@ -69,8 +69,13 @@ pub const Host = struct {
 /// what they may come to between them. A page's own scripts are a handful,
 /// a site's a few dozen; one that names more is run with those it names
 /// first.
+///
+/// A mainstream search results page names some four megabytes of script
+/// between its framework, its locale and its two bundles, and a page whose
+/// last script is left out is a page whose own handlers run without it, so
+/// the budget holds one of those with room over.
 pub const SCRIPTS_MAX = 32;
-pub const SCRIPTS_BYTES_MAX = 2 * 1024 * 1024;
+pub const SCRIPTS_BYTES_MAX = 8 * 1024 * 1024;
 
 /// The scripts a page names by address, in the order it names them.
 pub const Scripts = links.Queue(SCRIPTS_MAX, SCRIPTS_BYTES_MAX);
@@ -679,8 +684,9 @@ pub fn changed(it: *Document) bool {
 
 /// How long until the next timer a script set is due, in milliseconds: what
 /// a window with the page on screen waits for, where it would otherwise wait
-/// for nothing.
+/// for nothing. Nothing at all while a posted message waits to be delivered.
 pub fn waits(it: *Document) ?u32 {
+    if (it.posted.items.len > 0) return 0;
     const at = now(it);
     var soonest: ?u32 = null;
     for (it.timers.items) |timer| {

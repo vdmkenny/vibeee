@@ -53,9 +53,10 @@ pub const PICTURE_MAX = 1024 * 1024;
 /// kilobytes; a bundle past a megabyte is left out rather than read.
 pub const SHEET_MAX = 1024 * 1024;
 
-/// The most one script may be. A page's own script is a few kilobytes and
-/// a framework a few hundred; a bundle past a megabyte is left out.
-pub const SCRIPT_MAX = 1024 * 1024;
+/// The most one script may be. A page's own script is a few kilobytes and a
+/// framework a few hundred, and a mainstream site's main bundle a megabyte
+/// and a half; one past this is left out rather than read.
+pub const SCRIPT_MAX = 4 * 1024 * 1024;
 
 /// The most an answer may be, for what was asked.
 fn limitOf(wanted: http.Wanted) usize {
@@ -375,6 +376,14 @@ pub const Fetch = struct {
     }
 
     /// Give up on a site that has gone quiet.
+    /// How long until this fetch counts the site as gone quiet, for a window
+    /// that would otherwise sleep past the moment it does. Nothing where
+    /// nothing is on its way.
+    pub fn quietIn(self: *const Fetch) ?u64 {
+        if (self.state != .receiving) return null;
+        return STALL_US -| (sys.clockMicros() -| self.heard_us);
+    }
+
     fn stall(self: *Fetch, now_us: u64) void {
         if (self.state == .receiving and now_us -| self.heard_us >= STALL_US) self.fail(error.Stalled);
     }

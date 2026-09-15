@@ -22,9 +22,12 @@ pub const Context = qjs.Context;
 
 /// The most a runtime holds, everything a page's scripts make and keep
 /// included. Past it an allocation fails and the script gets an exception.
-/// Enough for a page that loads a framework and its data; a page wanting more
-/// than this is not one this machine reads.
-pub const MEMORY_MAX = 32 * 1024 * 1024;
+///
+/// A mainstream search results page comes to some twenty-five megabytes once
+/// its bundle has run, and half as much again once its components have drawn
+/// what the page asked for, so this is that with room to work in. A page
+/// wanting more than this is not one this machine reads.
+pub const MEMORY_MAX = 64 * 1024 * 1024;
 
 /// How deep a script may call, in bytes of this program's stack, counted
 /// from where the engine was last entered. A process here has a megabyte of
@@ -34,7 +37,13 @@ pub const STACK_MAX = 256 * 1024;
 /// How long one entry into the engine may run before the script is stopped
 /// where it is: one script, one handler, one timer. A page's scripts run
 /// between passes of a window, and a person waits for each.
-pub const SLICE_US: u64 = 1_000_000;
+///
+/// A mainstream site's main bundle is a megabyte and a half, which this
+/// machine takes several seconds to read and run, and a bundle stopped in
+/// the middle leaves a page that never draws. So the slice is what such a
+/// bundle needs with room over: a script still going after it is one that
+/// is not working rather than one that is slow.
+pub const SLICE_US: u64 = 10_000_000;
 
 /// The clock the slice is measured on, in microseconds since anything: handed
 /// in, this machine's clock being one thing and the host's, where the engine
@@ -67,6 +76,15 @@ pub const Machine = struct {
         qjs.setMaxStackSize(runtime, STACK_MAX);
         qjs.setInterruptHandler(runtime, &overdue, &only);
         return &only;
+    }
+
+    /// How much of its bound the engine has taken, in bytes: what the pages
+    /// open in it come to. Counted by walking everything, so asked for a
+    /// report and not on every pass.
+    pub fn taken(self: *Machine) usize {
+        var usage: qjs.MemoryUsage = undefined;
+        qjs.memoryUsage(self.runtime, &usage);
+        return @intCast(@max(usage.malloc_size, 0));
     }
 
     /// Open a context in it, for one page: a script's own world, with every
