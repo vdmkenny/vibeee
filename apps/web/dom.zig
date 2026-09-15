@@ -803,6 +803,12 @@ fn jsParseFromString(ctx: *Context, _: Value, argc: c_int, argv: [*]const Value)
     const it = documentOf(ctx) orelse return qjs.nullValue();
     const markup = argument(ctx, argc, argv, 0) orelse return qjs.nullValue();
     defer qjs.freeText(ctx, markup.ptr);
+    return parsedDocument(it, markup);
+}
+
+/// `markup` as a document of the page's own, kept until the page closes or
+/// it is the oldest of more than `PARSED_MAX`.
+fn parsedDocument(it: *Document, markup: []const u8) Value {
     const parsed = lexbor.lxb_html_document_create() orelse return qjs.nullValue();
     if (lexbor.lxb_html_document_parse(parsed, markup.ptr, markup.len) != .ok) {
         _ = lexbor.lxb_html_document_destroy(parsed);
@@ -814,6 +820,49 @@ fn jsParseFromString(ctx: *Context, _: Value, argc: c_int, argv: [*]const Value)
         return qjs.nullValue();
     };
     return wrap(it, documentNode(parsed));
+}
+
+/// The document of a frame: an empty one of its own, made the first time it
+/// is asked for and kept on the element from then on.
+///
+/// This browser does not fetch what a frame names, so nothing is ever in it.
+/// A script measuring in one, which is how a script library finds out what
+/// an element's display would be, gets a document that answers rather than
+/// nothing that throws.
+fn frameDocument(it: *Document, frame: Value) Value {
+    const kept = qjs.getStr(it.ctx, frame, "__frame");
+    if (!qjs.isUndefined(kept)) return kept;
+    qjs.free(it.ctx, kept);
+    const made = parsedDocument(it, "<!DOCTYPE html><html><head></head><body></body></html>");
+    if (qjs.isNull(made)) return made;
+    _ = qjs.defineStr(it.ctx, frame, "__frame", qjs.dup(it.ctx, made), 0);
+    return made;
+}
+
+/// `contentDocument`: the document a frame holds.
+fn jsContentDocument(ctx: *Context, this: Value) callconv(.c) Value {
+    const it = documentOf(ctx) orelse return qjs.nullValue();
+    const node = nodeOf(this) orelse return qjs.nullValue();
+    if (!isTag(node, "IFRAME") and !isTag(node, "FRAME") and !isTag(node, "OBJECT")) return qjs.nullValue();
+    return frameDocument(it, this);
+}
+
+/// `contentWindow`: what a script reaches the frame's document through.
+/// Enough of a window to be asked for its document and for the styles in
+/// it, which is what a script measuring in a frame does.
+fn jsContentWindow(ctx: *Context, this: Value) callconv(.c) Value {
+    const it = documentOf(ctx) orelse return qjs.nullValue();
+    const node = nodeOf(this) orelse return qjs.nullValue();
+    if (!isTag(node, "IFRAME") and !isTag(node, "FRAME") and !isTag(node, "OBJECT")) return qjs.nullValue();
+    const kept = qjs.getStr(ctx, this, "__window");
+    if (!qjs.isUndefined(kept)) return kept;
+    qjs.free(ctx, kept);
+    const window = qjs.newObject(ctx);
+    _ = qjs.setStr(ctx, window, "document", frameDocument(it, this));
+    _ = qjs.setStr(ctx, window, "self", qjs.dup(ctx, window));
+    give(ctx, window, "getComputedStyle", 1, &jsComputed);
+    _ = qjs.defineStr(ctx, this, "__window", qjs.dup(ctx, window), 0);
+    return window;
 }
 
 /// A document as the node it begins with.
@@ -2815,6 +2864,14 @@ const node_gets = reflectedEntries() ++ flaggedEntries() ++ [_]qjs.ListEntry{
     .accessor("attributes", &jsAttributes, null),
     .accessor("isConnected", &jsConnected, null),
     .accessor("ownerDocument", &jsOwnerDocument, null),
+    .accessor("contentDocument", &jsContentDocument, null),
+    .accessor("contentWindow", &jsContentWindow, null),
+    // What a document of its own answers besides what every node does: a
+    // script that parses markup, or measures in a frame, makes its nodes
+    // there and looks for them there.
+    .method("createElement", 1, &jsCreateElement),
+    .method("createTextNode", 1, &jsCreateText),
+    .method("createDocumentFragment", 0, &jsCreateFragment),
     .accessorMagic("documentElement", &jsDocumentPart, null, 0),
     .accessorMagic("body", &jsDocumentPart, null, 1),
     .accessorMagic("head", &jsDocumentPart, null, 2),
@@ -3717,12 +3774,23 @@ fn jsSubmit(ctx: *Context, this: Value, _: c_int, _: [*]const Value) callconv(.c
 // The document
 // ---------------------------------------------------------------------------
 
-fn jsCreateElement(ctx: *Context, _: Value, argc: c_int, argv: [*]const Value) callconv(.c) Value {
+fn jsCreateElement(ctx: *Context, this: Value, argc: c_int, argv: [*]const Value) callconv(.c) Value {
     const it = documentOf(ctx) orelse return qjs.nullValue();
     const name = argument(ctx, argc, argv, 0) orelse return qjs.nullValue();
     defer qjs.freeText(ctx, name.ptr);
-    const made = lexbor.lxb_dom_document_create_element(it.tree, name.ptr, name.len, null) orelse return qjs.nullValue();
+    const tree = treeOf(it, this);
+    const made = lexbor.lxb_dom_document_create_element(tree, name.ptr, name.len, null) orelse return qjs.nullValue();
     return wrap(it, lexbor.nodeOf(made));
+}
+
+/// The tree a document call works in: the one the call was made on where
+/// that is a document of its own, and the page's otherwise. A script that
+/// parses markup, or measures something in a frame, makes its nodes in that
+/// document rather than in the page.
+fn treeOf(it: *Document, this: Value) *lexbor.Document {
+    const node = nodeOf(this) orelse return it.tree;
+    if (node.type != .document) return it.tree;
+    return @ptrCast(@alignCast(node));
 }
 
 /// `createElementNS(namespace, name)`: the element, whatever the namespace.
@@ -3731,11 +3799,11 @@ fn jsCreateElementNs(ctx: *Context, this: Value, argc: c_int, argv: [*]const Val
     return jsCreateElement(ctx, this, argc - 1, argv + 1);
 }
 
-fn jsCreateText(ctx: *Context, _: Value, argc: c_int, argv: [*]const Value) callconv(.c) Value {
+fn jsCreateText(ctx: *Context, this: Value, argc: c_int, argv: [*]const Value) callconv(.c) Value {
     const it = documentOf(ctx) orelse return qjs.nullValue();
     const text = argument(ctx, argc, argv, 0) orelse return qjs.nullValue();
     defer qjs.freeText(ctx, text.ptr);
-    return wrapped(it, lexbor.lxb_dom_document_create_text_node(it.tree, text.ptr, text.len));
+    return wrapped(it, lexbor.lxb_dom_document_create_text_node(treeOf(it, this), text.ptr, text.len));
 }
 
 fn jsCreateComment(ctx: *Context, _: Value, argc: c_int, argv: [*]const Value) callconv(.c) Value {
@@ -3745,9 +3813,9 @@ fn jsCreateComment(ctx: *Context, _: Value, argc: c_int, argv: [*]const Value) c
     return wrapped(it, lexbor.lxb_dom_document_create_comment(it.tree, text.ptr, text.len));
 }
 
-fn jsCreateFragment(ctx: *Context, _: Value, _: c_int, _: [*]const Value) callconv(.c) Value {
+fn jsCreateFragment(ctx: *Context, this: Value, _: c_int, _: [*]const Value) callconv(.c) Value {
     const it = documentOf(ctx) orelse return qjs.nullValue();
-    return wrapped(it, lexbor.lxb_dom_document_create_document_fragment(it.tree));
+    return wrapped(it, lexbor.lxb_dom_document_create_document_fragment(treeOf(it, this)));
 }
 
 /// The page's `<title>` element, found rather than asked for: asking the

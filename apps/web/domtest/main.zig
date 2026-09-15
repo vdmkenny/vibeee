@@ -912,6 +912,18 @@ test "Intl writes numbers, dates, lists and relative times as English does, and 
     try testing.expectEqualStrings("0", try it.run("String(Object.keys(new Intl.NumberFormat()).length)"));
 }
 
+test "a frame holds an empty document of its own, which a script may measure in" {
+    const it = try opened(with(""), true);
+    defer it.end();
+    try testing.expectEqualStrings("9 BODY", try it.run("var f = document.createElement('iframe'); document.body.appendChild(f); [f.contentDocument.nodeType, f.contentDocument.body.nodeName].join(' ')"));
+    try testing.expectEqualStrings("true", try it.run("String(f.contentWindow.document === f.contentDocument)"));
+    // The same document each time it is asked for, and a script may put
+    // something in it and read it back.
+    try testing.expectEqualStrings("true", try it.run("String(f.contentDocument === f.contentDocument)"));
+    try testing.expectEqualStrings("DIV block", try it.run("var d = f.contentDocument.createElement('div'); f.contentDocument.body.appendChild(d); d.style.display = 'block'; [f.contentDocument.body.firstChild.nodeName, f.contentWindow.getComputedStyle(d).display].join(' ')"));
+    try testing.expectEqualStrings("null null", try it.run("var p = document.createElement('p'); [String(p.contentDocument), String(p.contentWindow)].join(' ')"));
+}
+
 test "a page is loading while its scripts run, and complete once it is told it is loaded" {
     var read: dom.Scripts = .{};
     defer read.deinit(heap);
