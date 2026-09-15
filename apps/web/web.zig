@@ -1042,7 +1042,12 @@ fn forget() void {
 
 /// Read the page on screen again from its tree, at the place it was left:
 /// what a script has changed is read as the page says it now.
+///
+/// Nothing is on screen when the shell is printing a page, and reading it
+/// after every change a script makes is a walk of the whole tree for words
+/// nobody sees. There it is read once, when the scripts are done.
 fn readAgain() void {
+    if (shell) return;
     const tree = &(document orelse return);
     var fresh: Page = .{};
     const started = sys.clockMicros();
@@ -1794,16 +1799,32 @@ fn printText(target: []const u8) noreturn {
     while (true) {
         _ = step();
         plan();
+        if (sys.clockMicros() -| started > SETTLE_US) break;
         const coming = fetch.busy() or reading != null or script_fetch.busy() or
             (if (scripts) |doc| dom.asking(doc) else false);
-        if (!coming) {
-            const waits = if (scripts) |doc| dom.waits(doc) else null;
-            if (waits == null or sys.clockMicros() -| started > SETTLE_US) break;
-        }
+        if (!coming and (if (scripts) |doc| dom.waits(doc) == null else true)) break;
         if (period_us == IDLE_US) break;
+        // A step to take now is taken now: asking the system to wait for no
+        // time is a call and a scheduling round for an answer already known.
+        if (period_us == SOON_US) continue;
         _ = sys.waitMany(wakes.slice(), @min(period_us, WATCH_US)) catch 0;
     }
 
+    // What the scripts made of the page, read once now that they are done.
+    if (document) |*tree| {
+        var fresh: Page = .{};
+        const reading_again = sys.clockMicros();
+        if (tree.read(gpa, &source, window, &fresh)) {
+            took("read again", reading_again);
+            showPage(&fresh);
+        } else |_| fresh.deinit(gpa);
+    }
+    if (verbose) {
+        if (scripts) |doc| {
+            var buf: [64]u8 = undefined;
+            out.trouble(std.fmt.bufPrint(&buf, "engine {d} KiB of {d} KiB\n", .{ dom.memoryOf(doc) / 1024, js.MEMORY_MAX / 1024 }) catch "");
+        }
+    }
     var text: std.Io.Writer.Allocating = .init(gpa);
     page_mod.writeText(&shown, &text.writer) catch fatal(target, error.OutOfMemory);
     out.through(text.written());
