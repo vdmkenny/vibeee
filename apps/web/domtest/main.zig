@@ -929,6 +929,8 @@ test "a frame holds an empty document of its own, which a script may measure in"
     // rewriter does to resolve the addresses a sheet names.
     try testing.expectEqualStrings("9 HEAD BODY 1", try it.run("var m = document.implementation.createHTMLDocument('Away'); var b = m.createElement('base'); m.head.appendChild(b); [m.nodeType, m.head.nodeName, m.body.nodeName, m.head.childNodes.length - 1].join(' ')"));
     try testing.expectEqualStrings("Away", try it.run("m.querySelector('title').textContent"));
+    // A style set on an element in one is that document's to keep.
+    try testing.expectEqualStrings("red", try it.run("var e = m.createElement('p'); m.body.appendChild(e); e.style.color = 'red'; e.style.color"));
 }
 
 test "a page is loading while its scripts run, and complete once it is told it is loaded" {

@@ -394,7 +394,7 @@ pub fn close(it: *Document) void {
     for (it.asks.items) |*pending| dropPending(it, pending);
     it.asks.deinit(it.gpa);
     if (it.going) |going| freeGoing(it, going);
-    for (it.parsed.items) |parsed| _ = lexbor.lxb_html_document_destroy(parsed);
+    for (it.parsed.items) |parsed| letGo(parsed);
     it.parsed.deinit(it.gpa);
     var wrappers = it.wrappers.valueIterator();
     while (wrappers.next()) |value| qjs.free(ctx, value.*);
@@ -808,18 +808,30 @@ fn jsParseFromString(ctx: *Context, _: Value, argc: c_int, argv: [*]const Value)
 
 /// `markup` as a document of the page's own, kept until the page closes or
 /// it is the oldest of more than `PARSED_MAX`.
+///
+/// It carries a style engine of its own, as the page's tree does: a script
+/// that sets a style on an element in one is setting it on that document's
+/// own styles, and an element whose document has none has nowhere to put it.
 fn parsedDocument(it: *Document, markup: []const u8) Value {
     const parsed = lexbor.lxb_html_document_create() orelse return qjs.nullValue();
-    if (lexbor.lxb_html_document_parse(parsed, markup.ptr, markup.len) != .ok) {
-        _ = lexbor.lxb_html_document_destroy(parsed);
+    if (lexbor.lxb_style_init(parsed) != .ok or
+        lexbor.lxb_html_document_parse(parsed, markup.ptr, markup.len) != .ok)
+    {
+        letGo(parsed);
         return qjs.nullValue();
     }
     if (it.parsed.items.len == PARSED_MAX) retire(it, it.parsed.orderedRemove(0));
     it.parsed.append(it.gpa, parsed) catch {
-        _ = lexbor.lxb_html_document_destroy(parsed);
+        letGo(parsed);
         return qjs.nullValue();
     };
     return wrap(it, documentNode(parsed));
+}
+
+/// Let a document made for a script go, with its styles.
+fn letGo(parsed: *lexbor.Document) void {
+    lexbor.lxb_style_destroy(parsed);
+    _ = lexbor.lxb_html_document_destroy(parsed);
 }
 
 /// The document of a frame: an empty one of its own, made the first time it
@@ -914,7 +926,7 @@ fn retire(it: *Document, parsed: *lexbor.Document) void {
         qjs.free(it.ctx, kept);
         _ = it.wrappers.remove(node);
     }
-    _ = lexbor.lxb_html_document_destroy(parsed);
+    letGo(parsed);
 }
 
 /// `documentElement`, `body` and `head` of a node that is a document, each
