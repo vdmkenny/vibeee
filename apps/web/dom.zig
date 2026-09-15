@@ -170,6 +170,12 @@ const Posted = struct { to: ?Value, data: Value };
 /// nothing from then on.
 const PARSED_MAX = 64;
 
+/// How many places a page's changes are matched again at, apart from each
+/// other. A page's components draw in a handful of places at a time; past
+/// this many the page itself is matched again, which is one walk rather
+/// than many.
+const RESTYLE_MAX = 16;
+
 /// The most posted messages delivered in one loop. A page that posts from
 /// every message it gets, as a scheduler does to give itself the next turn,
 /// gets that many turns before the browser has its own.
@@ -251,10 +257,10 @@ pub const Document = struct {
     noted: std.StringHashMapUnmanaged(void) = .empty,
     /// Whether a script has changed the tree since the browser last asked.
     changed: bool = false,
-    /// The nearest node holding everything a script changed that a
-    /// stylesheet's rules could read differently, since the rules were last
-    /// matched: what is matched again before the tree is read.
-    restyle: ?*Node = null,
+    /// Where a script has changed something a stylesheet's rules could read
+    /// differently since they were last matched: each is matched again
+    /// before the tree is read, and none of them holds another.
+    restyle: Bounded(*Node, RESTYLE_MAX) = .{},
     /// Whether the event being told was asked to go no further, and whether
     /// what it would do was refused.
     stopped: bool = false,
@@ -1139,22 +1145,33 @@ fn markChanged(it: *Document) void {
 }
 
 /// Note that what is under `node` may read differently to the stylesheets'
-/// rules now: the rules are matched again there before the tree is read,
-/// once for everything changed in between, under the nearest node that
-/// holds all of it.
+/// rules now: the rules are matched again there before the tree is read.
+///
+/// Kept apart rather than gathered under the one node holding all of it: a
+/// page whose components draw all over it changes a dozen small places,
+/// and the nearest node holding a dozen scattered ones is the page, which
+/// costs a full match of every rule against every element. Past what may be
+/// kept apart, the page it is.
 fn noteRestyle(it: *Document, node: *Node) void {
-    const had = it.restyle orelse {
-        it.restyle = node;
-        return;
-    };
-    if (!holds(had, node)) it.restyle = commonAncestor(had, node);
+    for (it.restyle.slice()) |kept| {
+        if (holds(kept, node)) return;
+    }
+    // What this node holds is matched with it, so it takes their places.
+    var at: usize = 0;
+    while (at < it.restyle.len) {
+        if (holds(node, it.restyle.slice()[at])) it.restyle.remove(at) else at += 1;
+    }
+    if (it.restyle.append(node)) return else |_| {}
+    const root = lexbor.lxb_dom_document_root(it.tree) orelse return;
+    it.restyle.clear();
+    it.restyle.append(root) catch {};
 }
 
 /// Match the stylesheets' rules again where a script's changes call for it.
 fn settleStyles(it: *Document) void {
-    const root = it.restyle orelse return;
-    it.restyle = null;
-    css.restyle(it.tree, it.rules, root);
+    if (it.restyle.isEmpty()) return;
+    for (it.restyle.slice()) |root| css.restyle(it.tree, it.rules, root);
+    it.restyle.clear();
 }
 
 /// Whether `node` is `ancestor` or under it.

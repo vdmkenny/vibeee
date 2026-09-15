@@ -912,6 +912,54 @@ test "Intl writes numbers, dates, lists and relative times as English does, and 
     try testing.expectEqualStrings("0", try it.run("String(Object.keys(new Intl.NumberFormat()).length)"));
 }
 
+test "what a script puts in the page is matched again where it went, not over the whole page" {
+    const it = try opened(
+        "<!DOCTYPE html><html><body><div id=\"one\"><p>a</p></div><div id=\"two\"><p>b</p></div>" ++
+            "<div id=\"three\"><p>c</p></div></body></html>",
+        false,
+    );
+    defer it.end();
+    css.apply(heap, it.tree, ".lit { color: #f00; }", null, &rules);
+
+    // Three scattered places to match again, not the page.
+    _ = try it.run("['one', 'two', 'three'].forEach(function (id) { var e = document.createElement('span'); e.className = 'lit'; document.getElementById(id).appendChild(e) })");
+    try testing.expectEqual(@as(usize, 3), it.doc.restyle.len);
+    try testing.expect(dom.changed(it.doc));
+    try testing.expectEqual(@as(usize, 0), it.doc.restyle.len);
+    // The rules found what went in: what the browser reads of the page
+    // gives those words the colour the sheet says.
+    _ = try it.run("['one', 'two', 'three'].forEach(function (id) { document.querySelector('#' + id + ' span').textContent = 'lit' })");
+    try testing.expect(dom.changed(it.doc));
+    var page = try it.page();
+    defer page.deinit(heap);
+    var lit: usize = 0;
+    for (page.runs.items) |run| {
+        switch (run) {
+            .text => |text| if (text.look.paint != .none) {
+                lit += 1;
+            },
+            else => {},
+        }
+    }
+    try testing.expect(lit >= 3);
+
+    // Something put inside a place already noted adds nothing to match.
+    _ = try it.run("document.querySelector('#one span').appendChild(document.createElement('b'))");
+    try testing.expectEqual(@as(usize, 1), it.doc.restyle.len);
+    _ = try it.run("document.querySelector('#one span b').appendChild(document.createElement('i'))");
+    try testing.expectEqual(@as(usize, 1), it.doc.restyle.len);
+    // A place holding one already noted takes its place, rather than both
+    // being matched.
+    _ = try it.run("var held = document.createElement('div'); var inner = document.createElement('u'); held.appendChild(inner); document.body.appendChild(held)");
+    try testing.expectEqual(@as(usize, 2), it.doc.restyle.len);
+    try testing.expect(dom.changed(it.doc));
+
+    // Past what may be kept apart, the page itself is matched again.
+    _ = try it.run("for (var i = 0; i < 40; i++) { var e = document.createElement('span'); document.body.insertBefore(e, document.body.firstChild) }");
+    try testing.expectEqual(@as(usize, 1), it.doc.restyle.len);
+    try testing.expect(dom.changed(it.doc));
+}
+
 test "a frame holds an empty document of its own, which a script may measure in" {
     const it = try opened(with(""), true);
     defer it.end();
