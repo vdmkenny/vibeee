@@ -455,10 +455,15 @@ pub fn loadNext(it: *Document, fetched: []const Fetched) Loading {
     return .done;
 }
 
-/// Tell the page it is ready, which is what a page waits for.
+/// Tell the page it is ready, which is what a page waits for: its scripts
+/// have all run, so the tree is what they made of it, and then everything
+/// the page names is here.
 fn loaded(it: *Document) void {
+    if (it.ready == .complete) return;
     const root = lexbor.lxb_dom_document_root(it.tree) orelse return;
+    it.ready = .interactive;
     _ = tell(it, root, "DOMContentLoaded", false);
+    it.ready = .complete;
     _ = tell(it, root, "load", false);
 }
 
@@ -3771,14 +3776,21 @@ fn jsUrl(ctx: *Context, _: Value) callconv(.c) Value {
     return str(ctx, it.address);
 }
 
-/// The page is read: a script run at the end of a parse is not one waiting
-/// for it. And it is not hidden: this browser shows one page at a time.
+/// The page is not hidden: this browser shows one page at a time.
 fn jsWord(ctx: *Context, _: Value, magic: c_int) callconv(.c) Value {
     return str(ctx, document_words[@intCast(magic)].word);
 }
 
+/// How far the page has come. A framework that finds a page still loading
+/// waits for the word that it is not, as it would in any browser; one told
+/// the page is complete looks at a tree the page's later scripts have not
+/// made yet.
+fn jsReadyState(ctx: *Context, _: Value) callconv(.c) Value {
+    const it = documentOf(ctx) orelse return str(ctx, Ready.complete.word());
+    return str(ctx, it.ready.word());
+}
+
 const document_words = [_]struct { property: [*:0]const u8, word: []const u8 }{
-    .{ .property = "readyState", .word = "complete" },
     .{ .property = "visibilityState", .word = "visible" },
     .{ .property = "referrer", .word = "" },
     .{ .property = "characterSet", .word = "UTF-8" },
@@ -3823,11 +3835,11 @@ const document_gets = [_]qjs.ListEntry{
     .accessor("currentScript", &jsCurrentScript, null),
     .accessor("defaultView", &jsWindowHere, null),
     .accessor("hidden", &jsNotHidden, null),
-    .accessorMagic("readyState", &jsWord, null, 0),
-    .accessorMagic("visibilityState", &jsWord, null, 1),
-    .accessorMagic("referrer", &jsWord, null, 2),
-    .accessorMagic("characterSet", &jsWord, null, 3),
-    .accessorMagic("compatMode", &jsWord, null, 4),
+    .accessor("readyState", &jsReadyState, null),
+    .accessorMagic("visibilityState", &jsWord, null, 0),
+    .accessorMagic("referrer", &jsWord, null, 1),
+    .accessorMagic("characterSet", &jsWord, null, 2),
+    .accessorMagic("compatMode", &jsWord, null, 3),
     .accessorMagic("forms", &jsCollection, null, 0),
     .accessorMagic("images", &jsCollection, null, 1),
     .accessorMagic("links", &jsCollection, null, 2),
