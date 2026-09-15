@@ -1,6 +1,16 @@
 One manifest per userspace driver, dropped in rather than listed anywhere:
 adding a driver should be adding a file.
 
+The ones for devices on the PCI bus are **generated**, from what each driver
+says it answers for in src/lib/driver.zig, by `zig build driver-manifests`.
+The boot probe reads the same declaration, so a listing cannot say nobody
+drives what something is driving, or the reverse. Change the declaration and
+run the step; do not edit a generated file.
+
+The ones for devices on the USB bus are written by hand: they are matched by
+what a device says it is rather than by who made it, and the kernel's probe
+never sees them, so there is nothing for them to disagree with.
+
 Keys are the field names of `Manifest` in src/user/devmgd/main.zig, so this
 directory and the parser cannot drift.
 

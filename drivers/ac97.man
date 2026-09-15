@@ -1,4 +1,11 @@
-# The AC'97 controller of the Intel chipset line.
+# Generated from src/lib/driver.zig by `zig build driver-manifests`.
+# Do not edit: change what the driver answers for instead.
+#
+# AC'97 on the Intel controller line, by part number and not by class:
+# subclass 01 is every audio device that is not HDA, and most of them
+# answer nothing like this. So the controller of each chipset generation
+# that carried AC'97 is named, the first of them being what an emulator
+# gives a machine.
 name    = ac97
 service = audio
-match   = pci:8086:2415
+match   = pci:8086:2415, pci:8086:2425, pci:8086:2445, pci:8086:2485, pci:8086:24c5, pci:8086:24d5, pci:8086:266e, pci:8086:27de, pci:8086:7195

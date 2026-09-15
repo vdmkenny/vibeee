@@ -1,4 +1,8 @@
-# The Attansic L2 fast ethernet.
+# Generated from src/lib/driver.zig by `zig build driver-manifests`.
+# Do not edit: change what the driver answers for instead.
+#
+# The Attansic L2 fast ethernet, which is the wired part of the Eee PC
+# 701 and of a good many machines beside it.
 name    = atl2
 service = net
 match   = pci:1969:2048

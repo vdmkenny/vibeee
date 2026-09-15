@@ -200,6 +200,9 @@ test "the netbooks this is for land on gen3" {
     try std.testing.expectEqualStrings("intel-gen3", nameFor(0x8086, 0x2592).?);
     // Eee PC 901/1000, Aspire One AOA110/150, HP Mini 110.
     try std.testing.expectEqualStrings("intel-gen3", nameFor(0x8086, 0x27AE).?);
+    // The same part under its other id, which is the one a good many
+    // machines of that class report.
+    try std.testing.expectEqualStrings("intel-gen3", nameFor(0x8086, 0x27A6).?);
     // Eee PC 1001PX, Aspire One D255, HP Mini 210.
     try std.testing.expectEqualStrings("intel-gen3", nameFor(0x8086, 0xA011).?);
 }

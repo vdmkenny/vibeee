@@ -1135,6 +1135,22 @@ pub fn build(b: *std.Build) void {
     b.step("syscall-docs", "Regenerate docs/syscalls.md from the syscall table")
         .dependOn(&syscall_docs.step);
 
+    // The driver manifests, written from what each driver says it answers
+    // for, so the boot probe and the device manager cannot come to name
+    // different devices for the same driver.
+    const driver_manifests = b.addRunArtifact(b.addExecutable(.{
+        .name = "gen-driver-manifests",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/gen_driver_manifests.zig"),
+            .target = b.graph.host,
+            .optimize = .ReleaseSafe,
+        }),
+    }));
+    driver_manifests.addArg("drivers");
+    driver_manifests.has_side_effects = true;
+    b.step("driver-manifests", "Regenerate drivers/*.man from what each driver answers for")
+        .dependOn(&driver_manifests.step);
+
     // ---------------------------------------------------------------------
     // Console fonts, converted from BDF at build time so the .bdf stays the
     // source of truth and the generated tables are never hand-edited.

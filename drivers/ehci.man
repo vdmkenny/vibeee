@@ -1,5 +1,8 @@
+# Generated from src/lib/driver.zig by `zig build driver-manifests`.
+# Do not edit: change what the driver answers for instead.
+#
 # The high-speed USB host controller, by class rather than by part
 # number: every EHCI controller answers the same register interface.
 name    = ehci
 service = usb
-match   = pci-class:0C:03:20
+match   = pci-class:0c:03:20

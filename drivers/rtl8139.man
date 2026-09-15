@@ -1,4 +1,9 @@
-# The second QEMU adapter, for driver-plural testing.
+# Generated from src/lib/driver.zig by `zig build driver-manifests`.
+# Do not edit: change what the driver answers for instead.
+#
+# The RealTek 8139 line: the emulator's other adapter, and the fast
+# ethernet of a great many machines of the era. Both parts answer one
+# register interface.
 name    = rtl8139
 service = net
-match   = pci:10ec:8139
+match   = pci:10ec:8139, pci:10ec:8138

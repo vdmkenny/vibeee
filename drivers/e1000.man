@@ -1,4 +1,9 @@
-# The QEMU test bench's wired adapter.
+# Generated from src/lib/driver.zig by `zig build driver-manifests`.
+# Do not edit: change what the driver answers for instead.
+#
+# The Intel 8254x gigabit line: the emulator's wired adapter, and the
+# card a good many machines of the era carried. One register interface
+# across the parts named.
 name    = e1000
 service = net
-match   = pci:8086:100e
+match   = pci:8086:1004, pci:8086:1008, pci:8086:100e, pci:8086:100f, pci:8086:1010, pci:8086:1026, pci:8086:1027, pci:8086:1028

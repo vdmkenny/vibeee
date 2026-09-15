@@ -65,6 +65,7 @@ const members = [_]Member{
     .{ .id = 0x2592, .part = .i915 }, // 915GM, Eee PC 701 and 900
     .{ .id = 0x2792, .part = .i915 }, // 915GMS
     .{ .id = 0x27A2, .part = .i945 }, // 945GM
+    .{ .id = 0x27A6, .part = .i945 }, // 945GM, second id
     .{ .id = 0x27AE, .part = .i945 }, // 945GSE, Eee PC 901/1000, Aspire One AOA110/150, HP Mini 110
     .{ .id = 0xA011, .part = .pineview }, // Pineview M, Eee PC 1001PX/1015, Aspire One D255, HP Mini 210
     .{ .id = 0xA012, .part = .pineview }, // Pineview M, second id

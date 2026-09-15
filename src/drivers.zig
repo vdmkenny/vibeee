@@ -14,6 +14,7 @@
 //! lets one image boot both the target machine and hardware it has never seen.
 
 const std = @import("std");
+const lib = @import("lib");
 const probe = @import("kernel/probe.zig");
 const ata = @import("drv/block/ata.zig");
 const console = @import("kernel/console.zig");
@@ -28,6 +29,43 @@ fn exact(comptime vendor: u16, comptime device: u16) fn (Device) Confidence {
     return struct {
         fn f(dev: Device) Confidence {
             return if (dev.vendor == vendor and dev.device == device) .exact else .no;
+        }
+    }.f;
+}
+
+/// What a driver answers for, taken from the one declaration both this table
+/// and the driver manifests are written from.
+///
+/// The kernel's `Match` and the shared one are the same shape, so this is a
+/// change of type and not of meaning: what the probe reads and what a
+/// manifest says cannot come apart.
+fn answersFor(comptime name: []const u8) []const probe.Match {
+    return comptime blk: {
+        const shared = lib.driver.matchesOf(name);
+        var out: [shared.len]probe.Match = undefined;
+        for (shared, &out) |one, *into| {
+            into.* = switch (one) {
+                .part => |p| .{ .pci_id = .{ .vendor = p.vendor, .device = p.device } },
+                .family => |f| .{ .pci_class = .{ .class = f.class, .subclass = f.subclass } },
+                .platform => |what| .{ .platform = what },
+            };
+        }
+        const kept = out;
+        break :blk &kept;
+    };
+}
+
+/// How sure the driver named is about a device, from the same declaration.
+fn answering(comptime name: []const u8) fn (Device) Confidence {
+    return struct {
+        fn f(dev: Device) Confidence {
+            return lib.driver.bestOf(lib.driver.matchesOf(name), .{
+                .vendor = dev.vendor,
+                .device = dev.device,
+                .class = dev.class,
+                .subclass = dev.subclass,
+                .interface = dev.prog_if,
+            });
         }
     }.f;
 }
@@ -128,93 +166,72 @@ pub const table = [_]probe.Driver{
 
     // -- USB -------------------------------------------------------------
     .{
+        // The programming interface is what tells the three USB controller
+        // generations sharing one class apart, and the shared table names
+        // it, so this entry and the manifest cannot disagree about which
+        // controller is whose.
         .name = "ehci",
         .kind = .usb,
-        .match = &.{.{ .pci_class = .{ .class = 0x0C, .subclass = 0x03 } }},
-        .probe = &struct {
-            fn f(dev: Device) Confidence {
-                // prog_if distinguishes the three USB controller generations
-                // sharing one class: 0x00 UHCI, 0x10 OHCI, 0x20 EHCI.
-                if (dev.class != 0x0C or dev.subclass != 0x03) return .no;
-                return if (dev.prog_if == 0x20) .strong else .no;
-            }
-        }.f,
+        .match = answersFor("ehci"),
+        .probe = &answering("ehci"),
     },
     .{
         .name = "uhci",
         .kind = .usb,
-        .match = &.{.{ .pci_class = .{ .class = 0x0C, .subclass = 0x03 } }},
-        .probe = &struct {
-            fn f(dev: Device) Confidence {
-                if (dev.class != 0x0C or dev.subclass != 0x03) return .no;
-                return if (dev.prog_if == 0x00) .strong else .no;
-            }
-        }.f,
+        .match = answersFor("uhci"),
+        .probe = &answering("uhci"),
     },
 
     // -- Audio -----------------------------------------------------------
     .{
         .name = "hda",
         .kind = .audio,
-        .match = &.{.{ .pci_class = .{ .class = 0x04, .subclass = 0x03 } }},
-        .probe = &struct {
-            fn f(dev: Device) Confidence {
-                // ICH6 with the ALC662 codec, verified on the target.
-                if (dev.vendor == 0x8086 and dev.device == 0x2668) return .exact;
-                return if (dev.class == 0x04 and dev.subclass == 0x03) .strong else .no;
-            }
-        }.f,
+        .match = answersFor("hda"),
+        .probe = &answering("hda"),
     },
 
     .{
         // The AC'97 controller of the Intel chipset line, which is what an
         // emulator gives a machine and what a great deal of the era's
-        // hardware carried. The target has the newer one above; this table
-        // and the driver manifests must name the same set either way, or a
-        // listing says a device nobody drives while a driver drives it.
+        // hardware carried. The target has the newer one above.
         .name = "ac97",
         .kind = .audio,
-        .match = &.{.{ .pci_class = .{ .class = 0x04, .subclass = 0x01 } }},
-        .probe = &struct {
-            fn f(dev: Device) Confidence {
-                if (dev.vendor == 0x8086 and dev.device == 0x2415) return .exact;
-                return if (dev.class == 0x04 and dev.subclass == 0x01) .strong else .no;
-            }
-        }.f,
+        .match = answersFor("ac97"),
+        .probe = &answering("ac97"),
     },
 
     // -- Network ---------------------------------------------------------
     .{
         .name = "atl2",
         .kind = .net,
-        .match = &.{.{ .pci_id = .{ .vendor = 0x1969, .device = 0x2048 } }},
-        .probe = &exact(0x1969, 0x2048),
+        .match = answersFor("atl2"),
+        .probe = &answering("atl2"),
     },
     .{
-        .name = "ar2425",
+        .name = "ar5212",
         .kind = .net,
-        .match = &.{.{ .pci_id = .{ .vendor = 0x168C, .device = 0x001C } }},
-        .probe = &exact(0x168C, 0x001C),
+        .match = answersFor("ar5212"),
+        .probe = &answering("ar5212"),
         // The part declares class 02:00, which is what an ethernet
         // controller declares. It is a radio.
         .describes = "wireless controller",
     },
     .{
-        // QEMU's default NIC. Not present on any real target, but having it
-        // means the network stack can be exercised in emulation long before the
+        // The emulator's default NIC, and a card of the era. Having it means
+        // the network stack can be exercised in emulation long before the
         // reverse-engineered Atheros driver works.
         .name = "e1000",
         .kind = .net,
-        .match = &.{.{ .pci_id = .{ .vendor = 0x8086, .device = 0x100E } }},
-        .probe = &exact(0x8086, 0x100E),
+        .match = answersFor("e1000"),
+        .probe = &answering("e1000"),
     },
     .{
         // The Realtek 8139: QEMU's other emulated NIC, and a card a wide
         // slice of the era's hardware carried. Lives in netd.
         .name = "rtl8139",
         .kind = .net,
-        .match = &.{.{ .pci_id = .{ .vendor = 0x10EC, .device = 0x8139 } }},
-        .probe = &exact(0x10EC, 0x8139),
+        .match = answersFor("rtl8139"),
+        .probe = &answering("rtl8139"),
     },
 
     // The chipset's own bridges and its SMBus controller are not here. This
