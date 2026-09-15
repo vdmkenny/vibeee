@@ -163,7 +163,10 @@ about why it is not acted on.
 
 Testing on other low-end x86 netbooks is welcome. The system is designed to select
 hardware support through PCI discovery, ACPI/SMBIOS data, and driver manifests rather
-than a hard-coded 701 board profile. Machine-specific firmware behaviour is likewise
+than a hard-coded 701 board profile. Within the Eee PC line, the later 900, 901 and
+1000 machines are covered as far as their wired port: the Attansic L1E those carry
+has a driver beside the L2 the 701 has, sharing everything the two parts share. It
+has not been run on one. Machine-specific firmware behaviour is likewise
 kept to two places: corrections for firmware that is wrong are one module per family
 under `src/quirks/`, and a laptop maker's own control interface is one file under
 `src/user/platd/vendor/` plus one row in the registry beside it. Expect untested hardware to expose gaps, especially

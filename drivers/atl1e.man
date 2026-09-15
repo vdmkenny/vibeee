@@ -1,0 +1,10 @@
+# Generated from src/lib/driver.zig by `zig build driver-manifests`.
+# Do not edit: change what the driver answers for instead.
+#
+# The Attansic L1E, sold as the Atheros AR8121, AR8113 and AR8114:
+# the wired part of the Eee PC 1000 and of the 901 units that carry
+# one. The three answer the same number and differ only in how fast
+# their PHY negotiates.
+name    = atl1e
+service = net
+match   = pci:1969:1026

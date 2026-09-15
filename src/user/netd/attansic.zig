@@ -21,6 +21,7 @@
 //! part it is talking to.
 
 const lib = @import("lib");
+const mii = @import("mii.zig");
 const std = @import("std");
 
 /// The registers at the same offset on every part, read and written a word
@@ -216,6 +217,79 @@ pub fn writeStation(words: Words, mac: [6]u8) void {
     }));
     words.write(.mac_sta_addr_hi, @bitCast(StationHigh{ .octet0 = mac[0], .octet1 = mac[1] }));
 }
+
+// ---------------------------------------------------------------------------
+// The PHY
+// ---------------------------------------------------------------------------
+//
+// Both parts carry the same maker's PHY, so the vendor registers below are
+// the same on either. The ones the standard defines are in `mii`.
+
+/// The PHY registers either driver asks about, by their number.
+pub const Phy = enum(u5) {
+    control = 0,
+    status = 1,
+    advertise = 4,
+    /// Only on a part whose PHY can go a thousand megabits.
+    gigabit = 9,
+    /// What the negotiation came to, which the standard leaves to the
+    /// maker: the resolved speed and duplex in one word.
+    resolved = 17,
+    /// Which PHY events raise an interrupt.
+    interrupt = 18,
+    /// Which of them happened, read to clear.
+    interrupt_clear = 19,
+    debug_addr = 29,
+    debug_data = 30,
+};
+
+/// The PHY's own status word: what the two ends settled on.
+pub const Resolved = packed struct(u16) {
+    _0: u11 = 0,
+    /// Nothing else in this word means anything until this is set.
+    settled: bool = false,
+    _12: u1 = 0,
+    full_duplex: bool = false,
+    speed: PhySpeed = .m10,
+};
+
+/// How the PHY says it: not the MAC's encoding, which has one value for
+/// ten and a hundred together.
+pub const PhySpeed = enum(u2) {
+    m10 = 0,
+    m100 = 1,
+    m1000 = 2,
+    _,
+
+    /// The speed everything above a driver speaks in, or nothing for the
+    /// fourth encoding, which no part defines.
+    pub fn wire(self: PhySpeed) ?mii.Speed {
+        return switch (self) {
+            .m10 => .m10,
+            .m100 => .m100,
+            .m1000 => .m1000,
+            _ => null,
+        };
+    }
+
+    /// What the MAC's speed field should say for this, which is one value
+    /// for ten and a hundred.
+    pub fn mac(self: PhySpeed) Speed {
+        return if (self == .m1000) .m1000 else .m10_100;
+    }
+};
+
+/// Which PHY events raise an interrupt. Both, always: the link coming up
+/// and going down are the only two either driver acts on, and asking for
+/// them is what keeps anything from having to poll the link.
+pub const LinkEvents = packed struct(u16) {
+    _0: u10 = 0,
+    link_down: bool = false,
+    link_up: bool = false,
+    _12: u4 = 0,
+};
+
+pub const BOTH_LINK_EVENTS = LinkEvents{ .link_down = true, .link_up = true };
 
 // ---------------------------------------------------------------------------
 // Sequences
@@ -416,6 +490,42 @@ test "the low half of the MAC control word is the part's" {
         .base = .{ .tx_enable = true, .rx_enable = true },
         .speed = .m10_100,
     }));
+}
+
+test "the PHY's own status word is the maker's" {
+    const half = struct {
+        fn of(value: Resolved) u16 {
+            return @bitCast(value);
+        }
+    }.of;
+
+    try testing.expectEqual(@as(u16, 0x0800), half(.{ .settled = true }));
+    try testing.expectEqual(@as(u16, 0x2000), half(.{ .full_duplex = true }));
+    try testing.expectEqual(@as(u16, 0x0000), half(.{ .speed = .m10 }));
+    try testing.expectEqual(@as(u16, 0x4000), half(.{ .speed = .m100 }));
+    try testing.expectEqual(@as(u16, 0x8000), half(.{ .speed = .m1000 }));
+
+    // A hundred megabits full duplex, settled, as the part reports it.
+    const said: Resolved = @bitCast(@as(u16, 0x6800));
+    try testing.expect(said.settled);
+    try testing.expect(said.full_duplex);
+    try testing.expectEqual(PhySpeed.m100, said.speed);
+
+    // The two events worth an interrupt, which is what keeps the link
+    // from having to be asked about.
+    try testing.expectEqual(@as(u16, 0x0C00), @as(u16, @bitCast(BOTH_LINK_EVENTS)));
+}
+
+test "the PHY's speed is said two ways and neither is the other" {
+    try testing.expectEqual(mii.Speed.m10, PhySpeed.m10.wire().?);
+    try testing.expectEqual(mii.Speed.m100, PhySpeed.m100.wire().?);
+    try testing.expectEqual(mii.Speed.m1000, PhySpeed.m1000.wire().?);
+    try testing.expectEqual(@as(?mii.Speed, null), (@as(PhySpeed, @enumFromInt(3))).wire());
+
+    // The MAC counts ten and a hundred as one thing.
+    try testing.expectEqual(Speed.m10_100, PhySpeed.m10.mac());
+    try testing.expectEqual(Speed.m10_100, PhySpeed.m100.mac());
+    try testing.expectEqual(Speed.m1000, PhySpeed.m1000.mac());
 }
 
 test "the station address reads back the way it was written" {

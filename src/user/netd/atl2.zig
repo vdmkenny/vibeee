@@ -215,30 +215,6 @@ const IsrClear = packed struct(u32) {
 };
 
 /// The PHY status word (MII register 17, "PSSR").
-const Pssr = packed struct(u16) {
-    _0: u11 = 0,
-    resolved: bool = false,
-    _12: u1 = 0,
-    full_duplex: bool = false,
-    speed: Speed = .m10,
-};
-
-const Speed = enum(u2) {
-    m10 = 0,
-    m100 = 1,
-    m1000 = 2,
-    _,
-
-    fn mbps(self: Speed) u16 {
-        return switch (self) {
-            .m10 => 10,
-            .m100 => 100,
-            .m1000 => 1000,
-            _ => 0,
-        };
-    }
-};
-
 /// The four-byte header before every frame in the TX fifo.
 const TxHeader = packed struct(u32) {
     pkt_len: u11 = 0,
@@ -297,9 +273,7 @@ comptime {
     if (@sizeOf(TxHeader) != 4 or @sizeOf(TxStatus) != 4 or @sizeOf(RxStatus) != 4) {
         @compileError("a packet status or header shapes one dword");
     }
-    if (@sizeOf(Pssr) != 2 or @sizeOf(PhyEnable) != 2) {
-        @compileError("a PHY register shape is one word");
-    }
+    if (@sizeOf(PhyEnable) != 2) @compileError("a PHY register shape is one word");
     if (@sizeOf(DmaControl) != 1) @compileError("a DMA enable register is one byte");
     if (@sizeOf(LtssmTestMode) != 4 or @sizeOf(PcieDllTxCtrl1) != 4) {
         @compileError("a PCIe register image is one dword");
@@ -316,59 +290,8 @@ const PhyDebug = packed struct(u16) {
     _13: u3 = 0,
 };
 
-const PhyInterruptEnable = packed struct(u16) {
-    _0: u10 = 0,
-    link_down: bool = false,
-    link_up: bool = false,
-    _12: u4 = 0,
-};
-
-/// Link-up and link-down, the two events worth a PHY interrupt.
-const PHY_LINK_EVENTS = PhyInterruptEnable{
-    .link_down = true,
-    .link_up = true,
-};
-
-const Phy = enum(u5) {
-    bmcr = 0,
-    bmsr = 1,
-    advertise = 4,
-    pssr = 17,
-    /// PHY interrupt enable: link-change, the value 0x0C00.
-    interrupt = 18,
-    /// PHY interrupt status, read to clear.
-    interrupt_clear = 19,
-    dbg_addr = 29,
-    dbg_data = 30,
-};
-
-const BMCR = packed struct(u16) {
-    _0: u8 = 0,
-    _8: u1 = 0,
-    restart_autoneg: bool = false, // bit 9
-    _10: u2 = 0,
-    autoneg_enable: bool = false, // bit 12
-    _13: u2 = 0,
-    reset: bool = false, // bit 15
-};
-
-const ADVERTISE_ALL = packed struct(u16) {
-    selector: bool = true,
-    _1: u4 = 0,
-    ten_half: bool = false, // bit 5
-    ten_full: bool = false, // bit 6
-    hundred_half: bool = false, // bit 7
-    hundred_full: bool = false, // bit 8
-    _9: u1 = 0,
-    pause: bool = true,
-    asymmetric_pause: bool = true,
-    _12: u4 = 0,
-}{
-    .ten_half = true,
-    .ten_full = true,
-    .hundred_half = true,
-    .hundred_full = true,
-};
+/// The PHY registers, which are the family's.
+const Phy = attansic.Phy;
 
 // ---------------------------------------------------------------------------
 // The rings, one DMA segment
@@ -727,17 +650,17 @@ fn phyInit() bool {
     _ = device.regs.half.read(.phy_enable);
     sys.sleepMicros(1_000);
 
-    if (!writePhy(.dbg_addr, 0)) return false;
-    var debug: PhyDebug = @bitCast(readPhy(.dbg_data) orelse return false);
+    if (!writePhy(.debug_addr, 0)) return false;
+    var debug: PhyDebug = @bitCast(readPhy(.debug_data) orelse return false);
     if (debug.power_save) {
         debug.power_save = false;
-        if (!writePhy(.dbg_data, @bitCast(debug))) return false;
+        if (!writePhy(.debug_data, @bitCast(debug))) return false;
     }
     sys.sleepMicros(1_000);
 
-    if (!writePhy(.interrupt, @bitCast(PHY_LINK_EVENTS))) return false;
-    if (!writePhy(.advertise, @bitCast(ADVERTISE_ALL))) return false;
-    return writePhy(.bmcr, @bitCast(BMCR{
+    if (!writePhy(.interrupt, @bitCast(attansic.BOTH_LINK_EVENTS))) return false;
+    if (!writePhy(.advertise, @bitCast(mii.ADVERTISE_FAST))) return false;
+    return writePhy(.control, @bitCast(mii.Control{
         .reset = true,
         .autoneg_enable = true,
         .restart_autoneg = true,
@@ -1179,33 +1102,30 @@ fn writeFifo(at: usize, len: usize, bytes: []const u8) void {
 pub fn link(_: *NicDev) dev_mod.Link {
     if (!device.opened) return .{};
     // Read twice, the way the vendor's driver does: the first may latch.
-    _ = readPhy(.bmsr) orelse return .{};
-    const status: mii.Status = @bitCast(readPhy(.bmsr) orelse return .{});
+    _ = readPhy(.status) orelse return .{};
+    const status: mii.Status = @bitCast(readPhy(.status) orelse return .{});
     // Whether a word is a link at all is the standard's question and
     // `mii`'s answer. No carrier: there is nothing finer to ask, and the
     // vendor register below has resolved nothing either.
     if (mii.outcome(status) == null) return .{ .up = false };
 
-    const pssr = @as(Pssr, @bitCast(readPhy(.pssr) orelse return .{}));
-    if (!pssr.resolved) return .{};
-    // How fast, in the standard's words rather than this part's encoding
-    // of them: a PHY that has resolved neither ten nor a hundred has not
-    // answered, and `mii` has no name for what it did say.
-    const speed: mii.Speed = switch (pssr.speed) {
-        .m10 => .m10,
-        .m100 => .m100,
-        else => return .{},
-    };
+    const settled = @as(attansic.Resolved, @bitCast(readPhy(.resolved) orelse return .{}));
+    if (!settled.settled) return .{};
+    // How fast, in the words everything above a driver speaks rather than
+    // this part's encoding of them. This part goes no faster than a
+    // hundred, so a thousand from it is a word nobody should act on.
+    const speed = settled.speed.wire() orelse return .{};
+    if (speed == .m1000) return .{};
 
     // Taken as given rather than derived: a part that reports 100 full has
     // already done the negotiation, and second-guessing it from the
     // advertisement is how a driver decides a wire is something it is not.
-    const resolved = mii.resolved(status, speed, if (pssr.full_duplex) .full else .half) orelse
+    const outcome = mii.resolved(status, speed, if (settled.full_duplex) .full else .half) orelse
         return .{};
     return .{
-        .up = resolved.up,
-        .mbps = resolved.speed.mbps(),
-        .duplex = if (resolved.duplex == .full) .full else .half,
+        .up = outcome.up,
+        .mbps = outcome.speed.mbps(),
+        .duplex = if (outcome.duplex == .full) .full else .half,
     };
 }
 

@@ -207,6 +207,12 @@ pub const answers = [_]Answers{
         .matches = &.{.{ .part = .{ .vendor = 0x1969, .device = 0x2048 } }},
     },
     .{
+        .name = "atl1e",
+        .service = "net",
+        .says = "The Attansic L1E, sold as the Atheros AR8121, AR8113 and AR8114:\nthe wired part of the Eee PC 1000 and of the 901 units that carry\none. The three answer the same number and differ only in how fast\ntheir PHY negotiates.",
+        .matches = &.{.{ .part = .{ .vendor = 0x1969, .device = 0x1026 } }},
+    },
+    .{
         .name = "ar5212",
         .service = "net",
         .says = "The Atheros AR5212 family: the AR2425 in the Eee PC 701, and the\nAR2417.",

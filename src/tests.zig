@@ -42,6 +42,9 @@ test {
     _ = @import("user/netd/attansic.zig");
     _ = @import("user/netd/cursor.zig");
     _ = @import("user/netd/mii.zig");
+    // The page an L1E receives into, which is the only part of that
+    // driver that can be run anywhere but on the machine that has one.
+    _ = @import("user/netd/rxpage.zig");
     _ = @import("user/netd/route.zig");
     _ = @import("user/lib/time.zig");
     _ = @import("user/lib/paths.zig");

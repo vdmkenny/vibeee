@@ -45,7 +45,7 @@ Internal layering (all in one binary):
 +------------------------------------------------------------------+
 | netif glue: one struct netif per NicDev, pbuf in/out             |
 +------------------------------------------------------------------+
-| NicDriver iface:  atl2  |  e1000  |  rtl8139  |  ath5k (later)   |
+| NicDriver iface: atl2 | atl1e | e1000 | rtl8139 | ath5k (later)  |
 +------------------------------------------------------------------+
 | user-driver API: map_device, dma_alloc, irq_attach, pci_*        |
 +------------------------------------------------------------------+
@@ -274,6 +274,78 @@ Full-duplex worst case, 1518 B frames, 8.1 kpps each way: ring copies ≈ 10%, s
 per-packet ≈ 3%, IRQ amortized ≈ 3% per direction. Total ≈ **28–33% CPU at full
 duplex saturation**; ~17% for one-direction bulk. Memory bandwidth ~50 MB/s of the
 ~350 MB/s practical. The lwIP copy each way is inside these numbers (§3.3).
+
+## 4a. What the Attansic parts share (`netd/attansic.zig`)
+
+The 701 carries the L2 and the 1000 the L1E. The two move frames in completely
+different ways and are the same silicon around them, so the shared half is written
+once: the block reset and its idle handshake, the MDIO controller, the station
+address, the inter-packet gaps, the half-duplex rules, the low half of the MAC
+control word, and the maker's PHY registers.
+
+What is deliberately **not** shared is anything whose meaning differs between the
+parts even where the offset does not. The interrupt status register is at 0x1600 on
+both and numbers its bits differently. Bit 27 of the MAC control word clocks the MAC
+from the PHY on the L2 and turns on a debug mode on the L1E. Those stay with the
+driver that knows which part it is.
+
+Each driver keeps its own registers in their own window and reaches the shared ones
+through a second, so a register named in one set cannot be reached through the other.
+The 802.3 registers the standard defines (the control word, the advertisement, the
+gigabit half) are one layer further out again, in `netd/mii.zig`, where every wired
+driver can reach them.
+
+Every bit position in the shared module is checked on the build machine. Neither
+driver can be run anywhere but on a machine that has the part, so a test that runs is
+worth more here than in most places.
+
+## 4b. atl1e ethernet driver (1969:1026)
+
+The Attansic L1E, sold as the Atheros AR8121, AR8113 and AR8114: the wired port of
+the Eee PC 1000 and of the 901 units that carry one. The three answer the same device
+number and differ only in how fast their PHY negotiates, so one driver covers them.
+
+**Transmit is a descriptor ring**, 32 entries, each pointing at one frame and saying
+how long it is. The frame is copied into device memory first: the buffer the stack
+hands down is not the driver's to give a device an address for. `REG_MB_TPD_PROD_IDX`
+tells the part how far the ring has been filled; the part writes how far it has got
+through it into memory of the driver's own, so reading that is a load rather than an
+uncached register read.
+
+**Receive is two pages, not a ring.** The part writes frames one after another into a
+16 KB page, each behind a 16-byte record saying how long it is and what it was, and
+rounds the next one up to a 32-byte boundary. Where it has got to is again a counter
+in memory. When a page is full the driver hands it back with one byte write to
+`REG_HOST_RXF0_PAGEn_VLD` and reads the other, which the part has been filling
+meanwhile. Room is set aside past the mark the part is given, because it may begin a
+frame just under the mark and finish it past there.
+
+Every record carries a sequence number. Frames left in a page from an earlier lap
+would otherwise look like frames, and the sequence is what says they are not. A
+sequence that does not follow, or a length no frame could have, means the driver has
+lost its place in the page: there is nothing to do but rebuild the adapter, which it
+asks for between passes rather than on the line.
+
+**One queue.** The part offers four and a hash to sort frames between them; this
+machine has one processor and nothing above the driver wants frames sorted before it
+sees them.
+
+**No offload.** The part will compute checksums and segment large sends. Both are
+declined: a driver that offers them has to be right about every header offset in
+every frame, and the stack above is already right about its own.
+
+**Bursts are the smaller of what the part wants and what the link settled on**, read
+from the PCI Express capability. A device told to burst more than the link carries
+puts packets on it the other end will not take.
+
+Untested on hardware: QEMU models no Attansic or Atheros part, so neither this driver
+nor `atl2` nor the radio can be run in the emulator, and the machine that has an L1E
+is not the machine this is developed on. What is proven away from the silicon is as
+much as could be pushed there: the shared half's arithmetic, every register and
+descriptor word pinned at compile time against the documented value, and the page walk
+itself, which is on its own in `netd/rxpage.zig` over a plain slice and host-tested
+against pages built a frame at a time. Everything above a driver is exercised in the
+emulator through `e1000` and `rtl8139`, which is what those two are for.
 
 ## 5. WiFi: the radio, and the vocabulary above it
 

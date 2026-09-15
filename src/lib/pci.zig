@@ -279,8 +279,50 @@ pub const PcieDeviceControl = packed struct(u32) {
     non_fatal_report: bool,
     fatal_report: bool,
     unsupported_report: bool,
-    _control: u12,
+    relaxed_ordering: bool,
+    /// The largest write the link carries in one go, as the root port and
+    /// the device settled it. A device told to burst more than this puts
+    /// packets on the link that the other end will not take.
+    max_payload: Burst,
+    extended_tag: bool,
+    phantom_functions: bool,
+    aux_power: bool,
+    no_snoop: bool,
+    /// The largest read the device may ask for in one go, settled the
+    /// same way.
+    max_read_request: Burst,
+    _15: u1,
     _status: u16,
+
+    /// How much a burst carries, as the link counts it.
+    pub const Burst = enum(u3) {
+        b128 = 0,
+        b256 = 1,
+        b512 = 2,
+        b1024 = 3,
+        b2048 = 4,
+        b4096 = 5,
+        _,
+
+        pub fn bytes(self: Burst) u16 {
+            return switch (self) {
+                .b128 => 128,
+                .b256 => 256,
+                .b512 => 512,
+                .b1024 => 1024,
+                .b2048 => 2048,
+                .b4096 => 4096,
+                _ => 128,
+            };
+        }
+
+        /// The smaller of two, which is the one a device may actually
+        /// use: asking for more than the link settled on is a packet the
+        /// other end refuses.
+        pub fn atMost(self: Burst, ceiling: Burst) Burst {
+            return if (@intFromEnum(self) < @intFromEnum(ceiling)) self else ceiling;
+        }
+    };
 
     /// Device Control's offset within the capability.
     pub const OFFSET: u8 = 0x08;
@@ -532,4 +574,25 @@ test "a manifest names a pci part exactly, or a family" {
     try std.testing.expect(ehci.matchesClass(either));
     try std.testing.expect(uhci.matchesClass(either));
     try std.testing.expect(!ehci.matchesClass(""));
+}
+
+test "the device control register says how big a burst the link settled on" {
+    const Control = PcieDeviceControl;
+    // Five hundred and twelve byte writes, a thousand and twenty four
+    // byte reads: bits 5 to 7 and 12 to 14.
+    const settled: Control = @bitCast(@as(u32, (2 << 5) | (3 << 12)));
+    try std.testing.expectEqual(Control.Burst.b512, settled.max_payload);
+    try std.testing.expectEqual(Control.Burst.b1024, settled.max_read_request);
+    try std.testing.expectEqual(@as(u16, 512), settled.max_payload.bytes());
+    try std.testing.expectEqual(@as(u16, 1024), settled.max_read_request.bytes());
+
+    // A driver wanting more than the link carries gets what the link
+    // carries, and one wanting less keeps its own figure.
+    try std.testing.expectEqual(Control.Burst.b512, Control.Burst.b1024.atMost(.b512));
+    try std.testing.expectEqual(Control.Burst.b128, Control.Burst.b128.atMost(.b1024));
+
+    // An encoding no revision defines is taken as the smallest, which
+    // every link carries.
+    try std.testing.expectEqual(@as(u16, 128), (@as(Control.Burst, @enumFromInt(7))).bytes());
+    try std.testing.expectEqual(@as(usize, 4), @sizeOf(Control));
 }

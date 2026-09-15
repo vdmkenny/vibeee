@@ -208,6 +208,12 @@ pub const table = [_]probe.Driver{
         .probe = &answering("atl2"),
     },
     .{
+        .name = "atl1e",
+        .kind = .net,
+        .match = answersFor("atl1e"),
+        .probe = &answering("atl1e"),
+    },
+    .{
         .name = "ar5212",
         .kind = .net,
         .match = answersFor("ar5212"),

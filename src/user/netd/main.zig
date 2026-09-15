@@ -16,6 +16,7 @@
 //! this one loop, whose wait deadline is the stack's own next timer.
 
 const ar5212 = @import("ar5212.zig");
+const atl1e = @import("atl1e.zig");
 const atl2 = @import("atl2.zig");
 const rtl8139 = @import("rtl8139.zig");
 const dev = @import("dev.zig");
@@ -64,6 +65,7 @@ const Driver = struct {
 const DRIVERS = [_]Driver{
     .{ .name = e1000.name, .ops = e1000.ops },
     .{ .name = atl2.name, .ops = atl2.ops },
+    .{ .name = atl1e.name, .ops = atl1e.ops },
     .{ .name = rtl8139.name, .ops = rtl8139.ops },
     .{ .name = ar5212.name, .ops = ar5212.ops, .class = ar5212.class },
 };
