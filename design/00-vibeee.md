@@ -282,6 +282,17 @@ The constraint that shapes everything. Five mechanisms, in order of use:
 
 The ICH6 EHCI does expose a debug port, but it needs a specific USB debug cable and a working EHCI stack to be useful, i.e. exactly the thing that's broken when you need it. Documented, not relied upon.
 
+
+**A serial port after all, once the bus is up.** The machine drives USB serial
+adapters, and naming one in `log.console` sends the record out of it: the whole of
+it as it stands when the port opens, then every line as it is said. That covers
+everything from `usbd` onwards, which is all of userspace and most of what is worth
+watching; the boot before the bus service exists still belongs to the mechanisms
+above. The kernel's own mirror carries the same stream to a chip UART where one
+exists, which is what the emulator has, and both now carry lines the screen's owner
+suppresses: a transcript missing every service that narrated after the shell came up
+is not a transcript.
+
 ### 6.10 Randomness
 
 This machine has no hardware random source: no RDRAND (Dothan predates it by six years), no TPM, no dedicated generator anywhere on the board. What it has is timing. Interrupts land at moments that vary with cache state, memory refresh, bus contention and the devices themselves, and the kernel is the only thing that sees every one of them.

@@ -1,0 +1,33 @@
+logd - the machine's record, out of a serial port
+
+  cfg set log.console ser0     send it out the port `ser` calls ser0
+  cfg set log.console ""       send it nowhere, which is the default
+
+This machine has no serial port of its own. That one fact shapes how it
+is debugged more than anything else: what it says is read off a
+photograph of the screen, or out of the record afterwards with `log`, and
+a fault that takes the screen with it leaves neither. A USB serial
+adapter gives the machine one.
+
+Name a port and everything the kernel and the services say goes down it:
+first the whole record as it stands, so a boot that has already happened
+is not lost, and then every line as it is said. `ser` lists the ports and
+the name is the one in its first column.
+
+What it cannot carry is the boot before the bus service has found the
+adapter, which is the part a serial port on the chip would have had. A
+machine that dies before then still says nothing down the wire, and the
+panic screen is what that leaves behind.
+
+The far end wants 115200 8N1 unless the port was set to something else,
+which `ser <port> set` does and which survives a reboot.
+
+Nothing polls. A machine with no port named waits only to be told the
+setting changed; one whose named port is not plugged in waits to be told
+the ports changed; one with the console going wakes when the record grows
+and when the port has room. Having this running and unused costs one
+blocked process and no time at all.
+
+One program to a port, and the last to ask has it, so `ser ser0` while
+the console is going takes the port from the console. Naming the port
+again, or unplugging and replugging the adapter, puts it back.

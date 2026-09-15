@@ -106,10 +106,29 @@ pub fn sys_console_claim(_: Args) Result {
 /// than fought over: see `writeConsole`.
 var console_lock: lock_mod.Lock = .{};
 
+/// Kept but not shown: the screen belongs to somebody else, and the
+/// transcript belongs to whoever reads the machine afterwards.
+///
+/// Under the same lock a rendered write takes, for the same reason: two
+/// programs whose lines interleave in the record are two lines neither of
+/// which can be read.
+fn recorded(buf: []const u8) Result {
+    console_lock.hold() catch return @intCast(buf.len);
+    defer console_lock.release();
+    console.transcribe(buf);
+    return @intCast(buf.len);
+}
+
 fn writeConsole(number: u32, buf: []const u8) Result {
     // Once somebody owns the console, everyone else's lines stop rendering:
     // they are already in the kernel's ring by the log tee, which is where
     // the log tool reads them. Before anyone owns it, the boot narrates.
+    //
+    // They still go to the mirror. The screen is a conversation somebody
+    // owns and the mirror is a record: a transcript missing every service
+    // that narrated after the shell came up is one nobody can read a boot
+    // off, and on a machine whose only other account of itself is a
+    // photograph of the screen that is the whole of the evidence.
     //
     // A claim dies with its process, cleared lazily on the first write that
     // would have been suppressed: the exit path is the one place that must
@@ -118,13 +137,13 @@ fn writeConsole(number: u32, buf: []const u8) Result {
     if (console_owner != 0) {
         if (!sched.threadAlive(console_owner)) console_owner = 0;
         if (console_owner != 0) {
-            const t = sched.currentThread() orelse return @intCast(buf.len);
+            const t = sched.currentThread() orelse return recorded(buf);
             // init's supervision lines always render: they are how a machine
             // says a service is crash-looping, and the moment they matter
             // most is exactly when the shell can no longer be asked to run
             // `log`.
             if (t.id != sched.initId() and !sched.descendsFrom(t.id, console_owner)) {
-                return @intCast(buf.len);
+                return recorded(buf);
             }
         }
     }
@@ -438,6 +457,40 @@ fn pointerRefusal(err: display.PointerError) Result {
         error.NotOwner => Errno.perm.value(),
         error.Refused => Errno.inval.value(),
     };
+}
+
+/// What the record has gained since this reader last looked.
+///
+/// Answers at once whether or not there is anything: a follower waits on
+/// `log_watch` and drains here, so a call that found nothing is the end of
+/// a pass rather than a reason to wait inside the kernel.
+pub fn sys_log_read(a: Args) Result {
+    const cursor_bytes = userWrite(a, a.a0, @sizeOf(abi.LogCursor)) orelse return Errno.fault.value();
+    const out = userWrite(a, a.a1, a.a2) orelse return Errno.fault.value();
+    if (out.len == 0) return Errno.inval.value();
+
+    var cursor: abi.LogCursor = undefined;
+    @memcpy(std.mem.asBytes(&cursor), cursor_bytes);
+
+    const seen = klog.copyFrom(@intCast(cursor.at), out);
+    cursor.at = seen.next;
+    cursor.missed = seen.missed;
+    @memcpy(cursor_bytes, std.mem.asBytes(&cursor));
+    return @intCast(seen.bytes);
+}
+
+/// A handle to wait on, signalled when the record grows.
+pub fn sys_log_watch(_: Args) Result {
+    const waiting = klog.watch() orelse return Errno.nomem.value();
+    event_mod.retain(waiting);
+    const handle = ctx.installHandle(.{
+        .rights = .{ .read = true, .write = true },
+        .data = .{ .event = waiting },
+    }) orelse {
+        event_mod.release(waiting);
+        return Errno.nomem.value();
+    };
+    return @intCast(handle);
 }
 
 pub fn sys_sysinfo(a: Args) Result {

@@ -3,6 +3,21 @@ log - what the kernel and the services have said
   log                    the whole ring, oldest first
   log -n 30              the last thirty lines
   log fail               only lines containing the word
+  log -f                 stay, and print what is said next
+  log -f netd            the same, only the lines containing the word
 
 Everything said since boot is recorded whether or not it was shown, so
 a quiet boot can still be read back. Pipe into `page` for long output.
+
+`log -f` is for watching a machine while something is being asked of it:
+it prints what is said from that moment on, not what has already been
+said, since the whole record is one command away. Ctrl+C leaves.
+
+It waits on the record's own event, so a quiet machine costs nothing and
+a boot that says a hundred things wakes it once a burst rather than once
+a line. If the machine outruns it the record moves on underneath, and it
+says so rather than leaving a gap nobody can see.
+
+To read the same thing from another machine rather than this one's
+screen, see `man logd`: named a serial port, the record goes out of it as
+it is written.

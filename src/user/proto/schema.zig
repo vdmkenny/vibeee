@@ -446,8 +446,26 @@ pub fn setNetSlot(cfg: *Net, comptime slot: usize, value: NetSlot) void {
     }
 }
 
+/// Where the machine's own account of itself goes.
+///
+/// This machine has no serial port of its own, which is the single
+/// constraint that most shapes how it is debugged: what it says is read
+/// off a photograph of the screen, or out of the record afterwards.
+/// A USB serial adapter gives it one, and naming the port here is what
+/// sends the record down it from the moment the bus finds the adapter.
+pub const Log = struct {
+    /// Which serial port the record goes out of, by the name `ser` lists
+    /// it under. Empty sends it nowhere, which is the default: a machine
+    /// with nothing plugged in should not be hunting for a port.
+    console: Port = Port.of(""),
+};
+
+/// A serial port's name, which is the kind and a number.
+pub const Port = Text(8, "a serial port's name, as `ser` lists it");
+
 pub const Domains = struct {
     input: Input = .{},
+    log: Log = .{},
     wm: Wm = .{},
     net: Net = .{},
     power: Power = .{},

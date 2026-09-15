@@ -42,6 +42,14 @@ pub const Tag = enum(u8) {
     /// until told otherwise where that is `BREAK_UNTIL_TOLD`. Refused by
     /// a port whose device cannot time a break itself.
     send_break,
+    /// An event signalled whenever a port is offered or taken away. The
+    /// reply carries one handle and no body.
+    ///
+    /// For a program that wants a port that is not there yet: an adapter
+    /// is plugged in at a moment nothing else marks, and asking again
+    /// every so often is a syscall a minute forever on a machine where
+    /// one may never be plugged in at all.
+    watch,
 };
 
 pub const Status = enum(u8) {

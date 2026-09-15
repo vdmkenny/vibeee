@@ -569,6 +569,39 @@ pub fn sysinfo(key: []const u8, buf: []u8) Refusal!usize {
     return checked(syscall4(abi.number("sysinfo"), @intFromPtr(key.ptr), key.len, @intFromPtr(buf.ptr), buf.len));
 }
 
+/// Where a reader of the machine's record has got to.
+pub const LogCursor = abi.LogCursor;
+
+/// What the record has gained since `cursor` last looked, written into
+/// `buf`. Answers at once whether or not there is anything.
+pub fn logRead(cursor: *LogCursor, buf: []u8) Refusal!usize {
+    return checked(syscall3(
+        abi.number("log_read"),
+        @intFromPtr(cursor),
+        @intFromPtr(buf.ptr),
+        buf.len,
+    ));
+}
+
+/// A handle signalled whenever the record grows, so a follower waits
+/// rather than asking again.
+pub fn logWatch() Refusal!u32 {
+    return @intCast(try checked(syscall0(abi.number("log_watch"))));
+}
+
+/// A cursor standing at the end of the record, for a follower that wants
+/// what happens next rather than what has already happened.
+///
+/// Asked for rather than computed: a position past the end is taken back
+/// to the end, so one read of nothing says where the end is.
+pub fn logEnd() LogCursor {
+    var cursor = LogCursor{ .at = ~@as(u64, 0) };
+    var nothing: [1]u8 = undefined;
+    _ = logRead(&cursor, &nothing) catch return .{};
+    cursor.missed = 0;
+    return cursor;
+}
+
 pub const POWER_OFF = 0;
 pub const REBOOT = 1;
 pub const HALT = 2;

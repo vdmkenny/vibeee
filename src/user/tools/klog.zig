@@ -7,13 +7,20 @@
 //! again.
 //!
 //! `log [needle]` prints the lines containing a word; `log -n N` the last N
-//! lines; with neither argument, the whole ring.
+//! lines; with neither argument, the whole ring. `log -f` stays and prints
+//! what is said next, which is how a machine is watched while something is
+//! being asked of it.
+//!
+//! Following waits on the record's own event: a quiet machine costs
+//! nothing, and one that says a hundred things during a boot wakes this
+//! once per pass rather than once per line.
 
 const std = @import("std");
 const info = @import("ulib").info;
 const ink = @import("ulib").ink;
 const style = @import("lib").style;
 const out = @import("ulib").out;
+const sys = @import("sys");
 const str = @import("ulib").str;
 
 /// The ring is sixteen kilobytes, so this is never truncated by being too
@@ -49,6 +56,10 @@ const Pick = struct {
 };
 
 pub fn log(args: []const []const u8) void {
+    if (args.len > 0 and std.mem.eql(u8, args[0], "-f")) {
+        return follow(if (args.len > 1) args[1] else "");
+    }
+
     const text = info.ask("log", &buffer);
     if (text.len == 0) {
         out.text("the kernel has said nothing\n");
@@ -108,3 +119,74 @@ fn firstWord(line: []const u8) []const u8 {
     }
     return line;
 }
+
+// ---------------------------------------------------------------------------
+// Following
+// ---------------------------------------------------------------------------
+
+/// Whatever is said from now on, until Ctrl+C.
+///
+/// From now rather than from the beginning: the whole record is one
+/// command away, and what a person following a machine wants is what it
+/// does next.
+fn follow(needle: []const u8) void {
+    const grew = sys.logWatch() catch {
+        out.text("log: the record cannot be followed\n");
+        out.flush();
+        return;
+    };
+    defer sys.close(grew);
+    const stop = sys.watch(.stop) catch null;
+
+    var cursor = sys.logEnd();
+    var line: Line_ = .{};
+
+    while (true) {
+        var sources: [2]u32 = .{ grew, if (stop) |handle| handle else grew };
+        const woke = sys.waitMany(sources[0..if (stop != null) 2 else 1], sys.FOREVER) catch continue;
+        if (woke == 1 and stop != null) return;
+
+        while (true) {
+            var chunk: [512]u8 = undefined;
+            const n = sys.logRead(&cursor, &chunk) catch return;
+            if (cursor.missed != 0) {
+                ink.write(.warn, "log");
+                out.text(" the record moved on before this could read it\n");
+                cursor.missed = 0;
+            }
+            if (n == 0) break;
+            for (chunk[0..n]) |c| line.take(c, needle);
+        }
+        out.flush();
+    }
+}
+
+/// A line being gathered from a read that may have split one.
+///
+/// The record is bytes, not lines: a read ends wherever the buffer did, so
+/// what is shown is assembled here and written when it is whole.
+const Line_ = struct {
+    held: [512]u8 = undefined,
+    len: usize = 0,
+
+    fn take(self: *Line_, c: u8, needle: []const u8) void {
+        if (c == '\n') {
+            self.finish(needle);
+            return;
+        }
+        // A line longer than this is one the kernel already cut: what is
+        // over is dropped rather than wrapped into a line of its own.
+        if (self.len < self.held.len) {
+            self.held[self.len] = c;
+            self.len += 1;
+        }
+    }
+
+    fn finish(self: *Line_, needle: []const u8) void {
+        const said = self.held[0..self.len];
+        self.len = 0;
+        if (said.len == 0) return;
+        if (needle.len > 0 and std.mem.indexOf(u8, said, needle) == null) return;
+        writeLine(said);
+    }
+};

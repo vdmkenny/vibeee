@@ -73,6 +73,9 @@ SYSENTER, PAE, NX, SSE3, 64-bit mode, and multiple CPU cores are not required.
   the card reader, the internal USB ports), through the standard ACPI power methods
   where a machine has them and the vendor's own where it does not, with the bus
   re-walked so a part switched on appears without a reboot.
+- The machine's own log out of a USB serial adapter, which is the serial console this
+  hardware never had: named a port, everything the kernel and the services say is read
+  as text on another machine instead of photographed off the screen.
 - Shell, multicall command-line tools, and a small POSIX-lean C library for ports.
 
 ## Kernel Model

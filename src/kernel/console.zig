@@ -746,6 +746,18 @@ pub fn setMirror(sink: *const fn ([]const u8) void) void {
     mirror = sink;
 }
 
+/// Carry bytes to the mirror without rendering them.
+///
+/// The screen and the mirror have different audiences. The screen is a
+/// conversation somebody owns, so a program that is not part of it must
+/// not scribble over the shell. The mirror is a record, and a record with
+/// half the machine's output missing is not one: the whole reason a
+/// machine with no serial port is hard to debug is that the transcript is
+/// all there is.
+pub fn transcribe(s: []const u8) void {
+    if (mirror) |sink| sink(s);
+}
+
 // ---------------------------------------------------------------------------
 // Formatted output
 // ---------------------------------------------------------------------------

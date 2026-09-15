@@ -1318,6 +1318,37 @@ Put the display's own pointer somewhere, or take it off the screen.
 
 Signed, because a pointer whose point is near the left or the top edge has its picture hanging off it. The whole cost of moving the pointer once a picture has been given: nothing is drawn and nothing is read.
 
+## `log_read`  <sub>#73</sub>
+
+Read what the record has gained since a reader last looked.
+
+| arg | type | meaning |
+|---|---|---|
+| `cursor` | ptr | A LogCursor: read for where the reader got to, written with where it is now. |
+| `buf` | ptr | Where the bytes go. |
+| `buf_len` | len | How much room there is. |
+
+**Returns:** How many bytes were written into buf
+
+**Errors:**
+
+- `EFAULT`, a pointer argument is outside the caller's address space
+- `EINVAL`, an argument is out of range
+
+The position is a total ever written rather than a place in the ring, so it does not wrap and a reader holds one number. A reader further behind than the ring is deep is taken to the oldest byte still held and told how much it lost, rather than handed a record with a silent hole in it. A cursor starting at zero gets whatever the ring holds. Answers at once whether or not there is anything: a reader waits on log_watch and drains here.
+
+## `log_watch`  <sub>#74</sub>
+
+An event signalled whenever the record grows.
+
+**Returns:** A handle to wait on
+
+**Errors:**
+
+- `ENOMEM`, no handle slots free, or the buffer is too small
+
+One event for the machine, handed to whoever asks. Signalled once and not again until somebody reads, so a boot that says a hundred things wakes a follower once per pass rather than a hundred times. What it is for is carrying the machine's own account of itself out of it: this machine has no serial port of its own, so a follower writing to a USB one is the only way a boot is read as text rather than photographed.
+
 ---
 
-73 calls defined.
+75 calls defined.

@@ -24,6 +24,10 @@ Settings, generated from the schema: all
   input.keymap              us_intl
       us_intl | be_azerty
 
+  [log]
+  log.console               unset
+      a serial port's name, as `ser` lists it
+
   [wm]
   wm.theme                  slate
       slate | classic | paper | dusk

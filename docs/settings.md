@@ -21,6 +21,12 @@ so an image ships with the first and a machine remembers the second.
 |---|---|---|
 | `input.keymap` | us_intl \| be_azerty | `us_intl` |
 
+## log
+
+| key | accepts | default |
+|---|---|---|
+| `log.console` | a serial port's name, as `ser` lists it | unset |
+
 ## wm
 
 | key | accepts | default |

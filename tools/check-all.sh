@@ -22,6 +22,7 @@ cd "$(dirname "$0")/.."
 rm -f "$BUILD"/check-boot*.png "$BUILD"/check-boot*.log "$BUILD"/check-boot*.log.txt
 rm -f "$BUILD"/check-net-*.png "$BUILD"/check-net-*.log "$BUILD"/check-net-*.log.txt
 rm -f "$BUILD"/check-serial.png "$BUILD"/check-serial.log "$BUILD"/check-serial.log.txt "$BUILD"/check-serial.out
+rm -f "$BUILD"/check-console.png "$BUILD"/check-console.log "$BUILD"/check-console.log.txt "$BUILD"/check-console.out
 
 fail() { printf 'check-all: %s\n' "$*" >&2; exit 1; }
 step() { printf '\n== %s\n' "$*"; }
@@ -147,6 +148,32 @@ grep -Eq '^ser0 +0403:6001 +9600 8N1' "$LOGSER.txt" || fail "the line was not se
 grep -q "F10 leaves" "$LOGSER.txt" || fail "no terminal opened on the port (see $LOGSER)"
 grep -q "over the wire" "$SER_WIRE" || fail "what was typed did not reach the wire (see $SER_WIRE)"
 echo "the adapter enumerates, takes a line, and carries what is typed to the far end"
+
+step "the machine's record, out of a serial port"
+# The one thing this machine has never had. Named at the shell rather than
+# shipped set, because a machine with nothing plugged in should not be
+# looking for a port: what is checked is that naming one sends the whole
+# record down it and keeps sending.
+CON_WIRE=$BUILD/check-console.out
+LOGCON=$BUILD/check-console.log
+QEMU_CPU="$QEMU_CPU" tools/qemu-shot.sh "$BUILD/check-console.png" -w 30 -p 3 -s 6 \
+    -t "cfg set log.console ser0" \
+    -- -drive if=ide,format=raw,file="$DEV_IMAGE" \
+    -device piix3-usb-uhci,id=uh -chardev file,id=sp,path="$CON_WIRE" \
+    -device usb-serial,bus=uh.0,chardev=sp >/dev/null \
+    || fail "the emulator did not run (see ${LOGCON})"
+plain "$LOGCON" > "$LOGCON.txt"
+! grep -qi "panic" "$LOGCON.txt" || fail "the kernel panicked with a console port named (see $LOGCON)"
+[ -s "$CON_WIRE" ] || fail "nothing came out of the console port (see $CON_WIRE)"
+# The first line of the boot proves the whole record went, not just what
+# was said after the port opened.
+grep -q "keeping time by the firmware counter" "$CON_WIRE" ||
+    fail "the record's opening lines did not reach the wire (see $CON_WIRE)"
+# And this one was written after the port was open, so it can only have
+# arrived by being followed.
+grep -q "the record is going out of ser0" "$CON_WIRE" ||
+    fail "the record stopped at what was already there (see $CON_WIRE)"
+echo "the whole record reached the wire, and went on reaching it"
 
 step "the card through a USB reader: its volumes arrive"
 cp "$IMAGE" "$SD_COPY"

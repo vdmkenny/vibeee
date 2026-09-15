@@ -52,6 +52,35 @@ pub fn named(what: []const u8) Error!u32 {
     }
 }
 
+/// An event signalled whenever a port is offered or taken away, and the
+/// channel it came from, which has to be held for the event to keep
+/// meaning anything.
+pub const Watch = struct {
+    channel: u32,
+    event: u32,
+
+    pub fn close(self: Watch) void {
+        sys.close(self.event);
+        sys.close(self.channel);
+    }
+};
+
+/// Wait on the ports rather than asking after them.
+///
+/// For a program that wants a port that is not there yet: an adapter is
+/// plugged in at a moment nothing else marks, and asking again every so
+/// often is a syscall a minute forever on a machine where one may never
+/// be plugged in at all.
+pub fn watch() Error!Watch {
+    const channel = sys.svcConnect(proto.SERVICE) catch return error.NoService;
+    errdefer sys.close(channel);
+
+    var reply = proto.Rep{};
+    var handles: [1]u32 = undefined;
+    try proto.callTaking(@intCast(channel), .{ .tag = .watch }, &reply, &handles);
+    return .{ .channel = @intCast(channel), .event = handles[0] };
+}
+
 /// One port, open.
 pub const Port = struct {
     channel: u32,

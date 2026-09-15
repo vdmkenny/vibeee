@@ -646,6 +646,20 @@ pub const KeyEvent = extern struct {
 /// Handle *numbers* here, not objects. A number means nothing outside the
 /// process that owns it, so the kernel translates: it takes a reference to what
 /// the sender named and gives the receiver a fresh number for the same object.
+/// Where a reader of the machine's record has got to.
+///
+/// A total ever written rather than a place in the ring: totals do not
+/// wrap, so a follower holds one number and the kernel decides what is
+/// still there. Zero asks for whatever the ring holds.
+pub const LogCursor = extern struct {
+    at: u64 align(4) = 0,
+    /// How much was written and overwritten before the reader came back
+    /// for it, since the last read. A follower that keeps up sees zero;
+    /// one that does not is told rather than handed a record with a
+    /// silent hole in it.
+    missed: u64 align(4) = 0,
+};
+
 pub const Message = extern struct {
     len: u16 = 0,
     handle_count: u16 = 0,
@@ -1944,6 +1958,38 @@ pub const table = [_]Syscall{
         .notes = "Signed, because a pointer whose point is near the left or the top edge has " ++
             "its picture hanging off it. The whole cost of moving the pointer once a picture " ++
             "has been given: nothing is drawn and nothing is read.",
+    },
+    .{
+        .number = 73,
+        .name = "log_read",
+        .summary = "Read what the record has gained since a reader last looked.",
+        .args = &.{
+            .{ .name = "cursor", .kind = .ptr, .desc = "A LogCursor: read for where the reader got to, written with where it is now." },
+            .{ .name = "buf", .kind = .ptr, .desc = "Where the bytes go." },
+            .{ .name = "buf_len", .kind = .len, .desc = "How much room there is." },
+        },
+        .returns = "How many bytes were written into buf",
+        .errors = &.{ E.fault, E.inval },
+        .notes = "The position is a total ever written rather than a place in the ring, so it " ++
+            "does not wrap and a reader holds one number. A reader further behind than the " ++
+            "ring is deep is taken to the oldest byte still held and told how much it lost, " ++
+            "rather than handed a record with a silent hole in it. A cursor starting at zero " ++
+            "gets whatever the ring holds. Answers at once whether or not there is anything: " ++
+            "a reader waits on log_watch and drains here.",
+    },
+    .{
+        .number = 74,
+        .name = "log_watch",
+        .summary = "An event signalled whenever the record grows.",
+        .args = &.{},
+        .returns = "A handle to wait on",
+        .errors = &.{E.nomem},
+        .notes = "One event for the machine, handed to whoever asks. Signalled once and not " ++
+            "again until somebody reads, so a boot that says a hundred things wakes a " ++
+            "follower once per pass rather than a hundred times. What it is for is carrying " ++
+            "the machine's own account of itself out of it: this machine has no serial port " ++
+            "of its own, so a follower writing to a USB one is the only way a boot is read " ++
+            "as text rather than photographed.",
     },
 };
 

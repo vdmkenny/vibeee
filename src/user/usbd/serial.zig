@@ -139,6 +139,16 @@ var ports: [MAX_PORTS]Port = @splat(.{});
 var bell: u32 = 0;
 var service: u32 = 0;
 
+/// Signalled when a port is offered or taken away, for programs waiting
+/// for one to appear. Made the first time somebody asks: a machine nobody
+/// is watching the ports of does not carry an event for it.
+var table_changed: u32 = 0;
+
+/// Say that the table changed.
+fn stirred() void {
+    if (table_changed != 0) sys.eventSignal(table_changed);
+}
+
 /// Take the service name and make the doorbell.
 ///
 /// Called once the bus has been walked, for the same reason the bus's own
@@ -202,6 +212,7 @@ pub fn offer(which: Which, ops: *const Ops, about: About) bool {
         .held = about.held,
     };
     slot.name_len = nameFor(&slot.name, index);
+    stirred();
 
     var spelt: [24]u8 = undefined;
     log.begin("serial", .key);
@@ -225,6 +236,7 @@ pub fn withdraw(address: u7) void {
         out.text(" is gone");
         log.end();
         port.* = .{};
+        stirred();
     }
 }
 
@@ -379,7 +391,17 @@ fn handle(message: *const sys.Message, token: u32) void {
         },
         .set_line => setLine(req, sender, token),
         .send_break => sendBreak(req, sender, token),
+        .watch => watch(token),
     }
+}
+
+/// Hand over the event that says the table changed.
+fn watch(token: u32) void {
+    if (table_changed == 0) {
+        table_changed = sys.eventCreate() catch return refuse(token);
+    }
+    var reply = proto.Rep{};
+    proto.answerWith(service, token, &reply, &.{table_changed});
 }
 
 fn at(index: u32) ?*Port {

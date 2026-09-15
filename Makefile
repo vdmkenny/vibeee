@@ -141,6 +141,7 @@ USER_SCREENSHOT := zig-out/bin/screenshot
 USER_EIMG := zig-out/bin/eimg
 USER_EFM := zig-out/bin/efm
 USER_TIMED := zig-out/bin/timed
+USER_LOGD := zig-out/bin/logd
 USER_DEVMGD := zig-out/bin/devmgd
 USER_NETD    := zig-out/bin/netd
 USER_SNDD    := zig-out/bin/sndd
@@ -351,6 +352,7 @@ $(ROOTFS_IMG): kernel examples $(FONT_PACK) $(CA_STORE) $(MANUAL_STAMP) $(wildca
 	@$(MCOPY) -i $@ -o $(USER_EIMG) ::/bin/eimg
 	@$(MCOPY) -i $@ -o $(USER_EFM) ::/bin/efm
 	@$(MCOPY) -i $@ -o $(USER_TIMED) ::/bin/timed
+	@$(MCOPY) -i $@ -o $(USER_LOGD) ::/bin/logd
 	@$(MCOPY) -i $@ -o $(USER_MONITOR) ::/bin/monitor
 	@$(MCOPY) -i $@ -o $(USER_SETTINGS) ::/bin/settings
 	@$(MCOPY) -i $@ -o $(USER_SCREENSHOT) ::/bin/screenshot

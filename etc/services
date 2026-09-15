@@ -126,3 +126,14 @@ binary  = /bin/timed
 caps    = time
 needs   = netd,cfgd
 restart = always
+
+name    = logd
+binary  = /bin/logd
+# The machine's own account of itself, out of a serial port. This machine
+# has no serial port of its own, so a USB adapter is the only way a boot is
+# read as text rather than photographed. It holds nothing: it reads the
+# record, which anybody may, and writes to a port, which it asks the bus
+# service for like any other program.
+caps    =
+needs   = usbd,cfgd
+restart = always
