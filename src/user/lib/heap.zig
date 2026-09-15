@@ -49,6 +49,14 @@ pub fn release(pointer: ?*anyopaque) void {
     state.free(@ptrCast(pointer orelse return));
 }
 
+/// How much the block at `pointer` holds, which is at least what was asked
+/// for: a caller that wants the slack a block already has, rather than one
+/// that grows it, asks this. Nothing for nothing.
+pub fn usable(pointer: ?*anyopaque) usize {
+    const block = pointer orelse return 0;
+    return lib.heap.capacityOf(@ptrCast(block));
+}
+
 pub fn zeroed(count: usize, size: usize) ?*anyopaque {
     const total = std.math.mul(usize, count, size) catch return null;
     const block = alloc(total) orelse return null;

@@ -29,13 +29,15 @@ export fn realloc(pointer: ?*anyopaque, size: usize) callconv(.c) ?*anyopaque {
     return heap.resize(pointer, size) orelse fail();
 }
 
-/// How much of a block is usable, which is nothing: this heap keeps no
-/// record of what was asked for, so a caller wanting the slack left in a
-/// block it has grown is told there is none rather than a number made up.
-/// Upstream asks for it and says nought is an answer where there is none.
+/// How much of a block is usable, which is what it holds: a request is
+/// rounded up to its size class or to the alignment, and what a block has
+/// past what was asked for is the caller's to use.
+///
+/// Answered truly rather than as nothing, because a program that counts what
+/// it has taken counts what this says: the script engine's own bound is kept
+/// by adding this up, and nought for every block is a bound that never binds.
 export fn malloc_usable_size(pointer: ?*anyopaque) callconv(.c) usize {
-    _ = pointer;
-    return 0;
+    return heap.usable(pointer);
 }
 
 /// Every block is at least sixteen-byte aligned already. Anything stricter is

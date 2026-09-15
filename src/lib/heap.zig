@@ -461,8 +461,9 @@ fn headerOf(pointer: [*]u8) *Header {
 }
 
 /// How many bytes the block at `pointer` holds, which may be more than it
-/// was asked for.
-fn capacityOf(pointer: [*]u8) usize {
+/// was asked for: a request is rounded up to its class or to the alignment,
+/// and a block may keep what was too small to leave behind.
+pub fn capacityOf(pointer: [*]u8) usize {
     return headerOf(pointer).span() - HEADER;
 }
 
@@ -559,6 +560,20 @@ test "a small block goes back to its class and out again" {
     try testing.expectEqual(@as(usize, 48), capacityOf(a));
     heap.free(a);
     try testing.expectEqual(a, heap.alloc(40).?);
+}
+
+test "a block says how much it holds, which is at least what was asked for" {
+    var heap: TestHeap = .{ .source = .{} };
+    defer heap.source.deinit();
+
+    for ([_]usize{ 1, 16, 17, 2048, 2049, 9000 }) |size| {
+        const block = heap.alloc(size).?;
+        const held = capacityOf(block);
+        try testing.expect(held >= size);
+        try testing.expect(held % ALIGN == 0 or held + HEADER == widthOf(classOf(held + HEADER).?));
+        // What it says it holds is its to write.
+        @memset(block[0..held], 0x5A);
+    }
 }
 
 test "every block is aligned and holds what it was asked for" {
