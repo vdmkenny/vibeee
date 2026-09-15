@@ -170,6 +170,7 @@ help:
 	@echo "  make echat            build the echat IRC client into home/"
 	@echo "  make eeemod           build the eeemod tracker player into home/"
 	@echo "  make roll             build the Roll contact sheet into home/"
+	@echo "  make web              build the experimental web browser into home/"
 	@echo "  make app APP=doom     build one of them"
 	@echo "  make test             host-side unit tests + QR verification"
 	@echo "  make check            module layering and import rules"
@@ -273,9 +274,10 @@ roll:
 	@cp zig-out/bin/roll home/bin/roll
 	@echo "  ready   home/bin/roll, on the machine at the next image build"
 
-# The page reader. Its host side is tested first: addresses, the protocol,
-# encodings, a page and where its words go are arithmetic over text, and
-# none of it needs a network or a screen to be checked.
+# The web browser, which is an experiment rather than part of the system: it
+# is built into home/ like the rest of apps/. Its host side is tested first:
+# addresses, the protocol, encodings, a page and where its words go are
+# arithmetic over text, and none of it needs a network or a screen.
 .PHONY: web
 web:
 	@$(ZIG) build test-web
@@ -295,9 +297,9 @@ qjs:
 	@echo "  ready   home/bin/qjs, on the machine at the next image build"
 
 # The document a script sees, checked on this machine: QuickJS, lexbor and the
-# reader's own DOM over them, built for the host rather than the target, so a
+# browser's own DOM over them, built for the host rather than the target, so a
 # page can be parsed, a script run in it and the tree read back. It is C
-# reaching into two vendored trees, which is the part the reader's Zig tests
+# reaching into two vendored trees, which is the part the browser's Zig tests
 # cannot see.
 .PHONY: dom-test
 dom-test:

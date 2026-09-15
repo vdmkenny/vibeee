@@ -107,17 +107,32 @@ Extra applications are installed into the persistent `/home` volume rather than 
 base system image: the programs into `/home/bin`, which is on the search path ahead
 of the system's `/bin`, and whatever they read into `/home` beside a person's files.
 
-Doom, the Hero character journal, the echat IRC client, and eeemod, which plays
-tracker modules. Each is built and versioned on its own, separately from the
-system's version string.
+Doom, the Hero character journal, the echat IRC client, eeemod, which plays tracker
+modules, and `web`, an experimental web browser. Each is built and versioned on its
+own, separately from the system's version string.
 
 ```bash
 make hero                  # build the first-party Hero character journal
 make echat                 # check echat's protocol engine
 make eeemod                # build the eeemod tracker player
+make web                   # build the experimental web browser
 make apps                  # build the first-party ones and every recipe
 make app APP=doom          # build Doom only
 ```
+
+### The web browser is experimental
+
+`web` is an experiment, not a finished program, and it is not part of the system
+image. It fetches over HTTP and HTTPS, follows links, sends forms, brings pictures,
+runs a page's scripts, and draws the page in one column. The markup parser and the
+script engine are vendored; the cascade, the reading of a page and the layout are
+this system's own.
+
+What that means in practice: mainstream pages come out in part rather than in full,
+and a page whose scripts do much work holds the machine for tens of seconds. A page
+that measures itself as it draws is told noughts, nothing watches for a part of a
+page coming into view, and the system's faces carry no Chinese, Japanese or Korean.
+[Status](docs/status.md) says what it does and what it does not.
 
 Third-party source is fetched into `build/apps/` and is not committed. Neither
 Doom's wad nor a module is downloaded for you: each recipe says what it wants and

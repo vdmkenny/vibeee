@@ -1,4 +1,7 @@
-//! web: a browser.
+//! web: a browser. An experiment, not part of the system: it is built into
+//! `/home` like everything else under `apps/`, and it draws mainstream pages
+//! in part rather than in full. What it does not do is written down under the
+//! known gaps in `docs/status.md`.
 //!
 //! A small one, of this system's own: it asks a site for a page, reads the
 //! markup and its stylesheets into words and boxes, lays them out the width
@@ -6,17 +9,18 @@
 //! page's stylesheets say, it follows what it can draw: what they hide, the
 //! colours of words and of what they sit on, which way lines lean, the room
 //! a box keeps and the lines along its sides, and the rows, columns and
-//! grids a page sets its boxes in. A page's pictures come after its words,
-//! one at a time, what the page says each one shows standing in for it
-//! until it is here.
+//! grids a page sets its boxes in, and where it positions a box against
+//! another. A page's pictures come after its words, a few at a time, what the
+//! page says each one shows standing in for it until it is here.
 //!
 //! A page's scripts run in the browser, on the tree the page was read from,
 //! under bounds: how much they may hold, how deep they may call, and how long
 //! each may run before it is stopped. What they change is read again and
 //! drawn. What they ask for from outside the page, a page fetched or a script
-//! by its address, they are answered on a later pass, the way a stylesheet
-//! comes; nothing a script does waits on the network. Where a script sends
-//! the browser, the browser goes once the script has returned.
+//! by its address, they are answered on a connection of their own; nothing a
+//! script does waits on the network, and nothing on its way waits on a
+//! script. Where a script sends the browser, the browser goes once the script
+//! has returned.
 //!
 //! The parts each have a file: `url` for where things are, `http` and
 //! `fetch` for getting them, `cookie` for what sites set, `source` for a page
@@ -27,11 +31,12 @@
 //! on screen, and `failure` for what is said when a page does not come. This
 //! file is the window around them and the order they run in.
 //!
-//! A page's stylesheets and scripts are fetched after its markup, on the
-//! connection it came on, and its words are read once they are here. Their
-//! media queries are asked about the window the page is drawn in, so a
-//! window that changes size reads the page again where they answer
-//! differently.
+//! A page's stylesheets are fetched after its markup, on the connection it
+//! came on, and its words are read once they are here. Their media queries
+//! are asked about the window the page is drawn in, so a window that changes
+//! size reads the page again where they answer differently. The page's
+//! scripts, what those ask for and its pictures each have connections of
+//! their own, so none of them waits on the others.
 //!
 //! `web -t <address>` prints a page's words instead of opening a window: the
 //! same pipeline, pumped by the shell until nothing more is on its way, so

@@ -148,6 +148,7 @@ apart from it and installed into `/home`, where it sits beside the files it work
 | Doom | [`apps/doom/`](../apps/doom/) | The portable engine, whose platform half is six calls: this one answers them with the framebuffer, the key stream, the clock and the mixer. Its source list is read out of the engine's own makefile rather than copied, so a file added upstream arrives without anyone noticing it should have. It builds, runs in a window, takes input, plays its sound effects through the system's mixer, and writes a save into `/home` through the FAT driver. Music has no backend: a wad's music is a score rather than a recording, and there is no sequencer to play it with. Data is not fetched: the recipe names the WAD it wants and where to get it, and stops there. |
 | eeemod | [`apps/eeemod/`](../apps/eeemod/) | A tracker module player, first-party and built into `home/bin/`. The file ([`module.zig`](../apps/eeemod/module.zig)) is a view over the bytes, decoded a cell at a time; the song ([`player.zig`](../apps/eeemod/player.zig)) is rows and ticks and the whole ProTracker effect set as one tagged union the sequencer switches over exhaustively, with the period table built at comptime from its own definition. Voices go to the shared mixer, and an Amiga period converts to a mixer step in one division, so the player carries no fixed point of its own. Both halves are host-tested. The window draws four strips and repaints each only when what it shows changed. The pattern is a page with the playing row picked out rather than a list that scrolls under it: scrolling moves every line whenever the row changes, so a row costs two lines and a page turn comes once every screenful. The stream is fed on either side of the drawing as well as between passes, painting a window being the longest thing the program does. Opening a module uses the toolkit's own dialog, and a machine with no sound service still shows what is in the file. |
 | Hero | [`apps/hero/`](../apps/hero/) | A character journal for Dungeons and Dragons on the 2024 rules, first-party and built by the main `build.zig` into `home/bin/` rather than into the image. It opens a `.hero` file from the launcher or its own File menu and handles rolls, damage, rests, spells, gold and notes against the character in the file. Its model is host-tested by `zig build test-hero`, which `make hero` runs before building. Versioned on its own: `hero --version`. |
+| web | [`apps/web/`](../apps/web/) | **Experimental, and marked so wherever it is named.** A web browser of its own parts: [`fetch.zig`](../apps/web/fetch.zig) over HTTP and HTTPS with connections kept to a site, lexbor for the markup and the selectors, [`css.zig`](../apps/web/css.zig) for the cascade this browser acts on, [`extract.zig`](../apps/web/extract.zig) to turn a tree into a page, [`layout.zig`](../apps/web/layout.zig) to say where every word goes, QuickJS behind [`dom.zig`](../apps/web/dom.zig) for the scripts, and [`pictures.zig`](../apps/web/pictures.zig) for what a page shows. It draws in one column: what shows and what is hidden, colours, the way lines lean, the room and lines around a box, rows set side by side by flex and by grid, and where a page positions a box against another. Forms go by GET and by POST. Pictures come three at a time and are kept when the page is read again. A page's scripts run on its own tree under bounds on memory, call depth and how long one may hold the engine; what they ask for is answered on connections of its own, so nothing a script does waits on another. `web -t <address>` prints a page's words in the shell, which is how it is tested against real sites. Its layout and its cascade are host-tested by `zig build test-web`, and the document a script sees by `zig build test-dom`. What it does not do is under the known gaps. |
 | echat | [`apps/echat/`](../apps/echat/) | An IRC client. The protocol engine is complete: the line grammar with IRCv3 message tags parsed and unescaped in place, framing out of a byte stream, `RPL_ISUPPORT` and everything that depends on it, capability negotiation at version 302 including replies split across lines and capabilities arriving after registration, SASL with `PLAIN` and `EXTERNAL`, taken-nick retries, keepalive and a registration timeout. It opens no socket and allocates nothing, so all of it runs on the host: `make echat` tests it against `third_party/irc-parser-tests`, transcribed into Zig by `make irctests` and never compiled from the reference. The window over it draws a rail of networks with their rooms held under them and a count on each, the transcript grouped so a run from one person carries their name once, who is here with their membership marks, and a line to type into that holds the keyboard. Commands are /server, /join, /part, /nick, /topic, /me, /msg and /quit, and anything else goes as typed. Up to four networks at once, each with its own socket, and the wait sleeps on all of them. Verified against a real network: it registers, joins, and shows who is there. Networks are written down in `/cfg/echat.cfg` in the store's own grammar, read with `ulib.config`: where to reach one, what to be called there, the account to prove with SASL, the channels to join, and whether to open it at start. The schema is the app's own rather than a `cfgd` domain, since the system ships neither. Connections are sealed by default: `ulib.tls` is `std.crypto.tls` over a granted socket, checked against the authorities in `/share/ca.store`, which `make castore` decodes from the vendored bundle. Sealed connections do not work yet, for two reasons in the standard library rather than here, described under the known gaps; a network is reached in the clear on 6667 until they are cleared. |
 
 ## Shared between kernel and userspace
@@ -438,3 +439,32 @@ with Wi-Fi, the remaining platform work, and new applications.
   walked again so what appears is bound and claimed without a reboot. The
   network service asks for it at start-up too, when configuration says the
   radio should be in use.
+
+- **The web browser is an experiment.** `web` is not part of the system image and is
+  not held to the standard the rest of it is. It draws mainstream pages in part
+  rather than in full. What is known to be missing:
+
+  - **A page cannot measure itself.** `getBoundingClientRect` answers noughts,
+    because the browser keeps no geometry a script can read: layout happens after
+    the scripts have run, not between their lines. A page that places something by
+    what it measured places it at the origin.
+  - **Nothing is watched for.** `IntersectionObserver` and its kin are given an
+    observer that watches and stays silent, so a page that loads as it is scrolled
+    loads nothing, and one that reveals a part when it comes into view never
+    reveals it.
+  - **A block box takes the column.** A width a page states is followed for a box
+    that floats, for a flex or grid item and for one the page positions; an
+    ordinary block ignores it, and `margin: 0 auto` centres nothing.
+  - **`display` on an element that is not a block.** A page that makes an inline
+    element a block does not get a new line for it: the reader breaks lines by what
+    an element is called, not by what the cascade made it.
+  - **The faces carry no Chinese, Japanese or Korean.** The vendored pixel font is
+    the Latin subset, which covers Latin, Greek and Cyrillic; anything else draws
+    as question marks. That is the system's font rather than the browser's.
+  - **Scripts are slow.** A search results page costs about twenty-five seconds in
+    the engine on the reference machine against about two and a half on a desktop.
+    The time is spread across matching selectors, building strings and the engine
+    itself rather than sitting in one place.
+  - **A page's stylesheets come one at a time.** Everything else a page is made of
+    is asked for several at once; the stylesheets are not, because they are applied
+    in the order the page names them and are kept in the order they arrive.
