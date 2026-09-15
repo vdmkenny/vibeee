@@ -729,3 +729,104 @@ test "a directory is walked, and what hangs below it is accounted for" {
     try testing.expect(found.quiet());
     try testing.expectEqual(@as(u32, 0), found.lost);
 }
+
+/// A boot sector built field by field, for asking what `mount` makes of one
+/// no formatter would produce.
+fn craft(bytes: []u8, changes: fat.Bpb) void {
+    @memset(bytes, 0);
+    const bpb: *align(1) fat.Bpb = @ptrCast(&bytes[0]);
+    bpb.* = changes;
+    std.mem.writeInt(u16, bytes[510..512], Image.BOOT_SIGNATURE, .little);
+}
+
+/// The fields a plausible volume has, for a case to change one of.
+fn plausible() fat.Bpb {
+    return .{
+        .jump = .{ 0xEB, 0x58, 0x90 },
+        .oem = "crafted ".*,
+        .bytes_per_sector = block.SECTOR_SIZE,
+        .sectors_per_cluster = 1,
+        .reserved_sectors = 1,
+        .fat_count = 2,
+        .root_entries = 0,
+        .sectors_per_fat_16 = 0,
+        .total_sectors_16 = 0,
+        .media = 0xF8,
+        .sectors_per_track = 0,
+        .heads = 0,
+        .hidden_sectors = 0,
+        .total_sectors_32 = 64,
+        .sectors_per_fat_32 = 1,
+        .ext_flags = 0,
+        .version = 0,
+        .root_cluster = 2,
+        .fs_info = 0,
+        .backup_boot = 0,
+    };
+}
+
+test "a boot sector no formatter would write is refused, not trapped on" {
+    // A boot sector is bytes off a medium anybody can write. Each of these
+    // is a field pushed to where the arithmetic over it stops being
+    // arithmetic, and each must come back as an answer.
+    const gpa = testing.allocator;
+    const bytes = try gpa.alloc(u8, 4 * block.SECTOR_SIZE);
+    defer gpa.free(bytes);
+
+    var fake = Image{ .gpa = gpa, .bytes = bytes, .fat_count = 1 };
+    fake.dev = .{ .name = "crafted", .ctx = &fake, .ops = &Image.ops, .sectors = 4 };
+
+    const cases = [_]struct { what: []const u8, bpb: fat.Bpb }{
+        .{ .what = "tables whose total size does not fit in thirty-two bits", .bpb = blk: {
+            var b = plausible();
+            b.fat_count = 16;
+            b.sectors_per_fat_32 = 0x1000_0000;
+            break :blk b;
+        } },
+        .{ .what = "one table larger than the volume", .bpb = blk: {
+            var b = plausible();
+            b.sectors_per_fat_32 = std.math.maxInt(u32);
+            break :blk b;
+        } },
+        .{ .what = "more reserved sectors than there are sectors", .bpb = blk: {
+            var b = plausible();
+            b.reserved_sectors = std.math.maxInt(u16);
+            break :blk b;
+        } },
+        .{ .what = "a root directory larger than the volume", .bpb = blk: {
+            var b = plausible();
+            b.root_entries = std.math.maxInt(u16);
+            b.sectors_per_fat_16 = 1;
+            break :blk b;
+        } },
+        .{ .what = "no tables at all", .bpb = blk: {
+            var b = plausible();
+            b.fat_count = 0;
+            break :blk b;
+        } },
+        .{ .what = "a cluster that is not a power of two", .bpb = blk: {
+            var b = plausible();
+            b.sectors_per_cluster = 3;
+            break :blk b;
+        } },
+        .{ .what = "a root at a cluster the volume does not have", .bpb = blk: {
+            var b = plausible();
+            b.root_cluster = std.math.maxInt(u32);
+            break :blk b;
+        } },
+        .{ .what = "a root below the first cluster there is", .bpb = blk: {
+            var b = plausible();
+            b.root_cluster = 1;
+            break :blk b;
+        } },
+    };
+
+    for (cases) |case| {
+        craft(bytes, case.bpb);
+        const volume = fat.mount(&fake.dev) catch continue;
+        // Mounted rather than refused is allowed, but then everything it
+        // says about itself has to be inside the medium it came from.
+        try testing.expect(volume.first_data_sector <= fake.dev.sectors);
+        try testing.expect(volume.cluster_count <= fake.dev.sectors);
+    }
+}

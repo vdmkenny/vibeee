@@ -371,9 +371,21 @@ pub fn mount(dev: *const block.Device) Error!Volume {
 
     const root_dir_sectors = (@as(u32, bpb.root_entries) * 32 + bpb.bytes_per_sector - 1) /
         bpb.bytes_per_sector;
-    const first_data_sector = bpb.reserved_sectors +
-        @as(u32, bpb.fat_count) * sectors_per_fat + root_dir_sectors;
-    if (first_data_sector >= total_sectors) return error.NotFat;
+
+    // Where the tables end, in sixty-four bits and then checked against the
+    // volume. A boot sector is bytes off a medium anybody can write, and a
+    // table count and size whose product does not fit in thirty-two bits
+    // would otherwise wrap to a data area starting inside the tables. The
+    // check against `total_sectors` is what makes the narrowing safe: it is
+    // itself thirty-two bits, so anything that did not fit fails here.
+    const tables_end = @as(u64, bpb.reserved_sectors) +
+        @as(u64, bpb.fat_count) * sectors_per_fat;
+    const data_start = tables_end + root_dir_sectors;
+    if (data_start >= total_sectors) return error.NotFat;
+
+    const first_fat_sector = bpb.reserved_sectors;
+    const root_dir_sector: u32 = @intCast(tables_end);
+    const first_data_sector: u32 = @intCast(data_start);
 
     const cluster_count = (total_sectors - first_data_sector) / bpb.sectors_per_cluster;
 
@@ -404,10 +416,10 @@ pub fn mount(dev: *const block.Device) Error!Volume {
         .kind = kind,
         .bytes_per_sector = bpb.bytes_per_sector,
         .sectors_per_cluster = bpb.sectors_per_cluster,
-        .first_fat_sector = bpb.reserved_sectors,
+        .first_fat_sector = first_fat_sector,
         .sectors_per_fat = sectors_per_fat,
         .fat_count = bpb.fat_count,
-        .root_dir_sector = bpb.reserved_sectors + @as(u32, bpb.fat_count) * sectors_per_fat,
+        .root_dir_sector = root_dir_sector,
         .root_dir_sectors = root_dir_sectors,
         .root_cluster = if (kind == .fat32) bpb.root_cluster else 0,
         .first_data_sector = first_data_sector,
@@ -416,7 +428,7 @@ pub fn mount(dev: *const block.Device) Error!Volume {
             .dev = dev,
             .kind = kind,
             .bytes_per_sector = bpb.bytes_per_sector,
-            .first_fat_sector = bpb.reserved_sectors,
+            .first_fat_sector = first_fat_sector,
             .sectors_per_fat = sectors_per_fat,
             .fat_count = bpb.fat_count,
             .cluster_count = cluster_count,
