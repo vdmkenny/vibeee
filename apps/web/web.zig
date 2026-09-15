@@ -124,7 +124,7 @@ const NAMED_MAX: usize = 110;
 /// itself with scripts needs a few seconds of them on this machine, and one
 /// still asking after this is one that asks for ever: what it has made of
 /// the page by then is what is printed.
-const SETTLE_US: u64 = 180 * std.time.us_per_s;
+const SETTLE_US: u64 = 30 * std.time.us_per_s;
 
 // ---------------------------------------------------------------------------
 // State
@@ -1294,6 +1294,10 @@ fn answered(doc: *dom.Document) void {
 /// the page, which is read again. True where the browser went somewhere.
 fn afterScripts(doc: *dom.Document) bool {
     if (dom.takeGoing(doc)) |going| {
+        if (verbose) {
+            var buf: [NAMED_MAX + 32]u8 = undefined;
+            out.trouble(std.fmt.bufPrint(&buf, "       scripts went to {s}\n", .{going.address[0..@min(going.address.len, NAMED_MAX)]}) catch "");
+        }
         sending = .{};
         if (going.sent) |answers| {
             if (!sending.keep(going.address, answers)) {
@@ -1825,10 +1829,14 @@ fn printText(target: []const u8) noreturn {
             showPage(&fresh);
         } else |_| fresh.deinit(gpa);
     }
+    // What the scripts came to, as the window's status line says it, and
+    // what they took of the engine's bound.
     if (verbose) {
         if (scripts) |doc| {
-            var buf: [64]u8 = undefined;
-            out.trouble(std.fmt.bufPrint(&buf, "engine {d} KiB of {d} KiB\n", .{ dom.memoryOf(doc) / 1024, js.MEMORY_MAX / 1024 }) catch "");
+            var told: [256]u8 = undefined;
+            out.trouble(scriptsText(&told));
+            var buf: [96]u8 = undefined;
+            out.trouble(std.fmt.bufPrint(&buf, ", engine {d} KiB of {d} KiB\n", .{ dom.memoryOf(doc) / 1024, js.MEMORY_MAX / 1024 }) catch "\n");
         }
     }
     var text: std.Io.Writer.Allocating = .init(gpa);
