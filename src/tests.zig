@@ -39,6 +39,9 @@ test {
     // own screen and does nothing inside a terminal window.
     _ = @import("user/lib/keys.zig");
     _ = @import("user/lib/ustar.zig");
+    // One maker's numbers for the serial adapter everybody owns: the
+    // divisors, the data word, and the status bytes on every packet.
+    _ = @import("user/usbd/ftdi/regs.zig");
     _ = @import("user/netd/attansic.zig");
     _ = @import("user/netd/cursor.zig");
     _ = @import("user/netd/mii.zig");

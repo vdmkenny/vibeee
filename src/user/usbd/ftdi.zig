@@ -1,9 +1,10 @@
 //! The serial adapter one company makes and several copy.
 //!
 //! No class, no descriptors that say anything: what this chip wants said
-//! to it is numbers its maker chose, and they are in `lib.ftdi` where
-//! they can be checked on the build machine. What is here is the
-//! arrangement: find the bulk pair, set the line, and read the bytes.
+//! to it is numbers its maker chose, and those are in `ftdi/regs.zig`
+//! beside this file, where they can be checked on the build machine. What
+//! is here is the arrangement: find the bulk pair, set the line, and read
+//! the bytes.
 //!
 //! **What the line is doing rides in front of the bytes.** There is no
 //! notice endpoint; two status bytes come at the head of every packet
@@ -26,7 +27,7 @@ const serial = @import("serial.zig");
 const table = @import("ulib").table;
 const usb = @import("lib").usb;
 
-const ftdi = lib.ftdi;
+const ftdi = @import("ftdi/regs.zig");
 const Held = lib.serial.Held;
 const Line = lib.serial.Line;
 const State = lib.serial.State;
@@ -242,7 +243,7 @@ fn woke() void {
 
 /// One answer from the chip, which is several packets each with its own
 /// two bytes of state in front of it. Where they divide is arithmetic,
-/// and it is in `lib.ftdi` where it is checked on the build machine.
+/// and it is in `ftdi/regs.zig` where it is checked on the build machine.
 fn unpack(port: *Port, bytes: []const u8) void {
     var packets = ftdi.packetsIn(bytes, port.packet);
     while (packets.next()) |piece| {

@@ -201,7 +201,7 @@ pub const Ops = struct {
 
 **What is lost is said out of band.** One read stands at a time, which is one packet on a companion controller and eight on the high speed one. A device sending faster than this process is woken overflows, and the ring's own flag carries that fact past the bytes that had nowhere to go.
 
-Two drivers: `acm` for the abstract control model, matched by class and subclass with the protocol left to the driver, and `ftdi` for the parts one maker numbers 0403:6001 and 0403:6015. Which interface carries the bytes on a CDC device is the awkward part, and every reference driver carries the same three fallbacks for it; they are in `lib/usb.zig` under `cdc.portIn`, host-tested against the shapes real devices write rather than against the specification.
+Two drivers: `acm` for the abstract control model, matched by class and subclass with the protocol left to the driver, and `ftdi` for the parts one maker numbers 0403:6001 and 0403:6015. Which interface carries the bytes on a CDC device is the awkward part, and every reference driver carries the same three fallbacks for it; they are in `lib/usb.zig` under `cdc.portIn`, host-tested against the shapes real devices write rather than against the specification. The FTDI part's own numbers are in `usbd/ftdi/regs.zig` beside its driver rather than in the shared library: what a serial line is stays generic in `lib/serial.zig`, and one maker's encoding of it does not.
 
 ### 4.5 Internal HCD seam (test boundary, not IPC)
 

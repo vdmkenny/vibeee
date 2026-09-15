@@ -1,5 +1,9 @@
 //! What one family of serial adapter wants said to it.
 //!
+//! Beside the driver rather than in the shared library, because these are
+//! one maker's numbers and nothing outside this driver has any business
+//! knowing them. What a serial line *is* stays generic, in `lib.serial`.
+//!
 //! These are the cables people actually own: a chip with a USB port on
 //! one side and a serial line on the other, made by one company and
 //! copied by several. It answers no standard class, so everything about
@@ -15,9 +19,10 @@
 //! Only the family with one clock is here. The high speed parts number
 //! their baud rate differently and nobody has one to try it on.
 
+const lib = @import("lib");
+const serial = lib.serial;
 const std = @import("std");
-const serial = @import("serial.zig");
-const usb = @import("usb.zig");
+const usb = lib.usb;
 
 /// The maker's own number on the bus.
 pub const VENDOR: u16 = 0x0403;
