@@ -1744,6 +1744,16 @@ fn scriptsText(buf: []u8) []const u8 {
     if (report.missing_count > 0) {
         return std.fmt.bufPrint(buf, "scripts {d}, no {s} (+{d})", .{ report.ran, report.missing_last, report.missing_count - 1 }) catch "scripts";
     }
+    // How long they have held the browser, where that is long enough for a
+    // person to have noticed, and what the longest stretch of it was.
+    if (report.longest_us >= std.time.us_per_s) {
+        return std.fmt.bufPrint(buf, "scripts {d}, {d} s, longest {d} s in {s}", .{
+            report.ran,
+            report.ran_us / std.time.us_per_s,
+            report.longest_us / std.time.us_per_s,
+            report.longest_what,
+        }) catch "scripts";
+    }
     return std.fmt.bufPrint(buf, "scripts {d}", .{report.ran}) catch "scripts";
 }
 

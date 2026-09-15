@@ -99,7 +99,13 @@ const Opened = struct {
 
 var clock_us: u64 = 0;
 
+/// What every reading of the clock adds to it, for a test that needs time
+/// to pass while something runs. Nought leaves the clock where a test puts
+/// it, which is what the timer tests need.
+var clock_step_us: u64 = 0;
+
 fn clock() u64 {
+    defer clock_us += clock_step_us;
     return clock_us;
 }
 
@@ -958,6 +964,25 @@ test "what a script puts in the page is matched again where it went, not over th
     _ = try it.run("for (var i = 0; i < 40; i++) { var e = document.createElement('span'); document.body.insertBefore(e, document.body.firstChild) }");
     try testing.expectEqual(@as(usize, 1), it.doc.restyle.len);
     try testing.expect(dom.changed(it.doc));
+}
+
+test "how long a page's scripts held the browser is counted, and the longest stretch named" {
+    clock_us = 0;
+    clock_step_us = 0;
+    const it = try opened(with("var seen = 0;"), true);
+    defer it.end();
+    try testing.expectEqual(@as(u64, 0), dom.reportOf(it.doc).ran_us);
+
+    // A timer whose run takes a while is the longest stretch, and is named.
+    _ = try it.run("setTimeout(function () { seen = 1 }, 0)");
+    clock_step_us = std.time.us_per_s;
+    defer clock_step_us = 0;
+    try testing.expect(dom.loop(it.doc));
+    const report = dom.reportOf(it.doc);
+    try testing.expectEqualStrings("a timer", report.longest_what);
+    try testing.expect(report.longest_us >= std.time.us_per_s);
+    try testing.expect(report.ran_us >= report.longest_us);
+    try testing.expectEqualStrings("1", try it.run("String(seen)"));
 }
 
 test "a frame holds an empty document of its own, which a script may measure in" {

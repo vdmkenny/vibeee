@@ -121,6 +121,13 @@ pub const Report = struct {
     /// and how many such things there were.
     missing_last: []const u8 = "",
     missing_count: u32 = 0,
+    /// How long the page's scripts have run for in all, and the longest
+    /// stretch of it in one go, with what that stretch was: a page that
+    /// stops drawing has usually spent its time in one of these, and saying
+    /// which turns a page that will not draw into something to look at.
+    ran_us: u64 = 0,
+    longest_us: u64 = 0,
+    longest_what: []const u8 = "",
 };
 
 /// The most asks a page may have open at once. A page asking for more is a
@@ -155,6 +162,29 @@ const Ready = enum {
 
     fn word(self: Ready) []const u8 {
         return @tagName(self);
+    }
+};
+
+/// One entry into the engine, timed: a script, a handler, a timer, a
+/// message or an answer. Every way in goes through this, so what a page
+/// spends its time on is counted where it is spent.
+const Stretch = struct {
+    it: *Document,
+    what: []const u8,
+    began: u64,
+
+    fn start(it: *Document, what: []const u8) Stretch {
+        it.machine.enter();
+        return .{ .it = it, .what = what, .began = it.machine.clock() };
+    }
+
+    fn end(self: Stretch) void {
+        const took = self.it.machine.clock() -| self.began;
+        self.it.report.ran_us +|= took;
+        if (took > self.it.report.longest_us) {
+            self.it.report.longest_us = took;
+            self.it.report.longest_what = self.what;
+        }
     }
 };
 
@@ -556,7 +586,8 @@ fn runFetched(it: *Document, node: *Node, source: ?[]const u8) void {
 /// Run `source` as a script of the page's, counting it and what it threw.
 fn runText(it: *Document, source: []const u8, name: [*:0]const u8) void {
     it.report.ran += 1;
-    it.machine.enter();
+    const stretch = Stretch.start(it, "a script");
+    defer stretch.end();
     const ended = it.machine.run(it.ctx, source, name, .global);
     if (qjs.isException(ended)) {
         it.report.threw += 1;
@@ -583,7 +614,8 @@ pub fn scriptsOf(gpa: Allocator, document: *lexbor.Document, base: url.Url, into
 /// where a script asked for the click to go no further, which is a link that
 /// is not followed and a form that is not sent.
 pub fn click(it: *Document, node: *Node) bool {
-    it.machine.enter();
+    const stretch = Stretch.start(it, "a click");
+    defer stretch.end();
     return tell(it, node, "click", true);
 }
 
@@ -597,7 +629,8 @@ pub fn chose(it: *Document, select: *Node, index: usize) void {
         if (count == index) attributeSet(it, here, "selected", "") else if (attributeOf(here, "selected") != null) attributeRemove(it, here, "selected");
         count += 1;
     }
-    it.machine.enter();
+    const stretch = Stretch.start(it, "a choice");
+    defer stretch.end();
     _ = tell(it, select, "input", true);
     _ = tell(it, select, "change", true);
     _ = it.machine.runJobs();
@@ -640,7 +673,8 @@ fn optionValue(option: *Node, buf: *NodeText) []const u8 {
 
 /// A form about to be sent, told to it. True where a script refused it.
 pub fn submitted(it: *Document, form: *Node) bool {
-    it.machine.enter();
+    const stretch = Stretch.start(it, "a form");
+    defer stretch.end();
     return tell(it, form, "submit", true);
 }
 
@@ -663,7 +697,8 @@ pub fn loop(it: *Document) bool {
         const handler = qjs.dup(it.ctx, timer.handler);
         defer qjs.free(it.ctx, handler);
         const stamp = if (timer.frame) qjs.newUint(it.ctx, at) else qjs.undefinedValue();
-        it.machine.enter();
+        const stretch = Stretch.start(it, if (timer.frame) "a frame" else "a timer");
+        defer stretch.end();
         const called = qjs.call(it.ctx, handler, qjs.undefinedValue(), 1, &[_]Value{stamp});
         if (qjs.isException(called)) reportError(it);
         qjs.free(it.ctx, called);
@@ -716,7 +751,8 @@ fn deliverPosted(it: *Document) bool {
         _ = qjs.setStr(ctx, event, "origin", str(ctx, if (url.parse(it.address)) |where| originOf(where) else ""));
         _ = qjs.setStr(ctx, event, "lastEventId", str(ctx, ""));
         _ = qjs.setStr(ctx, event, "ports", qjs.newArray(ctx));
-        it.machine.enter();
+        const stretch = Stretch.start(it, "a message");
+        defer stretch.end();
         if (posted.to) |port| {
             defer qjs.free(ctx, port);
             defer qjs.free(ctx, event);
@@ -1047,7 +1083,8 @@ pub fn answer(it: *Document, id: u32, got: Answer) void {
     var pending = it.asks.orderedRemove(index);
     defer dropPending(it, &pending);
     const ctx = it.ctx;
-    it.machine.enter();
+    const stretch = Stretch.start(it, "an answer");
+    defer stretch.end();
     switch (pending.kind) {
         .fetch => |ends| {
             if (got.failed) {
