@@ -32,7 +32,11 @@ const socket = @import("proto").socket;
 const std = @import("std");
 const sys = @import("sys");
 
-const MAX_SOCKS = 8;
+/// How many sockets the service carries at once, which is the connections
+/// the network stack below it is built for: its pool of connection blocks
+/// holds sixteen, and its windows and buffers are sized so that sixteen
+/// advertising at once promise no more than its frame buffers can hold.
+const MAX_SOCKS = 16;
 const MAX_RESOLVES = 4;
 const BACKLOG = 4;
 const HOSTS_PATH = "/etc/hosts";
@@ -42,9 +46,9 @@ const HOSTS_TTL_US = 2 * 1_000_000;
 
 /// How many sockets one process may hold at once, which the protocol
 /// publishes so a client can keep within it. Half the table: every socket
-/// is a shared segment and an event, and a client that could take all eight
-/// could lock every other program on the machine out of the network by
-/// opening eight and going to sleep.
+/// is a shared segment and an event, and a client that could take the whole
+/// table could lock every other program on the machine out of the network
+/// by opening them all and going to sleep.
 const MAX_SOCKS_PER_CLIENT = proto.SOCKETS_PER_PROCESS;
 
 /// How many deferred actions one reap may queue for the loop.

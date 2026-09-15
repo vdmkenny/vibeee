@@ -399,7 +399,16 @@ pub const GRANT_HANDLES = 3;
 /// service's table, so that one program cannot take every socket on the
 /// machine. A program that keeps connections for later keeps them within
 /// this, and lets one go when it needs another.
-pub const SOCKETS_PER_PROCESS = 4;
+///
+/// Eight is what a page wants of the network at once: its own address, the
+/// stylesheets that hold the first drawing back, the scripts it names and
+/// the pictures it shows, several of each from the site it came from and a
+/// site or two beside it. It is also what the machine has room for. Every
+/// socket costs three of a process's sixty-four handles, so eight leaves
+/// the browser two thirds of them for its window, its settings and its
+/// fonts; and the service's table is the connections the network stack is
+/// built for, which is sixteen.
+pub const SOCKETS_PER_PROCESS = 8;
 
 pub const Resolved = extern struct {
     addr: u32 = 0,
