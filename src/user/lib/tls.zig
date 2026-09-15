@@ -30,6 +30,13 @@ const Reader = std.Io.Reader;
 const Writer = std.Io.Writer;
 
 /// Where the authorities live in the image.
+/// How long a connection may take nothing of what is written to it, or send
+/// nothing of what is expected of it, before it is counted gone. A peer that
+/// has stopped answering must not hold the program talking to it: the read
+/// or the write fails, the connection ends, and the caller gets its turn
+/// back to say so and to try elsewhere.
+pub const QUIET_MAX_US: u64 = 15 * std.time.us_per_s;
+
 pub const STORE = "/share/ca.store";
 
 /// The most a store may come to. Well past the vendored one, and a bound on
@@ -432,6 +439,7 @@ const SocketReader = struct {
         // at a time would make the reader ask again for what it could have
         // had at once.
         var got: usize = 0;
+        const since = sys.clockMicros();
         while (true) {
             const n = self.socket.recv(room[got..]);
             if (n != 0) {
@@ -443,7 +451,9 @@ const SocketReader = struct {
                 return got;
             }
             if (self.socket.state() == .closed) return error.EndOfStream;
-            sys.eventWait(self.socket.waitHandle(), sys.FOREVER) catch return error.ReadFailed;
+            const quiet = sys.clockMicros() -| since;
+            if (quiet >= QUIET_MAX_US) return error.ReadFailed;
+            sys.eventWait(self.socket.waitHandle(), @intCast(QUIET_MAX_US - quiet)) catch return error.ReadFailed;
         }
     }
 };
@@ -473,17 +483,22 @@ const SocketWriter = struct {
         return w.consume(written);
     }
 
-    /// All of `bytes` into the socket, waiting for room as often as it takes.
+    /// All of `bytes` into the socket, waiting for room as often as it
+    /// takes, and giving up on a peer that stops taking any.
     fn push(self: *SocketWriter, bytes: []const u8) Writer.Error!usize {
         var at: usize = 0;
+        var since = sys.clockMicros();
         while (at < bytes.len) {
             const n = self.socket.send(bytes[at..]);
             if (n != 0) {
                 at += n;
+                since = sys.clockMicros();
                 continue;
             }
             if (self.socket.state() == .closed) return error.WriteFailed;
-            sys.eventWait(self.socket.waitHandle(), sys.FOREVER) catch return error.WriteFailed;
+            const quiet = sys.clockMicros() -| since;
+            if (quiet >= QUIET_MAX_US) return error.WriteFailed;
+            sys.eventWait(self.socket.waitHandle(), @intCast(QUIET_MAX_US - quiet)) catch return error.WriteFailed;
         }
         return at;
     }
