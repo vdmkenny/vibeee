@@ -94,9 +94,17 @@ pub const Drawn = struct {
     ground: rgb.Colour = .{},
 };
 
+/// One of a page's pictures as the browser holds it: where it stands, and
+/// which picture it is by address, so that a page read again keeps what it
+/// already has of the ones it still asks for.
+const Held = struct {
+    state: State = .waiting,
+    key: u64 = 0,
+};
+
 pub const Pictures = struct {
     /// One for each of the page's pictures.
-    states: []State = &.{},
+    states: []Held = &.{},
     /// Whether pictures are fetched at all, which is a setting.
     enabled: bool = true,
     /// Stopped by hand: nothing more is asked for until the next page.
@@ -109,18 +117,84 @@ pub const Pictures = struct {
     /// Which picture the fetch is for, while it is for one.
     fetching: ?u16 = null,
 
-    /// Take on `page`'s pictures, drawn as `drawn` says, letting go of the
-    /// last page's.
+    /// Take on `page`'s pictures, drawn as `drawn` says.
+    ///
+    /// A page read again while its scripts change it asks for most of the
+    /// same pictures, so each one it still asks for at the address it came
+    /// from is kept as it is, and the one on its way stays on its way. Only
+    /// what the page no longer asks for is let go. A page drawn another way
+    /// keeps none of them, since a picture is kept at the size it is drawn.
     pub fn show(self: *Pictures, gpa: std.mem.Allocator, page: *const Page, drawn: Drawn) void {
-        self.forget(gpa);
+        if (!std.meta.eql(self.drawn, drawn)) self.forget(gpa);
         self.drawn = drawn;
+        const was = self.states;
+        const coming = self.fetching;
+        self.fetching = null;
+        self.held = 0;
+
         // A page with no room to follow its pictures still reads: they are
         // stood in for, as pictures that will not come are.
-        self.states = gpa.alloc(State, page.pictures.items.len) catch &.{};
-        for (self.states, page.pictures.items) |*state, picture| {
+        const now: []Held = gpa.alloc(Held, page.pictures.items.len) catch &.{};
+        for (now, page.pictures.items, 0..) |*held, picture, index| {
             const source = page.string(picture.source);
-            state.* = if (source.len == 0) .failed else if (self.refuses(source)) .blocked else .waiting;
+            held.* = .{
+                .key = std.hash_map.hashString(source),
+                .state = if (source.len == 0) .failed else if (self.refuses(source)) .blocked else .waiting,
+            };
+            if (held.state != .waiting) continue;
+            if (takeKept(was, held.key, index)) |kept| {
+                held.state = .{ .here = kept };
+                self.held += weightOf(kept);
+            }
         }
+        // The one on its way carries on where the page still asks for it,
+        // and is let go where it does not.
+        if (coming) |at| {
+            if (at < was.len) {
+                if (waitingFor(now, was[at].key)) |index| {
+                    now[index].state = .coming;
+                    self.fetching = @intCast(index);
+                } else self.fetch.cancel(gpa);
+            }
+        }
+        for (was) |held| switch (held.state) {
+            .here => |kept| gpa.free(kept.picture.pixels),
+            .waiting, .coming, .failed, .blocked => {},
+        };
+        gpa.free(was);
+        self.states = now;
+    }
+
+    /// The picture `key` names among those held, taken out of them so that
+    /// it is neither let go nor taken twice. The one that stood where it
+    /// stands now is looked at first, a page read again mostly asking for
+    /// the same pictures in the same order.
+    fn takeKept(was: []Held, key: u64, index: usize) ?Kept {
+        if (index < was.len and was[index].key == key) {
+            if (was[index].state == .here) {
+                defer was[index].state = .waiting;
+                return was[index].state.here;
+            }
+        }
+        for (was) |*held| {
+            if (held.key != key or held.state != .here) continue;
+            defer held.state = .waiting;
+            return held.state.here;
+        }
+        return null;
+    }
+
+    /// Where `key` is still waited for among `now`.
+    fn waitingFor(now: []const Held, key: u64) ?usize {
+        for (now, 0..) |held, index| {
+            if (held.key == key and held.state == .waiting) return index;
+        }
+        return null;
+    }
+
+    /// What one picture holds, in bytes.
+    fn weightOf(kept: Kept) usize {
+        return kept.picture.pixels.len * @sizeOf(rgb.Colour);
     }
 
     /// Let go of every picture, and of the one on its way. Whether they are
@@ -128,7 +202,7 @@ pub const Pictures = struct {
     /// being settings.
     pub fn forget(self: *Pictures, gpa: std.mem.Allocator) void {
         self.fetch.cancel(gpa);
-        for (self.states) |state| switch (state) {
+        for (self.states) |held| switch (held.state) {
             .here => |kept| gpa.free(kept.picture.pixels),
             .waiting, .coming, .failed, .blocked => {},
         };
@@ -147,7 +221,7 @@ pub const Pictures = struct {
         const index = self.fetching orelse return;
         self.fetch.cancel(gpa);
         self.fetching = null;
-        self.states[index] = .waiting;
+        self.states[index].state = .waiting;
     }
 
     /// Ask for nothing more of this page's pictures.
@@ -162,11 +236,11 @@ pub const Pictures = struct {
     pub fn reground(self: *Pictures, gpa: std.mem.Allocator, ground: rgb.Colour) bool {
         self.drawn.ground = ground;
         var any = false;
-        for (self.states) |*state| switch (state.*) {
+        for (self.states) |*held| switch (held.state) {
             .here => |kept| if (kept.see_through) {
-                self.held -= kept.picture.pixels.len * @sizeOf(rgb.Colour);
+                self.held -= weightOf(kept);
                 gpa.free(kept.picture.pixels);
-                state.* = .waiting;
+                held.state = .waiting;
                 any = true;
             },
             .waiting, .coming, .failed, .blocked => {},
@@ -185,13 +259,13 @@ pub const Pictures = struct {
     }
 
     pub fn stateOf(self: *const Pictures, index: u16) State {
-        return if (index < self.states.len) self.states[index] else .failed;
+        return if (index < self.states.len) self.states[index].state else .failed;
     }
 
     /// How many of the page's pictures are settled, and of how many.
     pub fn tally(self: *const Pictures) struct { settled: usize, total: usize } {
         var settled: usize = 0;
-        for (self.states) |state| switch (state) {
+        for (self.states) |held| switch (held.state) {
             .here, .failed, .blocked => settled += 1,
             .waiting, .coming => {},
         };
@@ -205,8 +279,9 @@ pub const Pictures = struct {
             const next = if (self.expected()) self.waitingFrom(from) orelse self.waitingFrom(0) else null;
             if (next) |index| return self.begin(gpa, page, index);
             // Nothing more to ask for, so a connection kept for the next
-            // picture has none to carry.
-            self.fetch.cancel(gpa);
+            // picture has none to carry. Let go of once, this being asked
+            // again on every pass the page takes.
+            if (self.fetch.state != .idle) self.fetch.cancel(gpa);
             return .idle;
         }
         const wait = self.fetch.advance(gpa);
@@ -217,8 +292,8 @@ pub const Pictures = struct {
     /// The first picture still waiting at or after `from`.
     fn waitingFrom(self: *const Pictures, from: usize) ?u16 {
         if (from >= self.states.len) return null;
-        for (self.states[from..], from..) |state, index| {
-            if (state == .waiting) return @intCast(index);
+        for (self.states[from..], from..) |held, index| {
+            if (held.state == .waiting) return @intCast(index);
         }
         return null;
     }
@@ -232,21 +307,21 @@ pub const Pictures = struct {
         const which = page.pictures.items[index];
         const source = page.string(which.source);
         const where = url.parse(source) orelse {
-            self.states[index] = .failed;
+            self.states[index].state = .failed;
             return .{ .settled = index };
         };
         if (where.scheme == .file) {
             // A picture on this machine is read in one go, having nobody to
             // wait for.
             const bytes = ulib.file.readAlloc(gpa, where.file(), fetch_mod.PICTURE_MAX) catch {
-                self.states[index] = .failed;
+                self.states[index].state = .failed;
                 return .{ .settled = index };
             };
             defer gpa.free(bytes);
-            self.states[index] = self.take(gpa, bytes);
+            self.states[index].state = self.take(gpa, bytes);
             return .{ .settled = index };
         }
-        self.states[index] = .coming;
+        self.states[index].state = .coming;
         self.fetching = index;
         self.fetch.asking.width = self.widthOf(which);
         self.fetch.begin(gpa, source);
@@ -269,7 +344,7 @@ pub const Pictures = struct {
         self.fetching = null;
         defer self.fetch.release(gpa);
         const answered = self.fetch.state == .done and self.fetch.response.status / 100 == 2;
-        self.states[index] = if (answered) self.take(gpa, self.fetch.body.bytes.items) else .failed;
+        self.states[index].state = if (answered) self.take(gpa, self.fetch.body.bytes.items) else .failed;
         return index;
     }
 

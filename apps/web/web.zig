@@ -686,24 +686,29 @@ fn woken(index: usize) bool {
     return true;
 }
 
-/// Take the next step of whatever is on its way: the page, its stylesheets
-/// and scripts, what its scripts asked for and set to run, and once it is on
-/// screen, its pictures. True when there is something new to draw.
+/// Take the next step of everything on its way: the page and its
+/// stylesheets, its scripts and what they asked for, and once it is on
+/// screen, its pictures. Each takes a step of its own on every pass, so that
+/// a page's pictures come while its scripts are still running rather than
+/// after the last of them. True when there is something new to draw.
 fn step() bool {
-    if (fetch.busy()) return settle(fetch.advance(gpa));
-    if (reading != null) {
+    var again = false;
+    if (fetch.busy()) {
+        if (settle(fetch.advance(gpa))) again = true;
+    } else if (reading != null) {
         nextLink();
-        return true;
+        again = true;
     }
-    if (stepScripts()) return true;
-    return switch (pictures.advance(gpa, &shown, view.pictureFrom())) {
-        .wait => true,
+    if (stepScripts()) again = true;
+    switch (pictures.advance(gpa, &shown, view.pictureFrom())) {
+        .wait => again = true,
         .settled => {
             view.relayout();
-            return true;
+            again = true;
         },
-        .idle => false,
-    };
+        .idle => {},
+    }
+    return again;
 }
 
 /// Say what the window sleeps on, and for how long, from everything that is
