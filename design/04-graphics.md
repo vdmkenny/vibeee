@@ -1,11 +1,14 @@
 # vibeee Graphics Driver: GMA 900 / 910GML (design/04-graphics.md)
 
-> **Status: design only, not implemented.**
-> Implemented code is limited to the M0 set listed in [`../README.md`](../README.md).
+> **Status: built, except where a section says otherwise.** The gen3 driver runs the 701's
+> panel at its native size, `bochs` drives the adapter the emulators provide, and `vesafb` is
+> the fallback when neither can set a mode. Not built: the optional gen3 blitter of §1, the
+> flip path in `bochs`, and the panel power delays and watermarks §10 wants saved across a
+> suspend.
 > Where this document and [`00-vibeee.md`](00-vibeee.md) disagree, the master design wins:
 > it carries later decisions this document predates.
 
-Status: implementation-ready design. Register offsets/bits verified against Linux v3.4
+Register offsets/bits verified against Linux v3.4
 `drivers/gpu/drm/i915/i915_reg.h` and `drivers/char/agp/{intel-gtt.c,intel-agp.h}` (gen3 paths)
 unless marked otherwise.
 
@@ -14,8 +17,10 @@ unless marked otherwise.
 In-kernel display driver stack with one narrow contract (`DisplayDev`) and three backends:
 
 - **gma900**, the real driver: native LVDS modeset of the 800×480 panel on pipe B, framebuffers
-  in stolen memory, WC via MTRR, vblank IRQ, optional VGA-out on pipe A, HW cursor (done), S3
-  save/restore, optional gen3 blitter module (M3).
+  in stolen memory, WC via MTRR, vblank IRQ, optional VGA-out on pipe A, HW cursor (done),
+  S3 restore by re-running the modeset (done, except for the panel power delays and the
+  watermarks firmware set, which §10 lists and nothing saves yet), optional gen3 blitter
+  module (M3).
 - **bochs** (done): emulator backend, over the Bochs dispi ports, plus the plain VGA registers
   that decide whether anything is drawn at all. No flip yet. What it is for beyond convenience:
   suspend to memory is refused on a machine whose display cannot be set a mode, so without this

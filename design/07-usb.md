@@ -10,8 +10,10 @@ bulk-only mass storage class with its SCSI commands, the block-device seam to
 the kernel, and boot-protocol HID. A stick is enumerated, mounted under /media,
 read and written, and unplugging it takes its mount with it; a keyboard types
 and a mouse moves the pointer, on either controller. Hubs are driven, so a keyboard or a disk behind one appears
-and disappears like anything else. UVC (§4.2) and suspend and resume (§5.8) are design
-for later milestones. Owner: usbd. Depends
+and disappears like anything else. UVC (§4.2) is design for a later milestone. Suspend
+and resume (§5.10) is built: the bus is stopped before the machine sleeps, and on resume
+the controllers are claimed, initialised and enumerated again, with each mount reattached
+by identity. Owner: usbd. Depends
 on: kernel contracts v0, 05-input (injection), 03-vfs (volume consumer),
 platformd (CAMS/ACPI), devmgr (supervision/matching).
 

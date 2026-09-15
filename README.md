@@ -184,8 +184,10 @@ screen includes a QR-encoded register dump; a photograph of it is useful for dia
 Known gaps:
 
 - Power-off reaches ACPI S5 but does not complete the final hardware power cut.
-- Wi-Fi hardware initializes but scanning, association, and WPA authentication are not implemented.
-- USB devices are not restored after suspend/resume.
+- Wi-Fi scans, joins a WPA2 network and takes a DHCP lease on the machine; carrying
+  traffic over the radio is not confirmed.
+- Suspend to memory runs start to finish in the emulator and has not been tried on the
+  machine, where the display driver still has to restore the panel timing firmware set.
 - Touchpad tap, scrolling, and gestures are not implemented.
 
 This is unaudited hobby OS software. Test it on overwriteable media and hardware you can

@@ -7,8 +7,9 @@ Status: implemented through N2, except where a line says otherwise. The driver
 layer, the lwIP stack, interface management with matcher slots, DHCP, ICMP with
 `ping`, the loopback interface, the socket bridge with `nc`, and resolution with
 the hosts table and `resolve` all run, verified in QEMU end to end and on the
-machine for everything the machine can carry. WiFi (§5) is design for a later
-milestone.
+machine for everything the machine can carry. WiFi (§5) is partly done: on the machine the
+radio comes up, scans, joins a protected network and takes a DHCP lease, but carrying
+traffic over it is not confirmed. `docs/status.md` records what each run showed.
 
 Scope: lwIP-based TCP/IP stack inside netd, interface lifecycle and configuration
 through cfgd, DHCP for unconfigured interfaces, ICMP with `ping`, a stream tool `nc`,

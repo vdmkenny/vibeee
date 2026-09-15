@@ -342,7 +342,7 @@ types and a USB mouse moves the pointer. A hub is a device with a driver like an
 other, and what hangs off one enumerates the way a root port's device does. The boot
 bring-up model (services behind `needs`/`provides`, registered settled) is
 load-bearing. The bus goes down and comes back, and so does the machine: suspend to
-memory runs the whole path in the emulator. M3 begins with Wi-Fi, the remaining
+memory runs start to finish in the emulator. M3 begins with Wi-Fi, the remaining
 platform work, and new applications.
 
 ## Known gaps
@@ -356,12 +356,11 @@ platform work, and new applications.
   is still open.
 - The pointing device runs in relative mode: no tap zones, edge scrolling or multi-finger gestures.
 - Wheel decoding is untested; QEMU's monitor cannot generate scroll events.
-- **The machine sleeps in the emulator and has never slept on the machine.** The
-  whole path is proven end to end by `make check-all`, and the one piece known to be
-  missing is the gen3 driver's: it restores the pipe, the plane and the fitter, but
-  not the panel power delays or the watermarks firmware set, which are the registers
-  a real panel's timing depends on. A wake on the 701 may come back with the panel
-  mistimed until it saves and restores them.
+- **Suspend to memory has only been run in the emulator.** `make check-all` proves the
+  whole path there. The one piece known to be missing is in the gen3 driver: it restores
+  the pipe, the plane and the fitter, but not the panel power delays or the watermarks
+  firmware set. Until it saves and restores those, a wake on the 701 may come back with
+  the panel mistimed.
 - A full or low speed device behind a hub on the *high speed* controller needs split
   transactions. The queue heads carry the hub and port for them and the arithmetic is
   written, but nothing has exercised it: the emulator will not put a full speed hub on
