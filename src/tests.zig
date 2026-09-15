@@ -33,6 +33,9 @@ test {
     _ = @import("user/eui/eui.zig");
     _ = @import("user/lib/bindings.zig");
     _ = @import("user/lib/command.zig");
+    // What a settings file says, which is read by four services and
+    // written by one: pure text, and the one parser a bad line reaches.
+    _ = @import("user/lib/config.zig");
     _ = @import("user/lib/env.zig");
     // Both halves of the terminal key codec, and the proof they are inverses:
     // a key that can be sent and not read is one that works on the machine's

@@ -162,7 +162,54 @@ pub const State = packed struct(u16) {
     pub fn word(self: State) u16 {
         return @bitCast(self);
     }
+
+    /// What the far end is saying, as the names on a connector. `quiet`
+    /// where it is saying nothing, which for most adapters is the usual
+    /// answer and is not a fault.
+    pub fn spell(self: State, into: []u8) []const u8 {
+        var text = std.Io.Writer.fixed(into);
+        const said = [_]struct { on: bool, word: []const u8 }{
+            .{ .on = self.dcd, .word = "DCD" },
+            .{ .on = self.dsr, .word = "DSR" },
+            .{ .on = self.cts, .word = "CTS" },
+            .{ .on = self.ring, .word = "RI" },
+            .{ .on = self.broke, .word = "break" },
+            .{ .on = self.framing, .word = "framing" },
+            .{ .on = self.parity, .word = "parity" },
+            .{ .on = self.overrun, .word = "overrun" },
+        };
+        for (said) |one| {
+            if (!one.on) continue;
+            // All of a word or none of it: a buffer that ran out part
+            // way through one would otherwise end in a letter that reads
+            // as a different signal.
+            const before = text.end;
+            const whole = blk: {
+                if (text.end != 0) text.writeByte(' ') catch break :blk false;
+                text.writeAll(one.word) catch break :blk false;
+                break :blk true;
+            };
+            if (!whole) {
+                text.end = before;
+                break;
+            }
+        }
+        if (text.end == 0) text.writeAll("quiet") catch {};
+        return text.buffered();
+    }
 };
+
+/// Which lines the host is holding up, written the same way.
+pub fn spellHeld(held: Held, into: []u8) []const u8 {
+    var text = std.Io.Writer.fixed(into);
+    if (held.dtr) text.writeAll("DTR") catch {};
+    if (held.rts) {
+        if (text.end != 0) text.writeByte(' ') catch {};
+        text.writeAll("RTS") catch {};
+    }
+    if (text.end == 0) text.writeAll("-") catch {};
+    return text.buffered();
+}
 
 // ---------------------------------------------------------------------------
 // Tests
@@ -230,6 +277,41 @@ test "the wire's own numbering, which is what a driver writes out" {
     try testing.expectEqual(@as(u8, 0x03), @as(u8, @bitCast(Held{ .dtr = true, .rts = true })));
     try testing.expectEqual(@as(u16, 0x01), (State{ .dcd = true }).word());
     try testing.expectEqual(@as(u16, 0x40), (State{ .overrun = true }).word());
+}
+
+test "what the far end says reads as the names on a connector" {
+    var buf: [48]u8 = undefined;
+    try testing.expectEqualStrings("quiet", (State{}).spell(&buf));
+    try testing.expectEqualStrings("DCD", (State{ .dcd = true }).spell(&buf));
+    try testing.expectEqualStrings(
+        "DCD DSR CTS",
+        (State{ .dcd = true, .dsr = true, .cts = true }).spell(&buf),
+    );
+    try testing.expectEqualStrings(
+        "RI break framing parity overrun",
+        (State{
+            .ring = true,
+            .broke = true,
+            .framing = true,
+            .parity = true,
+            .overrun = true,
+        }).spell(&buf),
+    );
+
+    // A buffer too small for the whole answer carries what fits rather
+    // than nothing, and never runs off its end.
+    var cramped: [5]u8 = undefined;
+    const said = (State{ .dcd = true, .dsr = true, .cts = true }).spell(&cramped);
+    try testing.expect(said.len <= cramped.len);
+    try testing.expectEqualStrings("DCD", said);
+}
+
+test "the lines the host holds up read the same way" {
+    var buf: [16]u8 = undefined;
+    try testing.expectEqualStrings("-", spellHeld(.{}, &buf));
+    try testing.expectEqualStrings("DTR", spellHeld(.{ .dtr = true }, &buf));
+    try testing.expectEqualStrings("RTS", spellHeld(.{ .rts = true }, &buf));
+    try testing.expectEqualStrings("DTR RTS", spellHeld(.{ .dtr = true, .rts = true }, &buf));
 }
 
 test "a spoilt character is told from a wire that moved" {

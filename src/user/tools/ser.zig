@@ -120,45 +120,17 @@ fn describe(info: serial.Info) void {
     ink.plain();
 
     out.pad(info.line.spell(&buf), LINE);
-    out.pad(holding(info.held), HELD);
+    var lines: [16]u8 = undefined;
+    out.pad(lib.serial.spellHeld(info.held, &lines), HELD);
 
     if (info.taken != 0) {
         out.text("in use");
     } else if (info.reports == 0) {
         ink.write(.dim, "says nothing");
     } else {
-        out.text(stateOf(info.state, &buf));
+        out.text(info.state.spell(&buf));
     }
     out.byte('\n');
-}
-
-fn holding(held: lib.serial.Held) []const u8 {
-    if (held.dtr and held.rts) return "DTR RTS";
-    if (held.dtr) return "DTR";
-    if (held.rts) return "RTS";
-    return "-";
-}
-
-/// What the far end says, as the names on a connector. Nothing at all
-/// where it says nothing, which for most adapters is the usual answer.
-fn stateOf(state: lib.serial.State, buf: []u8) []const u8 {
-    var text = str.Builder{ .buf = buf };
-    const lines = [_]struct { on: bool, word: []const u8 }{
-        .{ .on = state.dcd, .word = "DCD" },
-        .{ .on = state.dsr, .word = "DSR" },
-        .{ .on = state.ring, .word = "RI" },
-        .{ .on = state.broke, .word = "break" },
-        .{ .on = state.framing, .word = "framing" },
-        .{ .on = state.parity, .word = "parity" },
-        .{ .on = state.overrun, .word = "overrun" },
-    };
-    for (lines) |one| {
-        if (!one.on) continue;
-        if (text.len != 0) text.byte(' ');
-        text.text(one.word);
-    }
-    if (text.len == 0) text.text("quiet");
-    return text.done();
 }
 
 fn sayLine(port: *serial.Port) void {

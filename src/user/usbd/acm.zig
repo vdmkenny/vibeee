@@ -126,7 +126,7 @@ fn attach(target: class.Target) bool {
     };
 
     const limit = target.ops.watchLimit();
-    const wanted = readSize(port.read.max_packet, limit) orelse {
+    const wanted = cdc.readSize(port.read.max_packet, limit) orelse {
         log.warn(name, "the device sends packets larger than the controller takes in one go");
         return false;
     };
@@ -225,15 +225,6 @@ fn forget(device: *Device) void {
     stopReading(device);
     if (device.notice_watch) |watch| device.ops.unwatch(watch);
     device.* = .{};
-}
-
-/// How much to ask for each time round: whole packets, as many as the
-/// controller will take in one go. Nothing at all where one packet is
-/// already more than it takes, since a device answering with more than
-/// was asked for is a failed transfer rather than a truncated one.
-fn readSize(max_packet: u16, limit: usize) ?u16 {
-    if (max_packet == 0 or max_packet > limit) return null;
-    return @intCast(limit - (limit % max_packet));
 }
 
 // ---------------------------------------------------------------------------

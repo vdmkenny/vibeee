@@ -916,6 +916,19 @@ pub const cdc = struct {
     pub const BREAK_UNTIL_TOLD: u16 = 0xFFFF;
     pub const BREAK_OFF: u16 = 0;
 
+    /// How much to ask for each time a read is left standing on an
+    /// endpoint: whole packets, as many as the controller will take in
+    /// one go.
+    ///
+    /// Nothing at all where one packet is already more than it takes. A
+    /// device answering with more than it was asked for is a failed
+    /// transfer rather than a truncated one, so asking for part of a
+    /// packet is worse than not reading the endpoint at all.
+    pub fn readSize(max_packet: u16, limit: usize) ?u16 {
+        if (max_packet == 0 or max_packet > limit) return null;
+        return @intCast(limit - (limit % max_packet));
+    }
+
     /// What a device says on its notice endpoint, without the payload.
     ///
     /// The same eight bytes a setup packet has, sent the other way: the
@@ -2010,6 +2023,23 @@ test "the requests a port answers are aimed at the interface that takes them" {
 
     const broken = cdc.sendBreak(2, cdc.BREAK_UNTIL_TOLD);
     try std.testing.expectEqual(@as(u16, 0xFFFF), broken.value);
+}
+
+test "a standing read asks for whole packets and no more than it is given" {
+    // A controller that takes eight packets of sixty-four in one go asks
+    // for all eight; one that takes a hundred asks for one packet, since
+    // the thirty-six bytes over are no use.
+    try std.testing.expectEqual(@as(?u16, 512), cdc.readSize(64, 512));
+    try std.testing.expectEqual(@as(?u16, 64), cdc.readSize(64, 100));
+    try std.testing.expectEqual(@as(?u16, 64), cdc.readSize(64, 64));
+    try std.testing.expectEqual(@as(?u16, 512), cdc.readSize(512, 512));
+
+    // A packet larger than the controller takes in one go cannot be read
+    // at all, and neither can an endpoint that says its packets are
+    // nothing.
+    try std.testing.expectEqual(@as(?u16, null), cdc.readSize(512, 64));
+    try std.testing.expectEqual(@as(?u16, null), cdc.readSize(64, 0));
+    try std.testing.expectEqual(@as(?u16, null), cdc.readSize(0, 512));
 }
 
 test "a notice says what its device is telling the host" {

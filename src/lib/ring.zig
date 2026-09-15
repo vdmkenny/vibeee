@@ -170,6 +170,58 @@ pub const Ring = struct {
     }
 };
 
+/// One segment carrying a ring each way.
+///
+/// A service that hands a program both halves of a conversation grants one
+/// piece of shared memory holding two rings, and both sides then work out
+/// where each ring sits. Two sides computing the same offsets separately
+/// is the kind of arithmetic that is wrong in one of them, so it is
+/// written once, here, where it can be run.
+///
+/// Which ring is which direction is the protocol's to name: this says
+/// only that there are two and where they are.
+pub const Duplex = struct {
+    /// In the order they sit in the segment.
+    ring: [2]Ring,
+
+    /// Where the bytes begin: both sets of counters first, each in a slot
+    /// of its own so neither side's writes land in the other's.
+    pub const HEADERS: usize = 64;
+
+    /// How large a segment of this shape is, for a ring of `capacity`
+    /// bytes each way.
+    pub fn bytes(capacity: u32) usize {
+        return HEADERS + 2 * @as(usize, capacity);
+    }
+
+    /// Lay fresh rings over a new segment, which the side that made it
+    /// does once.
+    pub fn make(base: [*]u8, capacity: u32) Error!Duplex {
+        return over(base, capacity, Ring.init);
+    }
+
+    /// Bind to rings that are already there, which is what the side that
+    /// was granted the segment does.
+    pub fn attach(base: [*]u8, capacity: u32) Error!Duplex {
+        return over(base, capacity, Ring.attach);
+    }
+
+    fn over(
+        base: [*]u8,
+        capacity: u32,
+        comptime bind: fn (*volatile Header, []u8) Error!Ring,
+    ) Error!Duplex {
+        if (2 * @sizeOf(Header) > HEADERS) return error.BadCapacity;
+        var both: Duplex = undefined;
+        for (&both.ring, 0..) |*one, which| {
+            const header: *volatile Header = @ptrCast(@alignCast(base + which * @sizeOf(Header)));
+            const data = (base + HEADERS + which * capacity)[0..capacity];
+            one.* = try bind(header, data);
+        }
+        return both;
+    }
+};
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -304,4 +356,44 @@ test "the flag word is the header's fourth word and starts clear" {
     try std.testing.expectEqual(@as(u32, 0), (Flags{}).word());
     try std.testing.expectEqual(@as(u32, 1), (Flags{ .closed = true }).word());
     try std.testing.expectEqual(@as(u32, 2), (Flags{ .overflowed = true }).word());
+}
+
+test "a segment carries a ring each way, and neither reaches the other" {
+    const CAPACITY = 16;
+    var store: [Duplex.bytes(CAPACITY)]u8 align(8) = @splat(0);
+
+    const made = try Duplex.make(&store, CAPACITY);
+    try std.testing.expectEqual(@as(u32, 4), made.ring[0].write("away"));
+    try std.testing.expectEqual(@as(u32, 5), made.ring[1].write("back!"));
+
+    // The other side finds the same two rings without being told where
+    // they are, which is the whole point of the shape.
+    const found = try Duplex.attach(&store, CAPACITY);
+    var buf: [16]u8 = undefined;
+    try std.testing.expectEqual(@as(u32, 4), found.ring[0].read(&buf));
+    try std.testing.expectEqualStrings("away", buf[0..4]);
+    try std.testing.expectEqual(@as(u32, 5), found.ring[1].read(&buf));
+    try std.testing.expectEqualStrings("back!", buf[0..5]);
+
+    // Filling one to the brim leaves the other empty: their payloads do
+    // not overlap, and neither do their counters.
+    _ = made.ring[0].write("0123456789abcdef");
+    try std.testing.expectEqual(@as(u32, 0), made.ring[0].writable());
+    try std.testing.expectEqual(@as(u32, 16), found.ring[1].writable());
+    try std.testing.expect(found.ring[1].isEmpty());
+
+    // And closing one says nothing about the other.
+    made.ring[0].close();
+    try std.testing.expect(found.ring[0].isClosed());
+    try std.testing.expect(!found.ring[1].isClosed());
+}
+
+test "a duplex segment is as large as it says and no larger" {
+    try std.testing.expectEqual(@as(usize, 64 + 2 * 4096), Duplex.bytes(4096));
+    try std.testing.expect(2 * @sizeOf(Header) <= Duplex.HEADERS);
+
+    // A capacity that is not a power of two is refused by the rings
+    // themselves rather than laid out and discovered later.
+    var store: [Duplex.bytes(24)]u8 align(8) = @splat(0);
+    try std.testing.expectError(error.BadCapacity, Duplex.make(&store, 24));
 }

@@ -125,7 +125,8 @@ fn attach(target: class.Target) bool {
         const view = usb.interfaceIn(target.configuration, .{ .numbered = number }) orelse continue;
         const read = view.find(.bulk, .in) orelse continue;
         const write = view.find(.bulk, .out) orelse continue;
-        if (read.max_packet <= ftdi.HEADER or read.max_packet > limit) continue;
+        if (read.max_packet <= ftdi.HEADER) continue;
+        const wanted = usb.cdc.readSize(read.max_packet, limit) orelse continue;
 
         const slot = table.free(&ports) orelse break;
         slot.* = .{
@@ -143,7 +144,7 @@ fn attach(target: class.Target) bool {
             .reading_at = read.address().byte(),
             .writing_at = write.address().byte(),
             .packet = read.max_packet,
-            .wanted = @intCast(limit - (limit % read.max_packet)),
+            .wanted = wanted,
         };
 
         settle(slot);

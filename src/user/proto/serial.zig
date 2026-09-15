@@ -135,12 +135,7 @@ pub const GRANT_HANDLES = 3;
 /// still worth having.
 pub const CAPACITY: u32 = 4096;
 
-/// Where the bytes begin: the two sets of counters come first, one to a
-/// direction, each in its own aligned slot so neither side's writes land
-/// in the other's.
-const HEADERS: usize = 64;
-
-pub const SHM_BYTES: usize = HEADERS + 2 * @as(usize, CAPACITY);
+pub const SHM_BYTES: usize = ring.Duplex.bytes(CAPACITY);
 
 /// Both directions of one port, as either side sees them.
 ///
@@ -153,33 +148,25 @@ pub const View = struct {
     /// The program into the device.
     to: ring.Ring,
 
+    /// Which of the segment's two rings runs which way. Where they sit is
+    /// `ring.Duplex`'s arithmetic; naming them is this protocol's.
     const FROM = 0;
     const TO = 1;
 
     /// Lay fresh rings over a new segment. The service does this once,
     /// when it makes the segment.
     pub fn make(base: [*]u8) ring.Error!View {
-        return .{
-            .from = try ring.Ring.init(headerAt(base, FROM), bytesAt(base, FROM)),
-            .to = try ring.Ring.init(headerAt(base, TO), bytesAt(base, TO)),
-        };
+        return named(try ring.Duplex.make(base, CAPACITY));
     }
 
     /// Bind to rings that are already there, which is what a program
     /// does with the segment it was granted.
     pub fn of(base: [*]u8) ring.Error!View {
-        return .{
-            .from = try ring.Ring.attach(headerAt(base, FROM), bytesAt(base, FROM)),
-            .to = try ring.Ring.attach(headerAt(base, TO), bytesAt(base, TO)),
-        };
+        return named(try ring.Duplex.attach(base, CAPACITY));
     }
 
-    fn headerAt(base: [*]u8, which: usize) *volatile ring.Header {
-        return @ptrCast(@alignCast(base + which * @sizeOf(ring.Header)));
-    }
-
-    fn bytesAt(base: [*]u8, which: usize) []u8 {
-        return (base + HEADERS + which * CAPACITY)[0..CAPACITY];
+    fn named(both: ring.Duplex) View {
+        return .{ .from = both.ring[FROM], .to = both.ring[TO] };
     }
 };
 
@@ -197,6 +184,5 @@ pub const answer = link.answer;
 pub const answerWith = link.answerWith;
 
 comptime {
-    if (2 * @sizeOf(ring.Header) > HEADERS) @compileError("the counters do not fit before the bytes");
     if (CAPACITY & (CAPACITY - 1) != 0) @compileError("a ring's capacity is a power of two");
 }

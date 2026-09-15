@@ -1269,6 +1269,17 @@ pub fn build(b: *std.Build) void {
         .optimize = .Debug,
     });
 
+    // The toolkit as a module the host tests may reach, for the parts of
+    // the protocol that are its geometry written down: a pane's shape and
+    // an anchor's corner are the toolkit's types, and the wire carries
+    // them unchanged.
+    const tested_eui = b.createModule(.{
+        .root_source_file = b.path("src/user/eui/eui.zig"),
+        .target = b.graph.host,
+        .optimize = .Debug,
+        .imports = &.{.{ .name = "lib", .module = host_lib }},
+    });
+
     const tests = b.addTest(.{
         .root_module = b.createModule(.{
             .root_source_file = b.path("src/tests.zig"),
@@ -1278,6 +1289,23 @@ pub fn build(b: *std.Build) void {
         }),
     });
     test_step.dependOn(&b.addRunArtifact(tests).step);
+
+    // The parts of the window protocol that are the toolkit's own geometry
+    // written down: a pane's shape and an anchor's corner are eui's types
+    // and the wire carries them unchanged. Their own root, because a file
+    // may belong to one module and these belong to the toolkit's.
+    const proto_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/user/proto/tests.zig"),
+            .target = b.graph.host,
+            .optimize = .Debug,
+            .imports = &.{
+                .{ .name = "lib", .module = host_lib },
+                .{ .name = "eui", .module = tested_eui },
+            },
+        }),
+    });
+    test_step.dependOn(&b.addRunArtifact(proto_tests).step);
 
     // `lib` is its own module, and `zig test` only collects tests from the
     // root module of the binary it builds, so tests inside it need their own
