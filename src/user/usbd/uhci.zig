@@ -301,11 +301,15 @@ const STAGES = 3;
 /// largest transfer this controller carries in one descriptor chain.
 const BUFFER_BYTES = 1024;
 
-/// How many interrupt endpoints may be watched at once.
-const WATCHES = 4;
+/// How many endpoints may have a read standing on them at once: a
+/// keyboard, a mouse, a hub's port changes, and a serial port's pair of
+/// a notice endpoint and a stream of bytes.
+const WATCHES = 8;
 
-/// The largest report a watched endpoint may carry.
-const REPORT_BYTES = 16;
+/// The most one standing read takes in at a time. One descriptor is one
+/// transaction on this controller, so a read is one packet, and sixty
+/// four bytes is the largest packet a full speed endpoint sends.
+const REPORT_BYTES = 64;
 
 /// A full speed control endpoint takes at most sixty-four bytes and a low
 /// speed one at most eight, so a chain of this many descriptors covers
@@ -343,7 +347,9 @@ const Device = struct {
 const Watch = struct {
     live: bool = false,
     pipe: usb.Pipe = .{},
-    report_bytes: u8 = 0,
+    /// How much is asked for each time round, which is at least one of
+    /// the endpoint's packets and at most one transaction's worth.
+    wanted: u16 = 0,
 };
 
 /// One controller and everything watched through it.
@@ -782,6 +788,10 @@ fn bulkLimit() usize {
     return BUFFER_BYTES;
 }
 
+fn watchLimit() usize {
+    return REPORT_BYTES;
+}
+
 fn bulk(self: *Unit, pipe: *usb.Pipe, data: []u8) hc.Error!usize {
     if (!self.controller.opened) return hc.Error.Refused;
     if (data.len > BUFFER_BYTES) return hc.Error.Refused;
@@ -870,13 +880,13 @@ fn rest(self: *Unit) void {
 // Watched endpoints
 // ---------------------------------------------------------------------------
 
-fn watch(self: *Unit, pipe: usb.Pipe, report_bytes: u8) hc.Error!u8 {
+fn watch(self: *Unit, pipe: usb.Pipe, wanted: u16) hc.Error!u8 {
     if (!self.controller.opened) return hc.Error.Refused;
-    if (report_bytes == 0 or report_bytes > REPORT_BYTES) return hc.Error.Refused;
+    if (wanted == 0 or wanted > REPORT_BYTES) return hc.Error.Refused;
 
     const entry = table.free(&self.watches) orelse return hc.Error.Refused;
     const index = table.indexOf(&self.watches, entry);
-    entry.* = .{ .live = true, .pipe = pipe, .report_bytes = report_bytes };
+    entry.* = .{ .live = true, .pipe = pipe, .wanted = wanted };
 
     arm(self, index);
     chain(self);
@@ -885,7 +895,8 @@ fn watch(self: *Unit, pipe: usb.Pipe, report_bytes: u8) hc.Error!u8 {
 
 /// Put a fresh descriptor under a watch's head. The controller visits it
 /// every frame and the device answers with nothing until it has something
-/// to say, so a keyboard sitting still costs no interrupts.
+/// to say, so a keyboard sitting still costs no interrupts and neither
+/// does a serial port with nothing coming in.
 fn arm(self: *Unit, index: usize) void {
     const arena = self.controller.arena.at;
     const entry = &self.watches[index];
@@ -897,9 +908,10 @@ fn arm(self: *Unit, index: usize) void {
             .low_speed = entry.pipe.speed == .low,
             .interrupt_on_complete = true,
             .short_packet_detect = true,
-            // Retry forever: an endpoint being polled answers with a
-            // negative acknowledgement until it has something, and a
-            // limit here would eventually give up on a quiet keyboard.
+            // Retry forever: an endpoint with a read standing on it
+            // answers with a negative acknowledgement until it has
+            // something, and a limit here would eventually give up on a
+            // quiet keyboard.
             .error_limit = 0,
             .moved = Control.NOTHING,
         },
@@ -908,7 +920,7 @@ fn arm(self: *Unit, index: usize) void {
             .address = entry.pipe.address,
             .endpoint = entry.pipe.number,
             .toggle = entry.pipe.toggle,
-            .length = Token.sized(entry.report_bytes),
+            .length = Token.sized(entry.wanted),
         },
         .buffer = self.controller.arena.physOfIndex("reports", index),
     };
@@ -954,7 +966,7 @@ fn collect(self: *Unit, index: u8, into: []u8) ?usize {
     // Bounded by what the watch armed as well as by who is asking: the byte
     // count is the controller's, and one larger than the report it was given
     // would copy past the end of the arena.
-    const moved = @min(@min(status.bytes(), @as(usize, self.watches[index].report_bytes)), into.len);
+    const moved = @min(@min(status.bytes(), @as(usize, self.watches[index].wanted)), into.len);
     if (moved != 0) {
         const from: [*]const u8 = @ptrCast(@volatileCast(&arena.reports[index]));
         @memcpy(into[0..moved], from[0..moved]);
@@ -999,8 +1011,8 @@ pub fn unitOps(comptime unit: u8) hc.HcOps {
         fn bulk_(pipe: *usb.Pipe, data: []u8) hc.Error!usize {
             return bulk(self, pipe, data);
         }
-        fn watch_(pipe: usb.Pipe, report_bytes: u8) hc.Error!u8 {
-            return watch(self, pipe, report_bytes);
+        fn watch_(pipe: usb.Pipe, wanted: u16) hc.Error!u8 {
+            return watch(self, pipe, wanted);
         }
         fn collect_(index: u8, into: []u8) ?usize {
             return collect(self, index, into);
@@ -1020,6 +1032,7 @@ pub fn unitOps(comptime unit: u8) hc.HcOps {
         .bulkLimit = bulkLimit,
         .watch = bound.watch_,
         .collect = bound.collect_,
+        .watchLimit = watchLimit,
         .unwatch = bound.unwatch_,
     };
 }

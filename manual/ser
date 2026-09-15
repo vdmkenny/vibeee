@@ -1,0 +1,50 @@
+ser - the serial ports, and a terminal on one
+
+  ser                          every port, and what each is set to
+  ser <port>                   a terminal on it, at whatever it is set to
+  ser <port> 115200 8N1        set the line, then a terminal
+  ser <port> set 9600 7E1      set the line and stop
+  ser <port> break             hold the line at break for a moment
+
+A serial line tells you nothing about itself. Both ends have to have
+been told the same rate and the same character, and when they have not
+the result is not silence but rubbish on the screen, so the listing
+says what every port is set to and the terminal says what it opened
+with before the first byte arrives.
+
+A line is written the way it has always been written: the rate, then
+the bits, the parity and the stop bits. `8N1` is eight bits, no parity
+and one stop bit, which is what everything that is not a modem uses;
+`7E1` is the other one anybody meets. Parity is one of N, O, E, M or S,
+for none, odd, even, mark and space.
+
+A port comes from whatever found it. A USB serial adapter appears here
+as soon as it is plugged in and disappears when it is pulled out, and
+`usb` shows the same device from the bus's side. The id column is the
+maker and the model, which is how two adapters of different kinds are
+told apart.
+
+The state column is what the far end says its own end of the line is
+doing, as the names on a connector: DCD that something is there, DSR
+that it is ready, RI that it is ringing. Many adapters have nowhere to
+say any of this and the column reads `says nothing`, which is not a
+fault. `break`, `framing`, `parity` and `overrun` are faults, and the
+last three mean the two ends disagree about the line.
+
+The terminal sends what is typed, a character at a time, and shows what
+comes back. Nothing is echoed here: whether what was typed appears is
+the far end's decision, and a device that shows nothing is usually one
+that is not listening rather than one that is not there. Return is sent
+as a carriage return and backspace as a delete, which is what a serial
+console expects. F10 leaves, and it is a plain key rather than a chord
+because every chord worth having is a byte the far end wants.
+
+One program to a port, and the last to ask has it: opening a port that
+somebody else had leaves their end closed rather than splitting the
+traffic between two readers, neither of which would then get the whole
+of it. A program that stopped without giving a port back does not hold
+it forever.
+
+`[bytes lost]` in the middle of a terminal means something arrived with
+nowhere to put it. It is said out of band because the one place it
+cannot be said is among the bytes that had nowhere to go.

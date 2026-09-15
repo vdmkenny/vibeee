@@ -429,14 +429,17 @@ comptime {
 /// How many stages one control transfer needs: setup, data, status.
 const STAGES = 3;
 
-/// How many interrupt endpoints may be watched at once: a keyboard, a
-/// mouse, and room for the pair on a device that is both.
-const WATCHES = 4;
+/// How many endpoints may have a read standing on them at once: a
+/// keyboard, a mouse, a hub's port changes, and a serial port's pair of
+/// a notice endpoint and a stream of bytes.
+const WATCHES = 8;
 
-/// The largest report a watched endpoint may carry. Boot protocol
-/// reports are eight bytes; this covers those and the ones that add a
-/// wheel or a few more bits.
-const REPORT_BYTES = 16;
+/// The most one standing read takes in at a time. A high speed bulk
+/// endpoint sends five hundred and twelve bytes to a packet and a device
+/// answering with more than was asked for is a failed transfer, so this
+/// is the largest packet rather than the largest useful read; boot
+/// protocol reports are eight bytes and fit many times over.
+const REPORT_BYTES = 512;
 
 /// The largest bulk transfer carried in one go. A transfer descriptor
 /// addresses five pages, so one descriptor covers this whole buffer and
@@ -497,6 +500,10 @@ fn bulkLimit() usize {
     return BULK_BYTES;
 }
 
+fn watchLimit() usize {
+    return REPORT_BYTES;
+}
+
 fn speedOf(speed: usb.Speed) EndpointSpeed {
     return switch (speed) {
         .high => .high,
@@ -539,26 +546,34 @@ fn periodic(pipe: usb.Pipe) EndpointCapabilities {
 const Watch = struct {
     live: bool = false,
     pipe: usb.Pipe = .{},
-    /// How many bytes the device's reports are, which is how much is
-    /// asked for each time round.
-    report_bytes: u8 = 0,
+    /// How much is asked for each time round, which is at least one of
+    /// the endpoint's packets and at most what the arena holds.
+    wanted: u16 = 0,
 };
 
 var watches: [WATCHES]Watch = @splat(.{});
 
-/// Start polling an interrupt endpoint.
+/// Leave a read standing on an endpoint.
 ///
 /// The work is the controller's: the head goes in the periodic schedule
-/// and is visited once a millisecond, the device answers with a report or
-/// with nothing, and only a report ends the transfer and raises the
-/// interrupt. A keyboard nobody is typing on produces no wakes at all.
-fn watch(pipe: usb.Pipe, report_bytes: u8) hc.Error!u8 {
+/// and is visited once a millisecond, the device answers with something
+/// or with nothing, and only something ends the transfer and raises the
+/// interrupt. A keyboard nobody is typing on produces no wakes at all,
+/// and neither does a serial port nobody is sending to.
+///
+/// A bulk endpoint watched this way is asked once a frame rather than as
+/// often as the schedule comes round to it, which is the one thing given
+/// up for having a single shape here: five hundred and twelve bytes a
+/// millisecond is far more than a serial line carries and far less than
+/// a disk wants, which is why a disk is read by asking rather than by
+/// leaving a read standing.
+fn watch(pipe: usb.Pipe, wanted: u16) hc.Error!u8 {
     if (!controller.opened) return hc.Error.Refused;
-    if (report_bytes == 0 or report_bytes > REPORT_BYTES) return hc.Error.Refused;
+    if (wanted == 0 or wanted > REPORT_BYTES) return hc.Error.Refused;
 
     const entry = table.free(&watches) orelse return hc.Error.Refused;
     const index = table.indexOf(&watches, entry);
-    watches[index] = .{ .live = true, .pipe = pipe, .report_bytes = report_bytes };
+    watches[index] = .{ .live = true, .pipe = pipe, .wanted = wanted };
 
     const arena = controller.arena.at;
     scheduleRunning(.periodic, false);
@@ -572,12 +587,12 @@ fn watch(pipe: usb.Pipe, report_bytes: u8) hc.Error!u8 {
             .toggle_from_descriptor = true,
             .max_packet = @intCast(@min(pipe.max_packet, REPORT_BYTES)),
         },
-        // One transaction, in the first microframe of each frame. The
-        // endpoint's own interval would poll less often; a millisecond
-        // costs the controller a token and nobody else anything, and it
-        // is what a keyboard wants anyway. A slow endpoint behind a hub
-        // needs the second half of its split collected as well, which is
-        // what the complete mask asks for.
+        // One transaction a microframe, beginning in the first of each
+        // frame. The endpoint's own interval would poll less often; a
+        // millisecond costs the controller a token and nobody else
+        // anything, and it is what a keyboard wants anyway. A slow
+        // endpoint behind a hub needs the second half of its split
+        // collected as well, which is what the complete mask asks for.
         .capabilities = periodic(pipe),
     };
 
@@ -608,7 +623,7 @@ fn arm(index: usize) void {
         .in,
         entry.pipe.toggle,
         controller.arena.physOfIndex("reports", index),
-        entry.report_bytes,
+        @intCast(entry.wanted),
         true,
     );
     arena.watch_tds[index].next = Link.none;
@@ -664,7 +679,7 @@ fn collect(index: u8, into: []u8) ?usize {
     // Saturating, and then bounded by both sides: what the watch armed and
     // who is asking. A count the hardware made larger than either would
     // otherwise be a copy out of the arena and into a caller's buffer.
-    const moved = @as(usize, watches[index].report_bytes) -| @as(usize, token.bytes);
+    const moved = @as(usize, watches[index].wanted) -| @as(usize, token.bytes);
     const wanted = @min(moved, into.len);
     if (wanted != 0) {
         const from: [*]const u8 = @ptrCast(@volatileCast(&arena.reports[index]));
@@ -805,6 +820,7 @@ pub const ops = hc.HcOps{
     .bulkLimit = bulkLimit,
     .watch = watch,
     .collect = collect,
+    .watchLimit = watchLimit,
     .unwatch = unwatch,
 };
 

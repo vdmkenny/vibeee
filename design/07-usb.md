@@ -173,6 +173,36 @@ pub const UsbDevInfo = extern struct {
 
 usbd translates boot-protocol reports into contract `input_event{t_us,type,code,value}` batches and writes them to the input-injection channel defined by 05-input. usbd owns the USB-HID-usage→keycode table (~200 B) and modifier/6-key rollover diffing state per keyboard.
 
+### 4.4a Serial ports (svc "serial")
+
+A serial adapter is a device on this bus and a serial port to everybody else, and the second is not the bus's business. So the ports go up under a name of their own, `serial`, served by the same process for the same reason the volumes are offered by it: whoever drives the device is who can carry its bytes.
+
+The seam a serial driver compiles against is one table, and a driver for a different chip is that table and nothing else:
+
+```zig
+pub const Ops = struct {
+    setLine: *const fn (which: Which, line: serial.Line) bool,
+    hold: *const fn (which: Which, held: serial.Held) bool,
+    send: *const fn (which: Which, bytes: []u8) usize,
+    /// Absent where the chip cannot time a break itself.
+    breaking: ?*const fn (which: Which, milliseconds: u16) bool = null,
+    /// For a driver whose port costs something while it is open.
+    opened: ?*const fn (which: Which, open: bool) void = null,
+};
+```
+
+`Which` is an address and an interface number, because one device may carry several ports.
+
+**The bytes go through a ring and never through the channel**, the way the audio service's frames do. `open` grants one shared segment holding two `lib/ring` rings, one each way, plus the event the program waits on and the doorbell it rings. A program is woken when bytes arrive, when room is made for what it is writing, or when the far end's line changes; the service is woken when a program has written something. Nothing polls on either side.
+
+**One program to a port, and the last to ask has it.** A byte read is gone, so two readers would each get some of the traffic and neither would get the message. Taking a port somebody else had leaves their ring closed and their segment theirs, so they see it end; a program that exited without giving the port back does not hold it forever. Everything after opening is the holder's: the kernel attests the sender of every message, so a port cannot be set or given back by somebody who has not got it.
+
+**What a standing read costs is the one thing that differs between chips.** The class driver's bytes endpoint answers nothing until the far end speaks, so its read stands from the moment the device is plugged in. The vendor chip answers every read after its own latency period with two status bytes whether or not anything came, so its read stands only while a program has the port; that is what `opened` is for.
+
+**What is lost is said out of band.** One read stands at a time, which is one packet on a companion controller and eight on the high speed one. A device sending faster than this process is woken overflows, and the ring's own flag carries that fact past the bytes that had nowhere to go.
+
+Two drivers: `acm` for the abstract control model, matched by class and subclass with the protocol left to the driver, and `ftdi` for the parts one maker numbers 0403:6001 and 0403:6015. Which interface carries the bytes on a CDC device is the awkward part, and every reference driver carries the same three fallbacks for it; they are in `lib/usb.zig` under `cdc.portIn`, host-tested against the shapes real devices write rather than against the specification.
+
 ### 4.5 Internal HCD seam (test boundary, not IPC)
 
 ```zig
@@ -426,4 +456,5 @@ CPU at 20 MB/s MSC streaming (630 MHz, low-memory-bandwidth assumption): 320 IRQ
 
 - **M1 (boots the OS), done:** EHCI (handoff, async and periodic schedules, ports), core enumeration and hot-plug, MSC+BOT with SCSI, volume export of the card reader and external high-speed sticks, and boot-protocol HID for high-speed keyboards and mice. Verified in QEMU: a stick mounts under /media, is read and written, and unplugging it drops the mount; a keyboard types and a mouse moves the pointer. FS/LS ports are parked via PO. The yank ladder and restart-with-identity-reattach are M2.
 - **M2 (daily-driver):** S3 suspend and resume; the yank ladder and identity reattach; devmgr string events for the GUI. The UHCI companions are done, with control, bulk and interrupt transfers, which is what a keyboard or mouse on a root port needs.
+- **Serial ports, done:** a port found on the bus is offered under the `serial` name with a ring each way, and `ser` lists the ports, sets a line and opens a terminal. Proven end to end in the emulator against its FTDI cable; the class driver has no emulated device anywhere and only its descriptor reading is proven.
 - **M3 (camera + leftovers):** UVC (CAMS coordination + quirk policy, probe/commit, iTD iso engine, cam shm API), interrupt-IN splits for HID behind HS hubs, optional 128 KiB MSC transfers, optional ublk phys-scatter extension if M1 numbers demand it.

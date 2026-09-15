@@ -67,7 +67,8 @@ SYSENTER, PAE, NX, SSE3, 64-bit mode, and multiple CPU cores are not required.
 - Native GMA 900/950 modesetting, a framebuffer display server, tiling and floating
   windows, launcher, and the `libeui` control library.
 - ATA, ACPI/uACPI platform support, battery, backlight, hotkeys, USB mass storage/HID,
-  AC'97 and HDA playback, and wired IPv4 networking with DHCP, DNS, TCP, and UDP.
+  USB serial adapters, AC'97 and HDA playback, and wired IPv4 networking with DHCP,
+  DNS, TCP, and UDP.
 - Switching the parts a laptop powers down to save its battery (the radio, the camera,
   the card reader, the internal USB ports), through the standard ACPI power methods
   where a machine has them and the vendor's own where it does not, with the bus

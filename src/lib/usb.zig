@@ -12,6 +12,7 @@
 
 const std = @import("std");
 const devspec = @import("devspec.zig");
+const serial = @import("serial.zig");
 
 /// How fast a port negotiated. The controller decides this, not the
 /// device, and it decides what a packet may be.
@@ -99,6 +100,11 @@ pub const DescriptorType = enum(u8) {
     device_qualifier = 6,
     other_speed = 7,
     interface_power = 8,
+    /// A descriptor a class defines, written under an interface. Its
+    /// third byte says which of its class's descriptors it is.
+    interface_functional = 0x24,
+    /// The same, written under an endpoint.
+    endpoint_functional = 0x25,
     _,
 };
 
@@ -182,6 +188,25 @@ pub const Setup = extern struct {
         };
     }
 
+    /// A request a maker defines rather than the specification, aimed at
+    /// the device itself. What `index` means is that maker's business:
+    /// on a device with more than one port it is usually which port.
+    pub fn vendorRequest(
+        direction: Direction,
+        request: u8,
+        value: u16,
+        index: u16,
+        length: u16,
+    ) Setup {
+        return .{
+            .request_type = .{ .direction = direction, .kind = .vendor, .recipient = .device },
+            .request = @enumFromInt(request),
+            .value = value,
+            .index = index,
+            .length = length,
+        };
+    }
+
     /// A request a class defines rather than the specification, aimed at
     /// one interface. Every class control request has this shape.
     pub fn classRequest(
@@ -227,6 +252,9 @@ pub const Class = enum(u8) {
     /// Disks, card readers, anything holding blocks.
     mass_storage = 0x08,
     hub = 0x09,
+    /// The other half of a communications device: the interface its
+    /// bytes travel on, while the requests go to the first.
+    cdc_data = 0x0A,
     /// Cameras, among other things.
     video = 0x0E,
     wireless = 0xE0,
@@ -244,9 +272,10 @@ pub const Class = enum(u8) {
             .printer => "printer",
             .mass_storage => "storage",
             .hub => "hub",
+            .cdc_data => "communications data",
             .video => "video",
             .wireless => "wireless",
-            .vendor_specific => "vendor specific",
+            .vendor_specific => "vendor",
             _ => "unknown",
         };
     }
@@ -638,6 +667,14 @@ pub const InterfaceView = struct {
     /// The endpoints listed under it, in the order the device wrote them.
     endpoints: [ENDPOINTS_MAX]Endpoint = @splat(.{}),
     endpoint_count: u8 = 0,
+    /// Everything the device wrote under this interface and before the
+    /// next one, endpoint descriptors included.
+    ///
+    /// A class that describes itself in descriptors of its own puts them
+    /// here, and where exactly it puts them is not something to depend
+    /// on: some devices write them after the interface and some after
+    /// its endpoints, so the span covers both and the reader filters.
+    under: []const u8 = &.{},
 
     pub const ENDPOINTS_MAX = 8;
 
@@ -655,29 +692,52 @@ pub const InterfaceView = struct {
     }
 };
 
-/// The interface in a configuration that matches a class, and its
-/// endpoints. Alternate settings other than the first are skipped: a
-/// device offering a faster alternate is asking to be configured, which
-/// is more than a driver needs to start.
-pub fn interfaceFor(
-    configuration: []const u8,
-    class: Class,
-    subclass: u8,
-    protocol: u8,
-) ?InterfaceView {
+/// Which interface of a configuration is wanted.
+///
+/// Two ways of naming one, because a class driver knows what it drives
+/// and a device that pairs two interfaces names the other by number.
+pub const Wanted = union(enum) {
+    /// The first interface that says it is this. A null protocol takes
+    /// whichever the device declares, for a class where the protocol
+    /// names a dialect above the interface rather than the interface.
+    signature: struct { class: Class, subclass: u8, protocol: ?u8 = null },
+    /// The interface the device gave this number, whatever it is.
+    numbered: u8,
+
+    fn matches(self: Wanted, interface: Interface) bool {
+        return switch (self) {
+            .signature => |want| interface.class == want.class and
+                interface.subclass == want.subclass and
+                (want.protocol == null or interface.protocol == want.protocol.?),
+            .numbered => |number| interface.number == number,
+        };
+    }
+};
+
+/// The interface a configuration wanted, and its endpoints. Alternate
+/// settings other than the first are skipped: a device offering a faster
+/// alternate is asking to be configured, which is more than a driver
+/// needs to start.
+pub fn interfaceIn(configuration: []const u8, wanted: Wanted) ?InterfaceView {
     var records = walk(configuration);
     var found: ?InterfaceView = null;
+    var began: usize = 0;
 
     while (records.next()) |record| {
+        // Where this record started, which is where the span under the
+        // interface before it ends.
+        const here = records.at - record.bytes.len;
         switch (record.kind) {
             .interface => {
-                if (found != null) return found;
+                if (found) |*view| {
+                    view.under = configuration[began..here];
+                    return view.*;
+                }
                 const interface = Interface.parse(record.bytes) orelse continue;
                 if (interface.alternate != 0) continue;
-                if (interface.class != class) continue;
-                if (interface.subclass != subclass) continue;
-                if (interface.protocol != protocol) continue;
+                if (!wanted.matches(interface)) continue;
                 found = .{ .interface = interface };
+                began = records.at;
             },
             .endpoint => {
                 var view = &(found orelse continue);
@@ -689,8 +749,342 @@ pub fn interfaceFor(
             else => {},
         }
     }
+    if (found) |*view| view.under = configuration[began..records.at];
     return found;
 }
+
+/// The interface in a configuration that matches a class exactly, which
+/// is what a driver for one class of device asks for.
+pub fn interfaceFor(
+    configuration: []const u8,
+    class: Class,
+    subclass: u8,
+    protocol: u8,
+) ?InterfaceView {
+    return interfaceIn(configuration, .{
+        .signature = .{ .class = class, .subclass = subclass, .protocol = protocol },
+    });
+}
+
+// ---------------------------------------------------------------------------
+// Communications devices: a serial port reached over the bus
+// ---------------------------------------------------------------------------
+
+/// The serial port a communications device presents.
+///
+/// Two interfaces make one port: the first takes the requests that set
+/// the line up, the second carries the bytes. Which is which the device
+/// says in descriptors of its own, written under the first, and enough of
+/// them get it wrong that every reference driver carries the same three
+/// fallbacks. They are here, in one function, tested against the shapes
+/// real devices write rather than against the specification.
+pub const cdc = struct {
+    /// What a communications interface does. Only the one a serial port
+    /// is named; the rest travel as numbers.
+    pub const Subclass = enum(u8) {
+        abstract_control = 0x02,
+        _,
+    };
+
+    /// The highest protocol number that is still a serial port.
+    ///
+    /// Zero is a plain port. One to six are modems, each answering a
+    /// different dialect of AT commands, which is the business of
+    /// whatever talks to the port rather than of the port. Above that is
+    /// a device wearing this class's number for reasons of its own, and
+    /// its bytes are not a byte stream.
+    pub const COMMANDS_MAX: u8 = 0x06;
+
+    pub fn speaksSerial(protocol: u8) bool {
+        return protocol <= COMMANDS_MAX;
+    }
+
+    /// The descriptors a communications interface writes under itself,
+    /// by the subtype in their third byte.
+    pub const Functional = enum(u8) {
+        header = 0x00,
+        /// Says which interface carries the bytes, among other things.
+        call_management = 0x01,
+        abstract_control = 0x02,
+        /// Names the interfaces that together make one function: the one
+        /// that takes the requests, then the ones that carry the bytes.
+        @"union" = 0x06,
+        country = 0x07,
+        _,
+    };
+
+    /// Which of its class's descriptors a record is, or nothing when it
+    /// is not one of them at all.
+    pub fn functionalOf(bytes: []const u8) ?Functional {
+        if (bytes.len < 3) return null;
+        if (bytes[1] != @intFromEnum(DescriptorType.interface_functional)) return null;
+        return @enumFromInt(bytes[2]);
+    }
+
+    /// What the host asks a serial port to do. Every one of these is a
+    /// class request aimed at the interface that takes them, never at
+    /// the one carrying the bytes.
+    pub const Ask = enum(u8) {
+        set_line_coding = 0x20,
+        get_line_coding = 0x21,
+        set_control_lines = 0x22,
+        send_break = 0x23,
+        _,
+    };
+
+    /// How the port is to treat the line, as `set_line_coding` carries
+    /// it: the same four facts `serial.Line` holds, in the order and the
+    /// numbering the wire writes them.
+    ///
+    /// The numbering is the same because this class took it from RS-232,
+    /// which is where `lib.serial` takes it from too; the order is not,
+    /// which is the whole reason this is a second shape.
+    pub const LineCoding = extern struct {
+        /// Bits per second.
+        rate: u32 align(1) = 9600,
+        stop: serial.Stop = .one,
+        parity: serial.Parity = .none,
+        /// Bits to a character, counted rather than named.
+        bits: u8 = 8,
+
+        pub const BYTES = 7;
+
+        pub fn of(set: serial.Line) LineCoding {
+            return .{
+                .rate = set.rate,
+                .stop = set.stop,
+                .parity = set.parity,
+                .bits = set.bits,
+            };
+        }
+
+        pub fn line(self: LineCoding) serial.Line {
+            return .{
+                .rate = self.rate,
+                .bits = self.bits,
+                .parity = self.parity,
+                .stop = self.stop,
+            };
+        }
+
+        pub fn parse(bytes: []const u8) ?LineCoding {
+            if (bytes.len < BYTES) return null;
+            return .{
+                .rate = std.mem.readInt(u32, bytes[0..4], .little),
+                .stop = @enumFromInt(bytes[4]),
+                .parity = @enumFromInt(bytes[5]),
+                .bits = bytes[6],
+            };
+        }
+    };
+
+    pub fn setLineCoding(interface: u8) Setup {
+        return Setup.classRequest(
+            .out,
+            @intFromEnum(Ask.set_line_coding),
+            0,
+            interface,
+            LineCoding.BYTES,
+        );
+    }
+
+    /// Hold up the lines that say a program has the port open. The
+    /// request carries them in its value, where only the low two bits
+    /// mean anything.
+    pub fn setControlLines(interface: u8, held: serial.Held) Setup {
+        return Setup.classRequest(
+            .out,
+            @intFromEnum(Ask.set_control_lines),
+            @as(u8, @bitCast(held)),
+            interface,
+            0,
+        );
+    }
+
+    /// Hold the line at break for this many milliseconds. All ones holds
+    /// it until told otherwise, and zero lets it go.
+    pub fn sendBreak(interface: u8, milliseconds: u16) Setup {
+        return Setup.classRequest(
+            .out,
+            @intFromEnum(Ask.send_break),
+            milliseconds,
+            interface,
+            0,
+        );
+    }
+
+    pub const BREAK_UNTIL_TOLD: u16 = 0xFFFF;
+    pub const BREAK_OFF: u16 = 0;
+
+    /// What a device says on its notice endpoint, without the payload.
+    ///
+    /// The same eight bytes a setup packet has, sent the other way: the
+    /// device asking the host to look at something rather than the other
+    /// way round.
+    pub const Notice = struct {
+        what: Kind,
+        /// How many bytes follow these eight.
+        length: u16,
+
+        pub const BYTES = Setup.BYTES;
+
+        pub const Kind = enum(u8) {
+            network_connection = 0x00,
+            response_available = 0x01,
+            serial_state = 0x20,
+            speed_change = 0x2A,
+            _,
+        };
+
+        /// The one request type a notice carries: a class request, about
+        /// an interface, travelling from the device.
+        const from_device = RequestType{ .direction = .in, .kind = .class, .recipient = .interface };
+
+        pub fn parse(bytes: []const u8) ?Notice {
+            if (bytes.len < BYTES) return null;
+            if (bytes[0] != @as(u8, @bitCast(from_device))) return null;
+            return .{
+                .what = @enumFromInt(bytes[1]),
+                .length = std.mem.readInt(u16, bytes[6..8], .little),
+            };
+        }
+
+        /// The payload of a notice, bounded by both what it claims and
+        /// what actually arrived.
+        pub fn payload(self: Notice, bytes: []const u8) []const u8 {
+            if (bytes.len <= BYTES) return &.{};
+            const rest = bytes[BYTES..];
+            return rest[0..@min(self.length, rest.len)];
+        }
+    };
+
+    /// What the device said its line is doing, out of the payload of a
+    /// `serial_state` notice.
+    ///
+    /// The bitmap this class sends is exactly `serial.State`: RS-232's
+    /// own facts in RS-232's own order, which is what the class copied.
+    pub fn stateOf(payload: []const u8) ?serial.State {
+        if (payload.len < 2) return null;
+        // Only the seven this class defines: the rest of the word is
+        // reserved, and a device setting one of them is not saying
+        // anything about a line that this class can carry.
+        const word = std.mem.readInt(u16, payload[0..2], .little);
+        return @bitCast(word & SAID);
+    }
+
+    /// The bits of `serial.State` this class has anything to say about.
+    const SAID: u16 = @bitCast(serial.State{
+        .dcd = true,
+        .dsr = true,
+        .broke = true,
+        .ring = true,
+        .framing = true,
+        .parity = true,
+        .overrun = true,
+    });
+
+    /// A serial port as a configuration describes it.
+    pub const Port = struct {
+        /// The interface every request goes to.
+        control: u8,
+        /// The interface the bytes travel on.
+        data: u8,
+        read: Endpoint,
+        write: Endpoint,
+        /// Where the device says what its lines are doing, if it has
+        /// anywhere to say it. Optional: a port works without one, and
+        /// devices ship without one.
+        notice: ?Endpoint = null,
+    };
+
+    /// The serial port a configuration describes, or nothing where it
+    /// describes none.
+    ///
+    /// The interface that takes the requests is found by what it says it
+    /// is. The one carrying the bytes is whichever of these the device
+    /// managed: named by a union descriptor, named by a call management
+    /// descriptor, the same interface where it carries all three
+    /// endpoints itself, or simply the next one along. Whichever it
+    /// turns out to be, the bulk pair is found by what the endpoints are
+    /// rather than by the order they were written in, which is the last
+    /// of the ways a device gets this wrong.
+    pub fn portIn(configuration: []const u8) ?Port {
+        const control = interfaceIn(configuration, .{ .signature = .{
+            .class = .communications,
+            .subclass = @intFromEnum(Subclass.abstract_control),
+        } }) orelse return null;
+        if (!speaksSerial(control.interface.protocol)) return null;
+
+        const paired = pairedWith(configuration, control) orelse control;
+        // A device that put the bulk pair somewhere other than where it
+        // said it would has still said where they are, by having them
+        // there: the interface that carries them is the data interface.
+        const carrier = if (bulkPair(paired) != null) paired else control;
+        const pair = bulkPair(carrier) orelse return null;
+
+        return .{
+            .control = control.interface.number,
+            .data = carrier.interface.number,
+            .read = pair.read,
+            .write = pair.write,
+            .notice = control.find(.interrupt, .in),
+        };
+    }
+
+    const Bulk = struct { read: Endpoint, write: Endpoint };
+
+    fn bulkPair(view: InterfaceView) ?Bulk {
+        return .{
+            .read = view.find(.bulk, .in) orelse return null,
+            .write = view.find(.bulk, .out) orelse return null,
+        };
+    }
+
+    /// The interface that goes with the one taking the requests.
+    fn pairedWith(configuration: []const u8, control: InterfaceView) ?InterfaceView {
+        if (dataNumberIn(control.under)) |number| {
+            if (interfaceIn(configuration, .{ .numbered = number })) |view| return view;
+        }
+        // Nothing said, or what was named is not there. Three endpoints
+        // on the one interface is a whole port by itself; otherwise the
+        // bytes are on the interface after the one taking the requests,
+        // which is where a device that says nothing puts them.
+        if (control.endpoint_count >= 3) return control;
+        return interfaceIn(configuration, .{ .numbered = control.interface.number +% 1 });
+    }
+
+    /// Which interface the descriptors under a communications interface
+    /// say carries the bytes.
+    ///
+    /// A union descriptor is the answer where there is one, and a call
+    /// management descriptor where there is not. First of each wins: a
+    /// device writing two of either has contradicted itself, and the one
+    /// it wrote first is no worse a guess than the one it wrote last.
+    fn dataNumberIn(under: []const u8) ?u8 {
+        var united: ?u8 = null;
+        var managed: ?u8 = null;
+
+        var records = walk(under);
+        while (records.next()) |record| {
+            if (record.kind != .interface_functional) continue;
+            // Both carry the interface number in their fifth byte, and
+            // both are written longer than five bytes by devices with
+            // more than one subordinate interface to name.
+            if (record.bytes.len < 5) continue;
+            const which = record.bytes[4];
+            switch (functionalOf(record.bytes) orelse continue) {
+                .@"union" => if (united == null) {
+                    united = which;
+                },
+                .call_management => if (managed == null) {
+                    managed = which;
+                },
+                else => {},
+            }
+        }
+        return united orelse managed;
+    }
+};
 
 // ---------------------------------------------------------------------------
 // What a device calls itself
@@ -1476,4 +1870,168 @@ test "a string request names the language it wants" {
     try std.testing.expectEqual(@as(u16, 0x0302), product.value);
     try std.testing.expectEqual(@as(u16, 0x0409), product.index);
     try std.testing.expectEqual(Direction.out, product.statusDirection());
+}
+
+// ---------------------------------------------------------------------------
+// Serial ports
+// ---------------------------------------------------------------------------
+
+/// The descriptors a communications interface writes under itself, in the
+/// order and at the lengths devices actually write them.
+const cdc_header = [_]u8{ 5, 0x24, 0x00, 0x10, 0x01 };
+const cdc_call_management = [_]u8{ 5, 0x24, 0x01, 0x01, 1 };
+const cdc_abstract_control = [_]u8{ 4, 0x24, 0x02, 0x02 };
+const cdc_union = [_]u8{ 5, 0x24, 0x06, 0, 1 };
+
+const comm_interface = [_]u8{ 9, 4, 0, 0, 1, 0x02, 0x02, 0x01, 0 };
+const notice_endpoint = [_]u8{ 7, 5, 0x82, 0x03, 0x08, 0x00, 0xFF };
+const data_interface = [_]u8{ 9, 4, 1, 0, 2, 0x0A, 0x00, 0x00, 0 };
+const bulk_in = [_]u8{ 7, 5, 0x83, 0x02, 0x40, 0x00, 0 };
+const bulk_out = [_]u8{ 7, 5, 0x04, 0x02, 0x40, 0x00, 0 };
+
+/// A configuration header long enough to walk; the length it claims is
+/// not what bounds the walk, the bytes that arrived are.
+const cdc_config = [_]u8{ 9, 2, 0, 0, 2, 1, 0, 0xC0, 50 };
+
+test "a serial port is found across the two interfaces that make it" {
+    const bytes = cdc_config ++ comm_interface ++ cdc_header ++ cdc_call_management ++
+        cdc_abstract_control ++ cdc_union ++ notice_endpoint ++
+        data_interface ++ bulk_out ++ bulk_in;
+
+    const port = cdc.portIn(&bytes).?;
+    try std.testing.expectEqual(@as(u8, 0), port.control);
+    try std.testing.expectEqual(@as(u8, 1), port.data);
+    // Found by what they are, not by the order they were written in: the
+    // device above wrote the one that writes first.
+    try std.testing.expectEqual(@as(u4, 3), port.read.number);
+    try std.testing.expectEqual(Direction.in, port.read.direction);
+    try std.testing.expectEqual(@as(u4, 4), port.write.number);
+    try std.testing.expectEqual(@as(u16, 64), port.write.max_packet);
+    try std.testing.expectEqual(@as(u4, 2), port.notice.?.number);
+    try std.testing.expectEqual(TransferKind.interrupt, port.notice.?.kind);
+}
+
+test "a device that names its data interface only in the call management descriptor" {
+    const bytes = cdc_config ++ comm_interface ++ cdc_header ++ cdc_call_management ++
+        notice_endpoint ++ data_interface ++ bulk_in ++ bulk_out;
+
+    const port = cdc.portIn(&bytes).?;
+    try std.testing.expectEqual(@as(u8, 1), port.data);
+    try std.testing.expectEqual(@as(u4, 3), port.read.number);
+}
+
+test "a device that names nothing leaves the bytes on the interface after" {
+    const bytes = cdc_config ++ comm_interface ++ notice_endpoint ++
+        data_interface ++ bulk_in ++ bulk_out;
+
+    const port = cdc.portIn(&bytes).?;
+    try std.testing.expectEqual(@as(u8, 0), port.control);
+    try std.testing.expectEqual(@as(u8, 1), port.data);
+    try std.testing.expectEqual(@as(u4, 2), port.notice.?.number);
+}
+
+test "a device that carries all three endpoints itself is a port by itself" {
+    // One interface, no second one to pair with, and the three endpoints
+    // a port needs: requests and bytes go to the same interface.
+    const alone = [_]u8{ 9, 4, 0, 0, 3, 0x02, 0x02, 0x00, 0 };
+    const bytes = cdc_config ++ alone ++ notice_endpoint ++ bulk_in ++ bulk_out;
+
+    const port = cdc.portIn(&bytes).?;
+    try std.testing.expectEqual(@as(u8, 0), port.control);
+    try std.testing.expectEqual(@as(u8, 0), port.data);
+    try std.testing.expectEqual(@as(u4, 3), port.read.number);
+    try std.testing.expectEqual(@as(u4, 4), port.write.number);
+    try std.testing.expectEqual(@as(u4, 2), port.notice.?.number);
+}
+
+test "a device whose union descriptor names an interface that is not there" {
+    // The union says interface 3; there is no interface 3. The walk falls
+    // through to the interface after the one taking the requests rather
+    // than refusing a port that is plainly there.
+    const wrong = [_]u8{ 5, 0x24, 0x06, 0, 3 };
+    const bytes = cdc_config ++ comm_interface ++ wrong ++ notice_endpoint ++
+        data_interface ++ bulk_in ++ bulk_out;
+
+    const port = cdc.portIn(&bytes).?;
+    try std.testing.expectEqual(@as(u8, 1), port.data);
+}
+
+test "a communications interface that is not a serial port is left alone" {
+    // Protocol 0xFF: a device wearing this class's number for its own
+    // reasons, whose bytes are not a byte stream.
+    const vendor = [_]u8{ 9, 4, 0, 0, 1, 0x02, 0x02, 0xFF, 0 };
+    const bytes = cdc_config ++ vendor ++ cdc_union ++ notice_endpoint ++
+        data_interface ++ bulk_in ++ bulk_out;
+    try std.testing.expectEqual(@as(?cdc.Port, null), cdc.portIn(&bytes));
+
+    // And a configuration with no communications interface at all.
+    try std.testing.expectEqual(@as(?cdc.Port, null), cdc.portIn(&config_bytes));
+}
+
+test "a port with no bulk pair is not a port" {
+    const bytes = cdc_config ++ comm_interface ++ cdc_union ++ notice_endpoint ++
+        data_interface ++ bulk_in;
+    try std.testing.expectEqual(@as(?cdc.Port, null), cdc.portIn(&bytes));
+}
+
+test "the line coding is the seven bytes the wire writes" {
+    const coding = cdc.LineCoding{ .rate = 115200, .stop = .two, .parity = .even, .bits = 7 };
+    const bytes = std.mem.asBytes(&coding);
+    try std.testing.expectEqual(@as(usize, cdc.LineCoding.BYTES), bytes.len);
+    try std.testing.expectEqual(@as(u32, 115200), std.mem.readInt(u32, bytes[0..4], .little));
+    try std.testing.expectEqual(@as(u8, 2), bytes[4]);
+    try std.testing.expectEqual(@as(u8, 2), bytes[5]);
+    try std.testing.expectEqual(@as(u8, 7), bytes[6]);
+
+    const back = cdc.LineCoding.parse(bytes).?;
+    try std.testing.expectEqual(coding.rate, back.rate);
+    try std.testing.expectEqual(coding.stop, back.stop);
+    try std.testing.expectEqual(coding.parity, back.parity);
+    try std.testing.expectEqual(coding.bits, back.bits);
+
+    // The same four facts a line is set by, in the order the wire wants
+    // them rather than the order a person says them.
+    const line = serial.Line{ .rate = 115200, .bits = 7, .parity = .even, .stop = .two };
+    try std.testing.expectEqual(coding, cdc.LineCoding.of(line));
+    try std.testing.expectEqual(line, coding.line());
+}
+
+test "the requests a port answers are aimed at the interface that takes them" {
+    const setup = cdc.setLineCoding(2);
+    try std.testing.expectEqual(@as(u8, 0x21), @as(u8, @bitCast(setup.request_type)));
+    try std.testing.expectEqual(@as(u8, 0x20), @intFromEnum(setup.request));
+    try std.testing.expectEqual(@as(u16, 2), setup.index);
+    try std.testing.expectEqual(@as(u16, cdc.LineCoding.BYTES), setup.length);
+
+    const lines = cdc.setControlLines(2, .{ .dtr = true, .rts = true });
+    try std.testing.expectEqual(@as(u8, 0x22), @intFromEnum(lines.request));
+    try std.testing.expectEqual(@as(u16, 3), lines.value);
+    try std.testing.expectEqual(@as(u16, 0), lines.length);
+
+    const broken = cdc.sendBreak(2, cdc.BREAK_UNTIL_TOLD);
+    try std.testing.expectEqual(@as(u16, 0xFFFF), broken.value);
+}
+
+test "a notice says what its device is telling the host" {
+    const bytes = [_]u8{ 0xA1, 0x20, 0, 0, 0, 0, 2, 0, 0x03, 0x00 };
+    const notice = cdc.Notice.parse(&bytes).?;
+    try std.testing.expectEqual(cdc.Notice.Kind.serial_state, notice.what);
+    try std.testing.expectEqual(@as(u16, 2), notice.length);
+
+    const state = cdc.stateOf(notice.payload(&bytes)).?;
+    try std.testing.expect(state.dcd);
+    try std.testing.expect(state.dsr);
+    try std.testing.expect(!state.spoiled());
+
+    // A notice claiming more than arrived carries only what arrived.
+    const cut = [_]u8{ 0xA1, 0x20, 0, 0, 0, 0, 8, 0, 0x40 };
+    const short = cdc.Notice.parse(&cut).?;
+    try std.testing.expectEqual(@as(usize, 1), short.payload(&cut).len);
+    try std.testing.expectEqual(@as(?serial.State, null), cdc.stateOf(short.payload(&cut)));
+
+    // Anything that is not a device talking to the host is not a notice.
+    var wrong = bytes;
+    wrong[0] = 0x21;
+    try std.testing.expectEqual(@as(?cdc.Notice, null), cdc.Notice.parse(&wrong));
+    try std.testing.expectEqual(@as(?cdc.Notice, null), cdc.Notice.parse(bytes[0..4]));
 }

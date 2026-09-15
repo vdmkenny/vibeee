@@ -1,0 +1,8 @@
+# A serial port on a communications device: the abstract control model
+# every USB serial adapter and every microcontroller pretending to be one
+# speaks. Matched by class and subclass only, because which dialect the
+# interface speaks above the byte stream is the business of whatever
+# talks to the port; the driver refuses the ones that are not a port.
+name    = acm
+service = usb
+match   = usb-class:02:02

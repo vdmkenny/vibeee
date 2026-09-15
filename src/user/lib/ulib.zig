@@ -36,6 +36,7 @@ pub const pci = @import("pci.zig");
 pub const pciscan = @import("pciscan.zig");
 pub const ports = @import("ports.zig");
 pub const procs = @import("procs.zig");
+pub const serial = @import("serial.zig");
 pub const sock = @import("sock.zig");
 pub const sound = @import("sound.zig");
 /// Strings, one layer down: they are pure computation, so the toolkit and the

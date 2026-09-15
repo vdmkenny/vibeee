@@ -12,7 +12,9 @@
 //! this build has never met is served by a manifest and a program rather
 //! than by a change to this file.
 
+const acm = @import("acm.zig");
 const core = @import("core.zig");
+const ftdi = @import("ftdi.zig");
 const hid = @import("hid.zig");
 const hub = @import("hub.zig");
 const uhci = @import("uhci.zig");
@@ -28,6 +30,7 @@ const out = @import("ulib").out;
 const pci = @import("ulib").pci;
 const proto = @import("proto").usb;
 const proto_devices = @import("proto").devices;
+const serial = @import("serial.zig");
 const std = @import("std");
 const sys = @import("sys");
 const quit = @import("ulib").quit;
@@ -63,6 +66,8 @@ const CLASSES = [_]@import("class.zig").ClassDriver{
     umass.driver,
     hid.driver,
     hub.driver,
+    acm.driver,
+    ftdi.driver,
 };
 
 /// This family of chipset puts one high speed controller and four
@@ -100,6 +105,12 @@ fn usbdMain() noreturn {
     // would report a finished boot with its own disks still undiscovered.
     const channel = sys.svcRegister(proto.SERVICE) catch standDown();
     service = @intCast(channel);
+
+    // The ports found on the walk above go up under a name of their own:
+    // what a serial port is has nothing to do with the bus it was found
+    // on, and a program wanting one should not have to know which
+    // service happens to be driving it.
+    serial.start();
     out.flush();
 
     serve();
@@ -201,10 +212,13 @@ fn attach(driver: Driver, location: pci.Location) Attach {
 // ---------------------------------------------------------------------------
 
 fn serve() noreturn {
-    // The channel, every controller's interrupt, and every offered
-    // volume's doorbell. The set is rebuilt whenever a disk comes or
-    // goes, which is the only time it changes.
-    var sources: [2 + MAX_CONTROLLERS + @import("lib").volume.MAX_VOLUMES]u32 = undefined;
+    // The channel, every controller's interrupt, the serial service's
+    // own pair, and every offered volume's doorbell, with the request to
+    // go at the end. The set is rebuilt whenever a disk comes or goes,
+    // which is the only time it changes.
+    const SOURCES = 1 + MAX_CONTROLLERS + SERIAL_SOURCES +
+        @import("lib").volume.MAX_VOLUMES + 1;
+    var sources: [SOURCES]u32 = undefined;
     var source_count: usize = 0;
     quit_event = quit.event();
 
@@ -257,8 +271,22 @@ fn serve() noreturn {
             continue;
         }
 
+        // A program asking about a serial port, or saying it has written
+        // something to one.
+        const woke_on = sources[index];
+        if (serial.channel() != 0 and woke_on == serial.channel()) {
+            serial.drain();
+            out.flush();
+            continue;
+        }
+        if (serial.doorbell() != 0 and woke_on == serial.doorbell()) {
+            serial.pump();
+            out.flush();
+            continue;
+        }
+
         // A volume's doorbell: the kernel wants blocks.
-        if (volume.forDoorbell(sources[index])) |offered| volume.serve(offered);
+        if (volume.forDoorbell(woke_on)) |offered| volume.serve(offered);
     }
 }
 
@@ -274,6 +302,7 @@ fn watchList(into: []u32) usize {
         into[count] = controller.irq;
         count += 1;
     }
+    count += serial.watching(into[count..]);
     count += volume.doorbells(into[count..]);
     if (quit_event != 0) {
         into[count] = quit_event;
@@ -281,6 +310,10 @@ fn watchList(into: []u32) usize {
     }
     return count;
 }
+
+/// How many handles the serial service waits on: the channel programs
+/// ask it on, and the doorbell they ring.
+const SERIAL_SOURCES = 2;
 
 /// Match the offered volumes to the disks that are actually there. Called
 /// after a scan, which is the only thing that changes either list.

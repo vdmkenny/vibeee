@@ -1,0 +1,6 @@
+# The serial adapter one company makes and several copy. Matched by part
+# rather than by class: the chip answers no class at all, and the parts
+# named here are the ones whose baud rate is written the one way.
+name    = ftdi
+service = usb
+match   = usb:0403:6001, usb:0403:6015

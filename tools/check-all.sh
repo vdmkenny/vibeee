@@ -21,6 +21,7 @@ cd "$(dirname "$0")/.."
 # the thing worked.
 rm -f "$BUILD"/check-boot*.png "$BUILD"/check-boot*.log "$BUILD"/check-boot*.log.txt
 rm -f "$BUILD"/check-net-*.png "$BUILD"/check-net-*.log "$BUILD"/check-net-*.log.txt
+rm -f "$BUILD"/check-serial.png "$BUILD"/check-serial.log "$BUILD"/check-serial.log.txt "$BUILD"/check-serial.out
 
 fail() { printf 'check-all: %s\n' "$*" >&2; exit 1; }
 step() { printf '\n== %s\n' "$*"; }
@@ -115,6 +116,37 @@ ping 10.0.2.2"
     echo "$model: up, leased, answering"
 done
 echo "both modelled adapters carry traffic end to end"
+
+# A serial adapter on a controller the default machine does not have. The
+# emulator's cable is the vendor part, so this proves that driver; the class
+# driver has no emulated device anywhere and is proven only by its tests.
+#
+# The chardev is a file because the emulator's adapter attaches to the bus
+# only while its backend is open, and a file always is. It carries what the
+# guest sends, which is the half of the conversation a gate can read back.
+bootserial() {
+    out="$1"; shift
+    QEMU_CPU="$QEMU_CPU" tools/qemu-shot.sh "$out" "$@" \
+        -- -drive if=ide,format=raw,file="$DEV_IMAGE" \
+        -device piix3-usb-uhci,id=uh -chardev file,id=sport,path="$SER_WIRE" \
+        -device usb-serial,bus=uh.0,chardev=sport >/dev/null \
+        || fail "the emulator did not run (see ${out%.png}.log)"
+}
+
+step "a serial adapter: named, set, and carrying what is typed"
+SER_WIRE=$BUILD/check-serial.out
+LOGSER=$BUILD/check-serial.log
+bootserial "$BUILD/check-serial.png" -w 30 -p 3 -s 3 -t "ser ser0 set 9600 8N1
+ser
+ser ser0
+over the wire"
+plain "$LOGSER" > "$LOGSER.txt"
+! grep -qi "panic" "$LOGSER.txt" || fail "the kernel panicked with an adapter plugged in (see $LOGSER)"
+grep -Eq '^ser0 +0403:6001' "$LOGSER.txt" || fail "the adapter was not named as a port (see $LOGSER)"
+grep -Eq '^ser0 +0403:6001 +9600 8N1' "$LOGSER.txt" || fail "the line was not set (see $LOGSER)"
+grep -q "F10 leaves" "$LOGSER.txt" || fail "no terminal opened on the port (see $LOGSER)"
+grep -q "over the wire" "$SER_WIRE" || fail "what was typed did not reach the wire (see $SER_WIRE)"
+echo "the adapter enumerates, takes a line, and carries what is typed to the far end"
 
 step "the card through a USB reader: its volumes arrive"
 cp "$IMAGE" "$SD_COPY"

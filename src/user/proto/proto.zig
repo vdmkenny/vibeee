@@ -20,6 +20,7 @@ pub const panes = @import("panes.zig");
 pub const opening = @import("opening.zig");
 pub const settings = @import("settings.zig");
 pub const usb = @import("usb.zig");
+pub const serial = @import("serial.zig");
 pub const socket = @import("socket.zig");
 pub const wm = @import("wm.zig");
 pub const app = @import("app.zig");

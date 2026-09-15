@@ -72,14 +72,24 @@ pub const HcOps = struct {
     /// The largest bulk transfer this controller will carry in one go.
     /// A driver moving more than this splits it and keeps its own place.
     bulkLimit: *const fn () usize,
-    /// Watch an interrupt endpoint. The controller polls it in hardware
-    /// at the endpoint's own rate and interrupts only when the device
-    /// answers, so a keyboard nobody is typing on costs nothing.
-    watch: *const fn (pipe: usb.Pipe, report_bytes: u8) Error!u8,
+    /// Leave a read standing on an endpoint that reads. The controller
+    /// visits it in hardware and interrupts only when the device answers
+    /// with something, so a keyboard nobody is typing on and a serial
+    /// port nobody is sending to both cost nothing.
+    ///
+    /// For an interrupt endpoint that is the endpoint's own polling; for
+    /// a bulk one it is the same standing question, asked once a frame.
+    /// Either way `wanted` is how much is asked for each time, which must
+    /// be at least one of the endpoint's packets: a device answering with
+    /// more than was asked for is a failed transfer, not a truncated one.
+    watch: *const fn (pipe: usb.Pipe, wanted: u16) Error!u8,
     /// Whatever arrived on a watched endpoint since last asked. The watch
     /// is re-armed by the asking, so a caller that stops asking stops
     /// receiving.
     collect: *const fn (watch: u8, into: []u8) ?usize,
+    /// The most one watch will take in at a time, which bounds how much
+    /// a device may send between two visits without losing any.
+    watchLimit: *const fn () usize,
     /// Stop watching, because the device is gone.
     unwatch: *const fn (watch: u8) void,
 };
