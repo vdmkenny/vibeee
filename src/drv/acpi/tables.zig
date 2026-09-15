@@ -86,10 +86,22 @@ pub const Info = struct {
     pm1a_event: u16 = 0,
     pm1a_event_len: u8 = 0,
     pm1a_control_len: u8 = 0,
-    /// Sleep type values for S5, from the DSDT.
-    slp_typ_a: u8 = 0,
-    slp_typ_b: u8 = 0,
-    s5_found: bool = false,
+    /// What each sleep state is written as, from the DSDT.
+    off: SleepType = .{},
+    /// Suspend to memory. A machine whose firmware does not offer it says
+    /// so by having no `_S3_` at all, which is what `found` answers.
+    suspend_to_memory: SleepType = .{},
+    /// Where the firmware keeps the address it jumps to on waking, from
+    /// the FADT. Zero on a machine whose tables do not say.
+    facs: u32 = 0,
+};
+
+/// The two values written into the PM1 control registers to enter one
+/// sleep state, and whether the tables named it at all.
+pub const SleepType = struct {
+    a: u8 = 0,
+    b: u8 = 0,
+    found: bool = false,
 };
 
 var info: Info = .{};
@@ -173,7 +185,9 @@ pub fn init(rsdp_phys: u32) void {
     info.pm1a_control_len = fadt.pm1_cnt_len;
     have_info = true;
 
-    findS5(fadt.dsdt);
+    info.facs = fadt.firmware_ctrl;
+    if (findSleepState(fadt.dsdt, "_S5_")) |found| info.off = found;
+    if (findSleepState(fadt.dsdt, "_S3_")) |found| info.suspend_to_memory = found;
 }
 
 /// Extract the S5 sleep type values from the DSDT.
@@ -186,29 +200,37 @@ pub fn init(rsdp_phys: u32) void {
 ///
 /// If the scan fails, poweroff falls back to the emulator ports and finally to
 /// halting, never to writing a guessed value into a power register.
-fn findS5(dsdt_phys: u32) void {
-    const dsdt = mapTable(dsdt_phys) orelse return;
-    if (!std.mem.eql(u8, &dsdt.signature, "DSDT")) return;
+/// What one sleep state is written as, found by name in the DSDT.
+///
+/// Read out of the bytes rather than interpreted. An interpreter is the
+/// platform service's and arrives much later than this: what is needed
+/// here is two small integers out of a named package, which is a shape
+/// simple enough to recognise without running anything. A machine whose
+/// tables do not name the state answers nothing, which is how a machine
+/// that cannot enter it is told from one that can.
+fn findSleepState(dsdt_phys: u32, name: []const u8) ?SleepType {
+    const dsdt = mapTable(dsdt_phys) orelse return null;
+    if (!std.mem.eql(u8, &dsdt.signature, "DSDT")) return null;
 
     const aml = body(dsdt);
-    if (aml.len < 8) return;
+    if (aml.len < 8) return null;
 
-    const idx = std.mem.indexOf(u8, aml, "_S5_") orelse return;
+    const idx = std.mem.indexOf(u8, aml, name) orelse return null;
 
-    var p = idx + 4;
-    if (p >= aml.len) return;
+    var p = idx + name.len;
+    if (p >= aml.len) return null;
 
     // NameOp may precede; PackageOp (0x12) introduces the values.
     if (aml[p] == 0x12) {
         p += 1;
         // Skip the package length, whose top two bits give its own byte count.
-        if (p >= aml.len) return;
+        if (p >= aml.len) return null;
         const lead = aml[p];
         p += 1 + (lead >> 6);
         // Element count.
-        if (p >= aml.len) return;
+        if (p >= aml.len) return null;
         p += 1;
-    } else return;
+    } else return null;
 
     const value = struct {
         /// Small integers appear as dedicated opcodes rather than bytes:
@@ -231,7 +253,7 @@ fn findS5(dsdt_phys: u32) void {
         }
     };
 
-    info.slp_typ_a = value.read(aml.ptr, aml.len, &p) orelse return;
-    info.slp_typ_b = value.read(aml.ptr, aml.len, &p) orelse info.slp_typ_a;
-    info.s5_found = true;
+    const a = value.read(aml.ptr, aml.len, &p) orelse return null;
+    const b = value.read(aml.ptr, aml.len, &p) orelse a;
+    return .{ .a = a, .b = b, .found = true };
 }

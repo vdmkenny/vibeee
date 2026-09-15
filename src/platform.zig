@@ -242,8 +242,12 @@ pub fn earlyDevices(bi: *const bootinfo.BootInfo) void {
     shutdown.setPowerOps(.{ .off = acpi_power.off, .reset = acpi_power.reset });
 
     if (acpi.get()) |a| {
-        if (a.s5_found) {
-            console.info("acpi", "pm1a {x:0>4}, S5 type {d}", .{ a.pm1a_control, a.slp_typ_a });
+        if (a.off.found) {
+            console.info("acpi", "pm1a {x:0>4}, S5 type {d}{s}", .{
+                a.pm1a_control,
+                a.off.a,
+                if (a.suspend_to_memory.found) ", S3 offered" else "",
+            });
         } else {
             console.warn("acpi: no S5 in DSDT; power off will fall back", .{});
         }

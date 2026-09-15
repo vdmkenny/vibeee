@@ -60,14 +60,14 @@ const EMULATOR_PORTS = [_]struct { port: u16, value: u16 }{
 /// Power the machine off. Returns only if every method failed.
 pub fn off() void {
     if (tables.get()) |info| {
-        if (info.s5_found and info.pm1a_control != 0) {
+        if (info.off.found and info.pm1a_control != 0) {
             // Each step says what it is about to do. A machine that stops
             // here stops with the screen still on and nothing else to go on,
             // so the last line printed is the only way to tell which write it
             // was that never came back.
             console.debug("shutdown", "pm1a {x:0>4} = {x:0>4}, s5 type {d}, smi {x:0>4}/{x:0>2}", .{
                 info.pm1a_control, hal.inw(info.pm1a_control),
-                info.slp_typ_a,    info.smi_command,
+                info.off.a,        info.smi_command,
                 info.acpi_enable,
             });
 
@@ -84,12 +84,12 @@ pub fn off() void {
 
             const slp = Pm1Control{
                 .acpi_mode = held.acpi_mode,
-                .sleep_type = @truncate(info.slp_typ_a),
+                .sleep_type = @truncate(info.off.a),
                 .sleep_enable = false,
             };
             const go = Pm1Control{
                 .acpi_mode = held.acpi_mode,
-                .sleep_type = @truncate(info.slp_typ_a),
+                .sleep_type = @truncate(info.off.a),
                 .sleep_enable = true,
             };
 
@@ -105,12 +105,12 @@ pub fn off() void {
             if (info.pm1b_control != 0) {
                 const b_slp = Pm1Control{
                     .acpi_mode = held.acpi_mode,
-                    .sleep_type = @truncate(info.slp_typ_b),
+                    .sleep_type = @truncate(info.off.b),
                     .sleep_enable = false,
                 };
                 const b_go = Pm1Control{
                     .acpi_mode = held.acpi_mode,
-                    .sleep_type = @truncate(info.slp_typ_b),
+                    .sleep_type = @truncate(info.off.b),
                     .sleep_enable = true,
                 };
                 hal.outw(info.pm1b_control, @bitCast(b_slp));
