@@ -37,7 +37,7 @@ const DRIVER_DIR = "/lib/drivers";
 /// driver is adding files and telling nobody.
 const MANIFEST_SUFFIX = ".man";
 
-const MAX_DRIVERS = 12;
+const MAX_DRIVERS = 16;
 const MAX_BOUND = 12;
 
 /// What a manifest says. Field names are the keys in the file, so the two
@@ -61,8 +61,20 @@ const Manifest = struct {
 var manifests: [MAX_DRIVERS]Manifest = @splat(.{});
 var manifest_count: usize = 0;
 
-/// The text every manifest's fields point into, so it has to outlive them.
-var manifest_text: [4096]u8 = @splat(0);
+/// One manifest's file, while it is being read. Whatever the parse
+/// finds points into this, so what is worth keeping is copied out before
+/// the next file is read over it.
+var reading: [1024]u8 = @splat(0);
+
+/// The text the kept manifests' fields point into, so it has to outlive
+/// the buffer they were read from.
+///
+/// The values only, never the files. A manifest is mostly the prose
+/// saying what its driver is for and why, which is worth having in the
+/// file and worth nothing at all in memory: keeping the files instead
+/// made the room this holds a budget for how much anybody had written
+/// rather than for how many drivers there are.
+var manifest_text: [1024]u8 = @splat(0);
 var manifest_used: usize = 0;
 
 /// One device bound to one manifest: either a process the manager runs, or
@@ -144,8 +156,46 @@ fn readManifests() void {
 
 var path_buf: [96]u8 = @splat(0);
 
+/// Copy everything a manifest's fields point at into storage that
+/// outlives the buffer it was read from, and point them at the copies.
+///
+/// All or nothing: a manifest taken in part would name a driver by half
+/// a name, and a device would then be given to something that is not
+/// there. Every field of text, found by walking the shape rather than
+/// listed here, so a manifest gaining a field does not quietly gain a
+/// field that points into the next file read.
+fn keep(one: *Manifest) bool {
+    const room = manifest_text[manifest_used..];
+    var used: usize = 0;
+
+    inline for (@typeInfo(Manifest).@"struct".fields) |field| {
+        if (field.type == []const u8) {
+            const value = @field(one, field.name);
+            if (value.len > room.len - used) return false;
+            @memcpy(room[used..][0..value.len], value);
+            @field(one, field.name) = room[used..][0..value.len];
+            used += value.len;
+        }
+    }
+    manifest_used += used;
+    return true;
+}
+
+/// Why a manifest was not taken. Said rather than passed over: a driver
+/// missing because of a limit looks exactly like a driver nobody wrote,
+/// and the two want opposite fixes.
+fn say(name: []const u8, why: []const u8) void {
+    log.begin("devmgd", .warn);
+    out.text(name);
+    out.text(": ");
+    out.text(why);
+    log.end();
+}
+
 fn readOne(name: []const u8) void {
-    if (manifest_count == MAX_DRIVERS) return;
+    if (manifest_count == MAX_DRIVERS) {
+        return say(name, "there is no room for another driver");
+    }
 
     var path = str.Builder{ .buf = &path_buf };
     path.text(DRIVER_DIR);
@@ -155,16 +205,12 @@ fn readOne(name: []const u8) void {
     const file = sys.open(path.done(), .{}) catch return;
     defer sys.close(file);
 
-    // Read into the tail of the shared buffer: the parsed fields are slices
-    // of it, so every manifest's text has to stay where it was put.
-    const room = manifest_text[manifest_used..];
-    if (room.len == 0) return;
-
-    const n = sys.read(file, room) catch return;
+    const n = sys.read(file, &reading) catch return;
     if (n == 0) return;
-
-    const text = room[0..@intCast(n)];
-    manifest_used += @intCast(n);
+    const text = reading[0..@intCast(n)];
+    // A file longer than the buffer is one whose last lines were not
+    // read, and the fields in them are the ones that would be missed.
+    if (text.len == reading.len) return say(name, "the file did not fit and was not read whole");
 
     var current = Manifest{};
     var dirty = false;
@@ -187,6 +233,7 @@ fn readOne(name: []const u8) void {
     for (manifests[0..manifest_count]) |existing| {
         if (std.mem.eql(u8, existing.name, current.name)) return;
     }
+    if (!keep(&current)) return say(name, "there is no room left for what it says");
     manifests[manifest_count] = current;
     manifest_count += 1;
 }
