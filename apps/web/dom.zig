@@ -1580,8 +1580,10 @@ fn jsInsertHtml(ctx: *Context, this: Value, argc: c_int, argv: [*]const Value) c
 }
 
 /// `document.write`: markup put where the running script stands, after it,
-/// or at the end of the body once the page has loaded.
-fn jsWrite(ctx: *Context, _: Value, argc: c_int, argv: [*]const Value) callconv(.c) Value {
+/// or at the end of the body once the page has loaded. Written to a
+/// document of its own, it goes at the end of that document's body, there
+/// being no script running in one.
+fn jsWrite(ctx: *Context, this: Value, argc: c_int, argv: [*]const Value) callconv(.c) Value {
     const it = documentOf(ctx) orelse return qjs.undefinedValue();
     var written: std.ArrayList(u8) = .empty;
     defer written.deinit(it.gpa);
@@ -1589,6 +1591,14 @@ fn jsWrite(ctx: *Context, _: Value, argc: c_int, argv: [*]const Value) callconv(
         const piece = argument(ctx, argc, argv, i) orelse continue;
         defer qjs.freeText(ctx, piece.ptr);
         written.appendSlice(it.gpa, piece) catch break;
+    }
+    const tree = treeOf(it, this);
+    if (tree != it.tree) {
+        if (lexbor.lxb_html_document_body_element_noi(tree)) |body| {
+            const node = lexbor.nodeOf(body);
+            if (fragmentOf(it, node, written.items)) |held| moveChildren(it, held, node, null);
+        }
+        return qjs.undefinedValue();
     }
     if (it.running) |script| {
         if (script.parent) |parent| {
@@ -2868,10 +2878,15 @@ const node_gets = reflectedEntries() ++ flaggedEntries() ++ [_]qjs.ListEntry{
     .accessor("contentWindow", &jsContentWindow, null),
     // What a document of its own answers besides what every node does: a
     // script that parses markup, or measures in a frame, makes its nodes
-    // there and looks for them there.
+    // there, writes into it, and looks for them there.
     .method("createElement", 1, &jsCreateElement),
     .method("createTextNode", 1, &jsCreateText),
     .method("createDocumentFragment", 0, &jsCreateFragment),
+    // `open` is left out: an element already reflects an attribute of that
+    // name, and nothing a script does with a document of its own needs it.
+    .method("write", 1, &jsWrite),
+    .method("writeln", 1, &jsWrite),
+    .method("close", 0, &jsNothing),
     .accessorMagic("documentElement", &jsDocumentPart, null, 0),
     .accessorMagic("body", &jsDocumentPart, null, 1),
     .accessorMagic("head", &jsDocumentPart, null, 2),

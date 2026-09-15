@@ -39,11 +39,14 @@ pub const STACK_MAX = 256 * 1024;
 /// between passes of a window, and a person waits for each.
 ///
 /// A mainstream site's main bundle is a megabyte and a half, which this
-/// machine takes several seconds to read and run, and a bundle stopped in
-/// the middle leaves a page that never draws. So the slice is what such a
-/// bundle needs with room over: a script still going after it is one that
-/// is not working rather than one that is slow.
-pub const SLICE_US: u64 = 10_000_000;
+/// machine takes several seconds to read and run, and the first drawing of
+/// a page built out of components is longer again. A script stopped in the
+/// middle of either leaves a page that never draws, so the slice is what
+/// those need with room over: a script still going after half a minute is
+/// one that is not working rather than one that is slow. What it costs is
+/// a window that does not answer while such a script runs, which is what
+/// any browser costs on a page like that.
+pub const SLICE_US: u64 = 30_000_000;
 
 /// The clock the slice is measured on, in microseconds since anything: handed
 /// in, this machine's clock being one thing and the host's, where the engine

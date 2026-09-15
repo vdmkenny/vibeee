@@ -921,6 +921,9 @@ test "a frame holds an empty document of its own, which a script may measure in"
     // something in it and read it back.
     try testing.expectEqualStrings("true", try it.run("String(f.contentDocument === f.contentDocument)"));
     try testing.expectEqualStrings("DIV block", try it.run("var d = f.contentDocument.createElement('div'); f.contentDocument.body.appendChild(d); d.style.display = 'block'; [f.contentDocument.body.firstChild.nodeName, f.contentWindow.getComputedStyle(d).display].join(' ')"));
+    // What a script library does to find out an element's default display:
+    // it writes a page into the frame and measures in it.
+    try testing.expectEqualStrings("B here", try it.run("var w = f.contentWindow.document; w.write('<b>here</b>'); w.close(); [w.body.lastChild.nodeName, w.body.lastChild.textContent].join(' ')"));
     try testing.expectEqualStrings("null null", try it.run("var p = document.createElement('p'); [String(p.contentDocument), String(p.contentWindow)].join(' ')"));
 }
 
