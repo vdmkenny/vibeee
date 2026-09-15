@@ -510,21 +510,36 @@ fn isJavaScript(node: *Node) bool {
 const script_types = [_][]const u8{ "text/javascript", "application/javascript", "text/ecmascript", "application/ecmascript", "text/jscript" };
 
 /// Run one script element: the text the browser fetched for the address it
-/// names, or its own words.
+/// names, which is nothing where the fetch failed, or its own words.
 fn runElement(it: *Document, node: *Node, fetched: []const Fetched) void {
-    const was_running = it.running;
-    it.running = node;
-    defer it.running = was_running;
     if (lexbor.attribute(node, "src")) |named| {
         var buf: [url.ADDRESS_MAX]u8 = undefined;
         const resolved = resolvedFrom(it, named, &buf) orelse return;
         const text = fetchedText(fetched, resolved) orelse return;
-        if (text.len > 0) runText(it, text, "<script src>");
+        runFetched(it, node, if (text.len > 0) text else null);
         return;
     }
+    const was_running = it.running;
+    it.running = node;
+    defer it.running = was_running;
     const text = textOfNode(node);
     defer text.deinit();
     if (text.bytes.len > 0) runText(it, text.bytes, "<script>");
+}
+
+/// Run a script fetched for its element, and tell the element `load` once
+/// it has run, or `error` where the fetch came to nothing: what a page's
+/// handlers on the element wait for before they use what the script brought.
+fn runFetched(it: *Document, node: *Node, source: ?[]const u8) void {
+    const text = source orelse {
+        _ = tell(it, node, "error", false);
+        return;
+    };
+    const was_running = it.running;
+    it.running = node;
+    runText(it, text, "<script src>");
+    it.running = was_running;
+    _ = tell(it, node, "load", false);
 }
 
 /// Run `source` as a script of the page's, counting it and what it threw.
@@ -951,22 +966,18 @@ pub fn answer(it: *Document, id: u32, got: Answer) void {
             callHandler(it, request, "onreadystatechange", request);
             callHandler(it, request, if (got.failed) "onerror" else "onload", request);
         },
-        .script => |node| {
-            if (!got.failed and got.status / 100 == 2) {
-                const was_running = it.running;
-                it.running = node;
-                runText(it, got.body, "<script src>");
-                it.running = was_running;
-                _ = tell(it, node, "load", false);
-            } else {
-                _ = tell(it, node, "error", false);
-            }
-        },
+        .script => |node| runFetched(it, node, if (!got.failed and got.status / 100 == 2) got.body else null),
     }
     _ = it.machine.runJobs();
 }
 
 /// What the page's scripts came to so far.
+/// How much of the engine's bound the page has taken, in bytes: asked once
+/// for a report, since counting it is a walk over everything the page holds.
+pub fn memoryOf(it: *const Document) usize {
+    return it.machine.taken();
+}
+
 pub fn reportOf(it: *const Document) Report {
     return it.report;
 }
