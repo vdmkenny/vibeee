@@ -4,6 +4,8 @@
 >
 > Built and working: the block layer with partition parsing ([`block.zig`](../src/kernel/block.zig)), the block cache ([`bcache.zig`](../src/kernel/bcache.zig)), FAT12/16/32 with VFAT long names ([`fat.zig`](../src/kernel/fat.zig)), the mount table and longest-prefix path resolution ([`vfs.zig`](../src/kernel/vfs.zig)), reads and writes through ATA PIO ([`drv/block/ata.zig`](../src/drv/block/ata.zig)), removable media through usbd, and the boot ramdisk.
 >
+> Also built: the clean-unmount flag and the volume check it gates ([`fat/clean.zig`](../src/kernel/fat/clean.zig), [`fat/check.zig`](../src/kernel/fat/check.zig)), which is what §7's write ordering was for. A volume not unmounted cleanly is checked when it is mounted, and `check` asks for the same by hand.
+>
 > Not yet: bus-master DMA (§3, designed and not built), the page cache, and the request queue of §4. There is no swap and there will not be one.
 >
 > Where this document and [`00-vibeee.md`](00-vibeee.md) disagree, the master design
@@ -546,11 +548,20 @@ partition, the persistent partition, SD cards and USB sticks alike, so there is
 one implementation to make crash-safe rather than three.
 
 The ordering discipline in §7 is what stands in for a journal: data clusters,
-then the FAT chain, then the directory entry. A power cut can leak clusters,
-which any other machine reclaims, but cannot leave a directory entry pointing at
-a chain that was never written. Anything the system must not lose is written
-under a temporary name and renamed into place, so the old contents survive until
-the new ones are complete.
+then the FAT chain, then the directory entry. A power cut can leak clusters but
+cannot leave a directory entry pointing at a chain that was never written.
+Anything the system must not lose is written under a temporary name and renamed
+into place, so the old contents survive until the new ones are complete.
+
+The leaked clusters are reclaimed here rather than left to another machine. A
+volume records whether it was unmounted cleanly ([`fat/clean.zig`](../src/kernel/fat/clean.zig)),
+and one that was not is checked when it is mounted
+([`fat/check.zig`](../src/kernel/fat/check.zig)): the tree is walked, the table
+is swept for clusters nothing reaches, and what the ordering discipline can
+leave behind is put right. `check` runs the same by hand. Clusters two chains
+claim are the one fault it will not repair, because the medium does not record
+which chain is correct; the volume is mounted read-only and can be taken
+elsewhere.
 
 ## 7. FAT16/32 driver (interchange + boot partition)
 

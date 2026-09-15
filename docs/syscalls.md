@@ -1374,6 +1374,30 @@ An event signalled whenever the machine has woken from a suspend.
 
 One event for the machine, handed to whoever asks. What a service that drives hardware waits on: a part that lost its power lost everything its driver believed about it, and nothing but that driver can say what it should hold instead. An event rather than being told directly, because whoever did the telling would be inside its own request while it told, and a driver taking its device back has questions for the other services as it does so.
 
+## `check_volume`  <sub>#77</sub>
+
+Check a mounted volume against itself, repairing what can be repaired.
+
+| arg | type | meaning |
+|---|---|---|
+| `path` | const ptr | A mount point, exactly as it was mounted. |
+| `path_len` | len | Length of the path. |
+| `report` | ptr | Where to write the CheckReport. |
+| `flags` | flags | CheckFlags: bit 0 report only. |
+
+**Returns:** 0
+
+**Errors:**
+
+- `EFAULT`, a pointer argument is outside the caller's address space
+- `ENOENT`, no such file or directory
+- `EBUSY`, another process already owns it
+- `ENOMEM`, no handle slots free, or the buffer is too small
+- `EPERM`, the operation is not allowed on that object
+- `EIO`, the underlying device failed
+
+Requires Caps.mount. Runs at mount time by itself on a volume that was not unmounted cleanly; this is the same check asked for by hand. Repairs are refused on a read-only volume, which reports and changes nothing. A volume holding clusters claimed by two chains is reported and not repaired, because nothing on the medium says which chain has the better claim.
+
 ---
 
-77 calls defined.
+78 calls defined.

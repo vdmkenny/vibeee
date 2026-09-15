@@ -57,6 +57,8 @@ knows when this was last true, and the tree knows how big it is.
 | Block layer | [`block.zig`](../src/kernel/block.zig) | Device registry, MBR partition parsing. |
 | Block cache | [`bcache.zig`](../src/kernel/bcache.zig) | Read cache with hit reporting. |
 | FAT | [`fat.zig`](../src/kernel/fat.zig), [`fat/alloc.zig`](../src/kernel/fat/alloc.zig) | FAT12/16/32, VFAT long names, timestamps. Read and write: cluster allocation across all FAT copies, chain extension, create, append, truncate to a length, unlink, and rename. Renaming moves the record, never the content: replacing repoints the entry already carrying the name in one sector write. |
+| Clean unmount | [`fat/clean.zig`](../src/kernel/fat/clean.zig) | The flag saying a volume was unmounted in an orderly way. Cleared before the first write of a mount and set after the last one has reached the medium, so a volume interrupted in between is found dirty. Both places it lives are written, the specification's bits at the top of the second table entry and the boot-sector byte most Unix implementations read, and either one clear counts as dirty. FAT12 has neither and is checked every mount instead. |
+| Volume check | [`fat/check.zig`](../src/kernel/fat/check.zig), [`fat/verdict.zig`](../src/kernel/fat/verdict.zig) | What `mount` runs by itself on a volume that was not unmounted cleanly, and what the `check` command asks for by hand. Every chain reachable from the root is walked and its clusters marked, then the table is swept: a cluster marked used that nothing reaches is freed, a chain longer than its record is cut back, a size larger than its chain is reduced, a chain that leaves the volume or loops is ended at the last cluster really on it, and copies of the table that disagree are brought back into step. A cluster two chains claim is reported and never repaired, since assigning it to either takes it from the other; the volume is mounted read-only instead. Which repair a difference calls for is decided in `verdict.zig`, which touches no medium, so each case is a test rather than a volume damaged to reach it. Memory is a bit per cluster and a fixed stack of open directories, and every walk is bounded by the cluster count. |
 | Mount table | [`vfs.zig`](../src/kernel/vfs.zig) | Longest-prefix resolution, open-file counting, read-only enforcement per mount and per device. Every write goes through here. Userspace attaches and detaches volumes with the `mount` capability. |
 | ATA | [`drv/block/ata.zig`](../src/drv/block/ata.zig) | PIO. No DMA. |
 | Ramdisk | [`drv/block/ramdisk.zig`](../src/drv/block/ramdisk.zig) | Backs the boot-to-RAM rootfs. |
@@ -241,7 +243,9 @@ beside the driver that is the only thing reading them, and its tests run from
   headless twice: the first boot reports done, `probe` refuses everything it should and leaks
   nothing, `svc` shows the services up, nothing panicked or tripped the boot watchdog, and a
   setting written on the first boot is read back on the second, where a service asked to
-  stop also goes on its own.
+  stop also goes on its own. A volume written to and then cut off, which is what killing
+  the emulator is, is found on the next boot to say so, is checked, keeps what was
+  written, and is left settled for the boot after that.
 - Boot self-tests, heap, syscall ABI, clock advance, IPC. Each reports `fail` on the boot
   log rather than hanging, because the target has no serial port.
 - `make shot OUT=x.png TYPE="..."`, boot headless, type at the shell, screenshot, and a full serial transcript beside it. `PAUSE` is the wait after each typed line, for a command that takes longer than a moment.

@@ -70,6 +70,16 @@ test {
     // The long-name assembler, which is the most exposed parser here: it runs
     // over bytes from whatever medium somebody puts in the machine.
     _ = @import("kernel/fat.zig");
+    // The volume's own account of how it was last put down, and the walk that
+    // compares the two halves of a volume against each other. Both run over a
+    // medium built in memory, so a power cut is a test rather than an outing
+    // with the machine's own card.
+    _ = @import("kernel/fat/clean.zig");
+    _ = @import("kernel/fat/check.zig");
+    // What a check decides, which is arithmetic over two descriptions and
+    // needs no volume at all: every way a record and its chain can disagree
+    // is a case there rather than a medium damaged to reach it.
+    _ = @import("kernel/fat/verdict.zig");
     _ = @import("kernel/ublk.zig");
     // The device table's row and name discipline: rows are reused as media
     // come and go, and a name has to stay with the row it names.

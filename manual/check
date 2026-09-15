@@ -1,0 +1,25 @@
+check - compare a volume against itself and repair it
+
+  check /home
+  check -n /home
+
+FAT records a file's length twice: the directory record holds its size,
+and the allocation table holds the chain of clusters. Nothing keeps the
+two consistent if power is lost part way through a write. This compares
+them and repairs what can be repaired.
+
+Clusters marked used that no file reaches are freed. A chain longer than
+its record claims is cut back, and a size larger than its chain is
+reduced. A chain that leaves the volume or loops is ended at the last
+cluster that was really on it. If the volume has more than one copy of
+the allocation table, the copies are brought back into step.
+
+A cluster claimed by two files is reported and not repaired: giving it to
+either takes it from the other, and the medium does not record which is
+correct. A volume in that state is left mounted read-only.
+
+`-n` reports what is wrong without changing anything.
+
+A volume that was not unmounted cleanly is checked by itself when it is
+mounted, so this is only needed to look at one on purpose. Nothing on the
+volume may be open while it runs.

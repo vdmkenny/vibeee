@@ -59,35 +59,58 @@ const SECTOR = block.SECTOR_SIZE;
 const INVALID_SECTOR: u32 = 0xFFFF_FFFF;
 /// How many sectors one read of the walk asks for.
 const WALK_SECTORS = 8;
-/// The number in a thirty-two bit entry: the top four bits are reserved,
-/// not ours, and kept as they are when an entry is written.
-const FAT32_ENTRY_MASK: u32 = 0x0FFF_FFFF;
+/// A thirty-two bit entry. Only the low twenty-eight are the entry; the top
+/// four are reserved and are preserved as found whenever one is written.
+pub const Wide = packed struct(u32) {
+    value: u28,
+    reserved: u4,
+};
+
+/// The meaningful width of an entry, as a type.
+///
+/// FAT32 is named for its entry size rather than its values: every value the
+/// format defines for it is twenty-eight bits wide.
+fn Entry(comptime kind: Kind) type {
+    return switch (kind) {
+        .fat12 => u12,
+        .fat16 => u16,
+        .fat32 => u28,
+    };
+}
+
+/// The three values an entry can hold that are not a cluster number.
+pub const Sentinels = struct {
+    /// This or above means the chain has ended.
+    end_from: u32,
+    /// What is written to end one.
+    terminator: u32,
+    /// A cluster the medium cannot hold data in. The one value that is
+    /// neither free nor part of a chain, and the one a check must not
+    /// reclaim.
+    bad: u32,
+};
+
+/// All three sit at the top of the entry's range, in the same pattern at
+/// every width: every bit set terminates a chain, that value less eight
+/// marks a bad cluster, and that value less seven and above reads as an end.
+/// Derived from the width rather than written out nine times, and pinned
+/// below against the values the specification gives.
+pub fn sentinels(width: Kind) Sentinels {
+    return switch (width) {
+        inline else => |kind| blk: {
+            const top = std.math.maxInt(Entry(kind));
+            break :blk .{ .terminator = top, .bad = top - 8, .end_from = top - 7 };
+        },
+    };
+}
 
 /// A sixteen or thirty-two bit entry at `at` in `bytes`. Twelve-bit ones
 /// straddle bytes and sectors and are read where they are stored.
 fn wideEntry(kind: Kind, bytes: []const u8, at: usize) u32 {
     return switch (kind) {
         .fat16 => std.mem.readInt(u16, bytes[at..][0..2], .little),
-        .fat32 => std.mem.readInt(u32, bytes[at..][0..4], .little) & FAT32_ENTRY_MASK,
+        .fat32 => @as(Wide, @bitCast(std.mem.readInt(u32, bytes[at..][0..4], .little))).value,
         .fat12 => unreachable,
-    };
-}
-
-/// The first value that means "no more clusters", per width.
-pub fn endOfChain(kind: Kind) u32 {
-    return switch (kind) {
-        .fat12 => 0x0FF8,
-        .fat16 => 0xFFF8,
-        .fat32 => 0x0FFF_FFF8,
-    };
-}
-
-/// The value written to mark the last cluster of a chain.
-fn terminator(kind: Kind) u32 {
-    return switch (kind) {
-        .fat12 => 0x0FFF,
-        .fat16 => 0xFFFF,
-        .fat32 => 0x0FFF_FFFF,
     };
 }
 
@@ -170,11 +193,11 @@ fn store(t: *Table, cluster: u32, value: u32) Error!void {
             try storeSector(t, sector);
         },
         .fat32 => {
-            // The top four bits are reserved and must be preserved, not zeroed:
-            // they are not ours, and other implementations do look at them.
-            const existing = std.mem.readInt(u32, t.cache[within..][0..4], .little);
-            const merged = (existing & ~FAT32_ENTRY_MASK) | (value & FAT32_ENTRY_MASK);
-            std.mem.writeInt(u32, t.cache[within..][0..4], merged, .little);
+            // The reserved bits are read back and written out again
+            // rather than zeroed. Other implementations read them.
+            var entry: Wide = @bitCast(std.mem.readInt(u32, t.cache[within..][0..4], .little));
+            entry.value = @truncate(value);
+            std.mem.writeInt(u32, t.cache[within..][0..4], @bitCast(entry), .little);
             try storeSector(t, sector);
         },
         .fat12 => {
@@ -205,10 +228,36 @@ fn store(t: *Table, cluster: u32, value: u32) Error!void {
     }
 }
 
+/// The two entries at the front of the table that are not clusters.
+///
+/// Named rather than numbered so that `setReserved` cannot be used for
+/// anything else: the reason it is a separate call is that these writes are
+/// not allocations.
+pub const Reserved = enum(u32) {
+    /// Holds the media descriptor, which nothing here reads.
+    media = 0,
+    /// The volume's clean and hard-error flags. See `fat/clean.zig`.
+    flags = 1,
+};
+
+/// Read one of the reserved entries.
+pub fn reserved(t: *Table, which: Reserved) Error!u32 {
+    return get(t, @intFromEnum(which));
+}
+
+/// Write one of the reserved entries, leaving the free count alone.
+///
+/// `set` would treat a write of one of these as a cluster being claimed or
+/// released, moving the free count by one on every mark. That count is what
+/// tells a caller the volume is full.
+pub fn setReserved(t: *Table, which: Reserved, value: u32) Error!void {
+    try store(t, @intFromEnum(which), value);
+}
+
 /// The next cluster in a chain, or null at the end.
 pub fn next(t: *Table, cluster: u32) Error!?u32 {
     const value = try get(t, cluster);
-    if (value >= endOfChain(t.kind)) return null;
+    if (value >= sentinels(t.kind).end_from) return null;
 
     // A chain pointing outside the volume is corruption; following it would
     // read arbitrary sectors and loop forever.
@@ -238,7 +287,7 @@ pub fn alloc(t: *Table) Error!u32 {
         if (candidate >= total) candidate = 2;
 
         if (try get(t, candidate) == 0) {
-            try set(t, candidate, terminator(t.kind));
+            try set(t, candidate, sentinels(t.kind).terminator);
             t.next_free_hint = candidate + 1;
             return candidate;
         }
@@ -274,7 +323,7 @@ pub fn freeChain(t: *Table, first: u32) Error!void {
         // told otherwise would forget it.
         const following = try get(t, cluster);
         try set(t, cluster, 0);
-        if (following >= endOfChain(t.kind) or following < 2) break;
+        if (following >= sentinels(t.kind).end_from or following < 2) break;
         cluster = following;
     }
 }
@@ -463,4 +512,34 @@ test "a chain that cannot be read is reported rather than half freed and called 
     const failing = block.Device{ .name = "failing", .ctx = &memory, .ops = &failing_ops, .sectors = 64 };
     t.dev = &failing;
     try testing.expectError(error.Io, freeChain(&t, 2));
+}
+
+test "the three reserved values are the ones the format prints" {
+    // The values are derived from the entry width above rather than written
+    // out, so this is what checks the derivation. The numbers are the
+    // specification's.
+    try testing.expectEqual(@as(u32, 0x0FF8), sentinels(.fat12).end_from);
+    try testing.expectEqual(@as(u32, 0x0FFF), sentinels(.fat12).terminator);
+    try testing.expectEqual(@as(u32, 0x0FF7), sentinels(.fat12).bad);
+
+    try testing.expectEqual(@as(u32, 0xFFF8), sentinels(.fat16).end_from);
+    try testing.expectEqual(@as(u32, 0xFFFF), sentinels(.fat16).terminator);
+    try testing.expectEqual(@as(u32, 0xFFF7), sentinels(.fat16).bad);
+
+    try testing.expectEqual(@as(u32, 0x0FFF_FFF8), sentinels(.fat32).end_from);
+    try testing.expectEqual(@as(u32, 0x0FFF_FFFF), sentinels(.fat32).terminator);
+    try testing.expectEqual(@as(u32, 0x0FFF_FFF7), sentinels(.fat32).bad);
+}
+
+test "a thirty-two bit entry leaves the four bits that are not its own" {
+    // The bits above an entry belong to whatever wrote them. Zeroing them
+    // would write a value the format reserves, on a volume another system
+    // may read.
+    const found: Wide = @bitCast(@as(u32, 0xA000_0005));
+    try testing.expectEqual(@as(u28, 5), found.value);
+    try testing.expectEqual(@as(u4, 0xA), found.reserved);
+
+    var changed = found;
+    changed.value = 9;
+    try testing.expectEqual(@as(u32, 0xA000_0009), @as(u32, @bitCast(changed)));
 }

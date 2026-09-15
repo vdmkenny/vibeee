@@ -23,6 +23,7 @@ const std = @import("std");
 const block = @import("block.zig");
 const console = @import("console.zig");
 const fat = @import("fat.zig");
+const heap = @import("heap.zig");
 const lock_mod = @import("lock.zig");
 
 pub const Error = error{
@@ -68,6 +69,11 @@ pub const Mount = struct {
     /// that has since been given to another volume answers it "gone" rather
     /// than the other volume's blocks.
     generation: u32 = 0,
+    /// Whether the medium currently records this volume as being written
+    /// to. Set before the first write and cleared when it is unmounted, so
+    /// that a volume interrupted in between is found dirty and checked. See
+    /// `fat/clean.zig`.
+    marked_dirty: bool = false,
     /// Whoever is working on the volume holds this; see `Lock`. It belongs
     /// to the slot rather than to the volume in it: a thread waiting its
     /// turn is still queued on it when the volume changes, and finds that
@@ -161,7 +167,12 @@ pub fn mount(path: []const u8, dev: *const block.Device, options: Options) Error
         m.device = dev;
         m.read_only = options.read_only;
         m.open_files = 0;
+        m.marked_dirty = false;
         m.generation +%= 1;
+        // Before anything is read off it: a volume that was not unmounted
+        // may disagree with itself about which clusters are in use, and
+        // every write made before that is settled compounds it.
+        inspect(m);
         // The one walk of the table, here rather than on the first ask: a
         // shell and a file manager ask how full a volume is all the time,
         // and from now on the answer is kept rather than counted. Before the
@@ -177,6 +188,60 @@ pub fn mount(path: []const u8, dev: *const block.Device, options: Options) Error
         return m;
     }
     return error.TableFull;
+}
+
+/// Check a volume that was not unmounted cleanly, and repair what can be.
+///
+/// A volume the check cannot vouch for is mounted read-only rather than
+/// refused: refusing would leave a machine with no `/home` and no way to get
+/// at what is on it. Read-only keeps the damage where it is and leaves the
+/// card readable, here and on another machine.
+fn inspect(m: *Mount) void {
+    const recorded = fat.clean.state(&m.volume.fat) catch |err| {
+        console.warn("vfs: {s} could not be asked how it was unmounted: {s}", .{
+            m.path(), @errorName(err),
+        });
+        return;
+    };
+    // FAT12 cannot record a clean unmount, so it is checked every time. Its
+    // volumes are under four thousand clusters by definition, which is a
+    // sweep too short to be worth avoiding.
+    if (recorded == .clean) return;
+
+    const found = fat.check.run(&m.volume, heap.allocator, .{
+        .repair = !(m.read_only or m.device.read_only),
+    }) catch |err| {
+        console.warn("vfs: {s} was not checked: {s}; mounted read-only", .{
+            m.path(), @errorName(err),
+        });
+        m.read_only = true;
+        return;
+    };
+
+    if (found.quiet()) {
+        console.info("check", "{s} was not unmounted, and nothing was wrong", .{m.path()});
+    } else {
+        report(m.path(), found);
+    }
+
+    if (!found.sound()) {
+        console.warn("vfs: {s} holds clusters claimed twice; mounted read-only", .{m.path()});
+        m.read_only = true;
+        return;
+    }
+
+    // Settled, so the next mount has no reason to look again. A write after
+    // this marks it dirty as any other write does.
+    fat.clean.mark(&m.volume.fat, true) catch {};
+}
+
+/// Say what a check found, naming only what it actually found.
+fn report(path: []const u8, found: fat.check.Findings) void {
+    console.info("check", "{s} was not unmounted", .{path});
+    inline for (@typeInfo(fat.check.Findings).@"struct".fields) |field| {
+        const count = @field(found, field.name);
+        if (count != 0) console.info("check", "  {s}: {d}", .{ field.name, count });
+    }
 }
 
 /// The slot whose volume is mounted at exactly `path`.
@@ -326,7 +391,46 @@ pub fn unmount(path: []const u8) Error!void {
         // already gone would leave a permanently stuck mount point.
         console.warn("vfs: flush failed unmounting {s}: {s}", .{ path, @errorName(err) });
     };
+
+    // After the flush, so that the volume is not recorded as clean until
+    // everything written to it has reached the medium. A failure here is
+    // reported and not fatal: the volume is then found dirty next time and
+    // checked, which is the safe direction to be wrong in.
+    if (m.marked_dirty) {
+        fat.clean.mark(&m.volume.fat, true) catch |err| {
+            console.warn("vfs: {s} was not marked clean: {s}", .{ path, @errorName(err) });
+        };
+        m.device.flush() catch {};
+        m.marked_dirty = false;
+    }
+
     detach(m);
+}
+
+/// Check the volume mounted at `path` on demand, and say what was found.
+///
+/// The same check `mount` runs by itself on a volume that was not unmounted
+/// cleanly. Under the slot's lock, so nothing is writing to the volume while
+/// its two halves are being compared, and refused while anything on it is
+/// open: a repair moves clusters a handle may be part way through reading.
+pub fn checkVolume(path: []const u8, report_only: bool) (Error || std.mem.Allocator.Error)!fat.check.Findings {
+    try table_lock.hold();
+    defer table_lock.release();
+
+    const m = slotAt(path) orelse return error.NotMounted;
+    try m.lock.hold();
+    defer m.lock.release();
+    if (m.open_files > 0) return error.Busy;
+
+    const repair = !report_only and !m.read_only and !m.device.read_only;
+    const found = try fat.check.run(&m.volume, heap.allocator, .{ .repair = repair });
+
+    // A volume repaired into a state it can vouch for has nothing left for
+    // the next mount to look at, unless something is still writing to it.
+    if (repair and found.sound() and !m.marked_dirty) {
+        fat.clean.mark(&m.volume.fat, true) catch {};
+    }
+    return found;
 }
 
 pub const Resolved = struct {
@@ -536,6 +640,18 @@ fn directoryOn(m: *Mount, rest: []const u8) Error!fat.Iterator {
 /// gets the check rather than each remembering to.
 fn requireWritable(m: *Mount) Error!void {
     if (m.read_only or m.device.read_only) return error.ReadOnly;
+
+    // The medium is told the volume is being written to before the first
+    // write of a mount reaches it, so that losing power at any point after
+    // this leaves a volume that says so. Once per mount: every write after
+    // the first finds the flag already set.
+    if (!m.marked_dirty) {
+        fat.clean.mark(&m.volume.fat, false) catch |err| {
+            console.warn("vfs: {s} could not be marked in use: {s}", .{ m.path(), @errorName(err) });
+            return;
+        };
+        m.marked_dirty = true;
+    }
 }
 
 /// Split a path into the directory holding it and the final component.

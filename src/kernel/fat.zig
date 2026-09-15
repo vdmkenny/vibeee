@@ -21,6 +21,11 @@ const civil = @import("lib").civil;
 const str = @import("lib").str;
 const table = @import("fat/alloc.zig");
 
+/// Whether a volume was put down properly. See `fat/clean.zig`.
+pub const clean = @import("fat/clean.zig");
+/// Checking a volume against itself, and repairing it. See `fat/check.zig`.
+pub const check = @import("fat/check.zig");
+
 pub const Error = error{
     NotFat,
     Unsupported,
@@ -43,7 +48,11 @@ pub const Kind = table.Kind;
 pub const MAX_FILE_BYTES: u64 = 0xFFFF_FFFF;
 
 /// BIOS Parameter Block. Field order is fixed by the on-disk format.
-const Bpb = extern struct {
+///
+/// Public so a volume can be laid out by naming fields rather than counting
+/// bytes into a sector. The tests build one in memory, and this is the only
+/// description of the layout.
+pub const Bpb = extern struct {
     jump: [3]u8,
     oem: [8]u8,
     bytes_per_sector: u16 align(1),
@@ -86,6 +95,34 @@ const Attributes = packed struct(u8) {
     }
 };
 
+/// What the first byte of a record can hold instead of a name.
+///
+/// Non-exhaustive because most values are part of a name. These are the only
+/// ones that mean something else, and naming them keeps each byte written
+/// down once rather than at all six places that test for it.
+const NameMark = enum(u8) {
+    /// No record here, and none after it: the directory ends.
+    free = 0x00,
+    /// A record that was deleted. Its bytes remain and its place can be
+    /// reused.
+    deleted = 0xE5,
+    /// A name that genuinely begins with the deleted marker is stored with
+    /// this byte instead, which is what every implementation of this
+    /// filesystem does.
+    escaped_deleted = 0x05,
+    _,
+
+    fn of(record: *align(1) const DirEntry) NameMark {
+        return @enumFromInt(record.name[0]);
+    }
+
+    /// Whether a record starting with this holds no entry, either because
+    /// it never did or because what it held was deleted.
+    fn vacant(self: NameMark) bool {
+        return self == .free or self == .deleted;
+    }
+};
+
 const DirEntry = extern struct {
     name: [11]u8,
     attr: Attributes,
@@ -101,8 +138,26 @@ const DirEntry = extern struct {
     size: u32 align(1),
 
     fn firstCluster(self: *const DirEntry) u32 {
-        return (@as(u32, self.cluster_high) << 16) | self.cluster_low;
+        return @bitCast(Halves{ .low = self.cluster_low, .high = self.cluster_high });
     }
+
+    /// Point the record at `cluster`, both halves of it.
+    fn setCluster(self: *align(1) DirEntry, cluster: u32) void {
+        const halves: Halves = @bitCast(cluster);
+        self.cluster_low = halves.low;
+        self.cluster_high = halves.high;
+    }
+};
+
+/// A cluster number as a directory record stores it.
+///
+/// The format keeps the two halves six bytes apart, with a timestamp between
+/// them, because FAT32 grew the number into space that was free. Joining and
+/// splitting them belongs to the record, and a packed struct does both
+/// without arithmetic.
+const Halves = packed struct(u32) {
+    low: u16,
+    high: u16,
 };
 
 /// FAT packs a timestamp into two 16-bit words: the date as year-since-1980,
@@ -636,14 +691,13 @@ pub const Iterator = struct {
                 const raw: *align(1) const DirEntry = @ptrCast(&self.buffer[off]);
                 self.index_in_sector += 1;
 
-                // 0x00 means no entry here and none after it.
-                if (raw.name[0] == 0x00) {
+                if (NameMark.of(raw) == .free) {
                     self.done = true;
                     return null;
                 }
-                // 0xE5 marks a deleted entry. Any long name accumulated so far
-                // belonged to it.
-                if (raw.name[0] == 0xE5) {
+                // Any long name accumulated so far belonged to what was
+                // deleted here.
+                if (NameMark.of(raw) == .deleted) {
                     self.lfn.reset();
                     continue;
                 }
@@ -1075,8 +1129,7 @@ pub fn commit(vol: *Volume, entry: Entry, mtime: i64) Error!void {
     const raw: *align(1) DirEntry = @ptrCast(&sector[off]);
 
     raw.size = entry.size;
-    raw.cluster_low = @truncate(entry.cluster);
-    raw.cluster_high = @truncate(entry.cluster >> 16);
+    raw.setCluster(entry.cluster);
 
     const stamp = fatFromEpoch(mtime);
     raw.write_date = stamp.date;
@@ -1265,7 +1318,7 @@ fn dropTail(vol: *Volume, entry: *Entry, size: u32) Error!void {
     }
 
     const tail = try table.next(&vol.fat, cluster) orelse return;
-    try table.set(&vol.fat, cluster, table.endOfChain(vol.fat.kind));
+    try table.set(&vol.fat, cluster, table.sentinels(vol.fat.kind).terminator);
     try table.freeChain(&vol.fat, tail);
 }
 
@@ -1312,9 +1365,9 @@ fn encodeShortName(name: []const u8, out: *[11]u8) Error!void {
     }
 
     if (stem_len == 0) return error.NameTooLong;
-    // 0xE5 marks a deleted record, so a name genuinely starting with that byte
-    // is stored as 0x05 by convention.
-    if (out[0] == 0xE5) out[0] = 0x05;
+    if (@as(NameMark, @enumFromInt(out[0])) == .deleted) {
+        out[0] = @intFromEnum(NameMark.escaped_deleted);
+    }
 }
 
 fn isShortNameChar(c: u8) bool {
@@ -1355,8 +1408,8 @@ fn findFreeRun(vol: *Volume, dir: Iterator, needed: usize) Error!Run {
 
         var i: u32 = 0;
         while (i < RECORDS_PER_SECTOR) : (i += 1) {
-            const first = sector_buf[i * @sizeOf(DirEntry)];
-            if (first == 0x00 or first == 0xE5) {
+            const first: NameMark = @enumFromInt(sector_buf[i * @sizeOf(DirEntry)]);
+            if (first.vacant()) {
                 if (start == null) start = .{ .walk = walk, .index = i };
                 found += 1;
                 if (found == needed) return start.?;
@@ -1478,11 +1531,11 @@ const ShortRecords = struct {
             while (self.index < RECORDS_PER_SECTOR) {
                 const raw: *align(1) const DirEntry = @ptrCast(&self.buffer[self.index * @sizeOf(DirEntry)]);
                 self.index += 1;
-                if (raw.name[0] == 0x00) {
+                if (NameMark.of(raw) == .free) {
                     self.walk.done = true;
                     return null;
                 }
-                if (raw.name[0] == 0xE5 or raw.attr.isLongName() or raw.attr.volume_id) continue;
+                if (NameMark.of(raw) == .deleted or raw.attr.isLongName() or raw.attr.volume_id) continue;
                 return self.buffer[(self.index - 1) * @sizeOf(DirEntry) ..][0..11];
             }
             self.loaded = false;
@@ -1751,10 +1804,10 @@ fn build(
         .create_time = stamp.time,
         .create_date = stamp.date,
         .access_date = stamp.date,
-        .cluster_high = @truncate(cluster >> 16),
+        .cluster_high = @as(Halves, @bitCast(cluster)).high,
         .write_time = stamp.time,
         .write_date = stamp.date,
-        .cluster_low = @truncate(cluster),
+        .cluster_low = @as(Halves, @bitCast(cluster)).low,
         .size = size,
     };
     @memcpy(&records[long_records], std.mem.asBytes(&entry_record));
@@ -1821,10 +1874,10 @@ fn writeDotEntries(vol: *Volume, cluster: u32, parent: u32, mtime: i64) Error!vo
             .create_time = stamp.time,
             .create_date = stamp.date,
             .access_date = stamp.date,
-            .cluster_high = @truncate(it.cluster >> 16),
+            .cluster_high = @as(Halves, @bitCast(it.cluster)).high,
             .write_time = stamp.time,
             .write_date = stamp.date,
-            .cluster_low = @truncate(it.cluster),
+            .cluster_low = @as(Halves, @bitCast(it.cluster)).low,
             .size = 0,
         };
         @memcpy(sector_buf[i * @sizeOf(DirEntry) ..][0..@sizeOf(DirEntry)], std.mem.asBytes(&record));
@@ -1850,8 +1903,7 @@ pub fn unlink(vol: *Volume, entry: Entry) Error!void {
 /// clusters the old name held are the ones the new name now holds, and freeing
 /// them would empty the file it just moved.
 fn forget(vol: *Volume, entry: Entry) Error!void {
-    // 0xE5 in the first byte is what marks a record free. Every record of the
-    // entry's run is marked: the long-name fragments in front of the short
+    // Every record of the entry's run is marked deleted: the long-name fragments in front of the short
     // record are its own, and left standing they would be records nothing
     // reads and nothing reuses, filling the directory with a name's worth of
     // dead space each time it went.
@@ -1860,7 +1912,7 @@ fn forget(vol: *Volume, entry: Entry) Error!void {
     while (left > 0) {
         vol.dev.read(walk.sector, &walk.buffer) catch return error.Io;
         while (left > 0 and walk.index_in_sector < RECORDS_PER_SECTOR) : (walk.index_in_sector += 1) {
-            walk.buffer[walk.index_in_sector * @sizeOf(DirEntry)] = 0xE5;
+            walk.buffer[walk.index_in_sector * @sizeOf(DirEntry)] = @intFromEnum(NameMark.deleted);
             left -= 1;
         }
         vol.dev.write(walk.sector, &walk.buffer) catch return error.Io;
@@ -1937,8 +1989,7 @@ fn setParent(vol: *Volume, cluster: u32, parent: u32) Error!void {
 
     // `..` is the second record of a directory's first cluster, always.
     const raw: *align(1) DirEntry = @ptrCast(&sector_buf[@sizeOf(DirEntry)]);
-    raw.cluster_low = @truncate(parent);
-    raw.cluster_high = @truncate(parent >> 16);
+    raw.setCluster(parent);
 
     vol.dev.write(first, &sector_buf) catch return error.Io;
 }

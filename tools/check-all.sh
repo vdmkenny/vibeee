@@ -24,6 +24,7 @@ rm -f "$BUILD"/check-net-*.png "$BUILD"/check-net-*.log "$BUILD"/check-net-*.log
 rm -f "$BUILD"/check-serial.png "$BUILD"/check-serial.log "$BUILD"/check-serial.log.txt "$BUILD"/check-serial.out
 rm -f "$BUILD"/check-console.png "$BUILD"/check-console.log "$BUILD"/check-console.log.txt "$BUILD"/check-console.out
 rm -f "$BUILD"/check-bus.png "$BUILD"/check-bus.log "$BUILD"/check-bus.log.txt "$BUILD"/check-stick.img
+rm -f "$BUILD"/check-cut*.png "$BUILD"/check-cut*.log "$BUILD"/check-cut*.log.txt
 
 fail() { printf 'check-all: %s\n' "$*" >&2; exit 1; }
 step() { printf '\n== %s\n' "$*"; }
@@ -97,6 +98,39 @@ grep -q "^5m" "$LOG2.txt" || fail "power.dim_after did not survive the reboot (s
 grep -Eq '^cfgd +stopped' "$LOG2.txt" || fail "cfgd did not stop when asked (see $LOG2)"
 ! grep -Eq "did not stop when asked|cannot be asked to stop" "$LOG2.txt" || fail "a service had to be ended rather than asked (see $LOG2)"
 echo "a setting written before a reboot is read back after it, and a service asked to stop went"
+
+step "power cut: the volume says so, and is checked and repaired"
+# The whole reason `fat/clean.zig` and `fat/check.zig` exist. A write marks
+# the volume as being written to; nothing clears that mark until it is
+# unmounted. Killing the emulator is a power cut, so the next boot must find
+# the mark and check the volume rather than trusting it.
+LOGCUT1=$BUILD/check-cut1.log
+boot "$BUILD/check-cut1.png" -w 30 -p 2 -s 1 -t "echo written-before-the-cut > /home/cut.txt
+cat /home/cut.txt"
+plain "$LOGCUT1" > "$LOGCUT1.txt"
+grep -q "written-before-the-cut" "$LOGCUT1.txt" || fail "the file was not written before the cut (see $LOGCUT1)"
+
+# No unmount, no shutdown: the emulator is killed where it stands.
+LOGCUT2=$BUILD/check-cut2.log
+boot "$BUILD/check-cut2.png" -w 30 -p 2 -s 1 -t "cat /home/cut.txt
+check /home"
+plain "$LOGCUT2" > "$LOGCUT2.txt"
+grep -q "/home was not unmounted" "$LOGCUT2.txt" ||
+    fail "a volume cut off mid-write was mounted as though it were clean (see $LOGCUT2)"
+grep -q "written-before-the-cut" "$LOGCUT2.txt" ||
+    fail "what was written before the cut did not survive it (see $LOGCUT2)"
+grep -q "claimed twice" "$LOGCUT2.txt" &&
+    fail "the check found clusters claimed twice on a volume nothing damaged (see $LOGCUT2)"
+grep -q "nothing to put right" "$LOGCUT2.txt" ||
+    fail "the volume was still not sound after being checked (see $LOGCUT2)"
+
+# And the check settles it: a boot after one that checked has nothing to do.
+LOGCUT3=$BUILD/check-cut3.log
+boot "$BUILD/check-cut3.png" -w 30 -p 2 -s 1 -t "unmount /home"
+plain "$LOGCUT3" > "$LOGCUT3.txt"
+! grep -q "/home was not unmounted" "$LOGCUT3.txt" ||
+    fail "a volume checked on the last boot was checked again on this one (see $LOGCUT3)"
+echo "a volume cut off mid-write says so, is checked, keeps what was written, and settles"
 
 step "the wire: a leased address and an echo answered, on every adapter QEMU has"
 # The two drivers the emulator can stand in for. The Attansic and the Atheros

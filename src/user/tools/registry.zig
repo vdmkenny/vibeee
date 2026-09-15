@@ -45,6 +45,7 @@ const text = @import("text.zig");
 const tree = @import("tree.zig");
 const ser = @import("ser.zig");
 const usb_tool = @import("usb.zig");
+const check_tool = @import("check.zig");
 const volumes = @import("volumes.zig");
 const out = @import("ulib").out;
 
@@ -103,6 +104,7 @@ pub const commands = [_]Command{
     .{ .name = "disk", .summary = manual.summaryOf("disk"), .run = &status.disk },
     .{ .name = "mount", .summary = manual.summaryOf("mount"), .run = &volumes.mount },
     .{ .name = "unmount", .summary = manual.summaryOf("unmount"), .run = &volumes.unmount },
+    .{ .name = "check", .summary = manual.summaryOf("check"), .run = &check_tool.run },
     .{ .name = "date", .summary = manual.summaryOf("date"), .run = &date.run },
     .{ .name = "eeefetch", .summary = manual.summaryOf("eeefetch"), .run = &eeefetch.run },
     .{ .name = "smbios", .summary = manual.summaryOf("smbios"), .run = &smbios.run },

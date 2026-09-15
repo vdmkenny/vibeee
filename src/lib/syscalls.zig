@@ -876,6 +876,54 @@ pub const MountFlags = packed struct(u32) {
     _reserved: u30 = 0,
 };
 
+/// How a volume is checked.
+pub const CheckFlags = packed struct(u32) {
+    /// Report what is wrong and change nothing.
+    report_only: bool = false,
+    _reserved: u31 = 0,
+};
+
+/// What checking a volume found, and what it put right.
+///
+/// One description for both sides: `fat/check.zig` fills it in and `check`
+/// prints it, so a counter added here is added to both at once.
+pub const CheckReport = extern struct {
+    /// Clusters marked used that no directory record reaches.
+    lost: u32 = 0,
+    /// How many of those were freed.
+    reclaimed: u32 = 0,
+    /// Clusters more than one chain claims. Never repaired: assigning one to
+    /// either chain takes it from the other.
+    crossed: u32 = 0,
+    /// Chains that left the volume or looped back on themselves.
+    broken: u32 = 0,
+    /// Records whose chain was cut back to the length they claim.
+    trimmed: u32 = 0,
+    /// Records whose size was reduced to what their chain holds.
+    resized: u32 = 0,
+    /// Sectors of a second allocation table rewritten from the first.
+    mirrored: u32 = 0,
+    /// Directories too deeply nested for the walk to enter. Nothing is
+    /// reclaimed when this is not zero, because unreached no longer means
+    /// unreferenced.
+    too_deep: u32 = 0,
+
+    /// Whether the volume is safe to write to afterwards.
+    pub fn sound(self: CheckReport) bool {
+        return self.crossed == 0 and self.too_deep == 0;
+    }
+
+    /// Whether the check found nothing at all. Over the fields rather than a
+    /// list of them, so a counter added above is covered here without being
+    /// added here too.
+    pub fn quiet(self: CheckReport) bool {
+        inline for (@typeInfo(CheckReport).@"struct".fields) |field| {
+            if (@field(self, field.name) != 0) return false;
+        }
+        return true;
+    }
+};
+
 pub const TtyMode = enum(u32) {
     /// A line at a time, echoed and editable with backspace. What a program
     /// that only wants an answer to a question needs.
@@ -2019,6 +2067,23 @@ pub const table = [_]Syscall{
             "hold instead. An event rather than being told directly, because whoever did " ++
             "the telling would be inside its own request while it told, and a driver taking " ++
             "its device back has questions for the other services as it does so.",
+    },
+    .{
+        .number = 77,
+        .name = "check_volume",
+        .summary = "Check a mounted volume against itself, repairing what can be repaired.",
+        .args = &.{
+            .{ .name = "path", .kind = .cptr, .desc = "A mount point, exactly as it was mounted." },
+            .{ .name = "path_len", .kind = .len, .desc = "Length of the path." },
+            .{ .name = "report", .kind = .ptr, .desc = "Where to write the CheckReport." },
+            .{ .name = "flags", .kind = .flags, .desc = "CheckFlags: bit 0 report only." },
+        },
+        .errors = &.{ E.fault, E.noent, E.busy, E.nomem, E.perm, E.io },
+        .notes = "Requires Caps.mount. Runs at mount time by itself on a volume that was " ++
+            "not unmounted cleanly; this is the same check asked for by hand. Repairs are " ++
+            "refused on a read-only volume, which reports and changes nothing. A volume " ++
+            "holding clusters claimed by two chains is reported and not repaired, because " ++
+            "nothing on the medium says which chain has the better claim.",
     },
 };
 

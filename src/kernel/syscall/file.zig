@@ -141,6 +141,26 @@ pub fn sys_unmount(a: Args) Result {
     return 0;
 }
 
+pub fn sys_check_volume(a: Args) Result {
+    if (ctx.require(.{ .mount = true })) |denied| return denied;
+
+    var path_buf: [path_mod.MAX]u8 = undefined;
+    const path = userPath(a, a.a0, a.a1, &path_buf) orelse return Errno.fault.value();
+    const flags: abi.CheckFlags = @bitCast(@as(u32, @truncate(a.a3)));
+
+    // The check runs before a byte of it reaches the caller: a report
+    // written into a page the caller cannot write to must fail as a fault
+    // rather than as a volume left half-checked.
+    // Checked before the volume is touched: a report the caller cannot be
+    // given is a fault, and a fault after the repair would leave the caller
+    // with no account of what was done to its volume.
+    const out = userWrite(a, a.a2, @sizeOf(abi.CheckReport)) orelse return Errno.fault.value();
+
+    const found = vfs.checkVolume(path, flags.report_only) catch |err| return errnoFor(err);
+    @memcpy(out, std.mem.asBytes(&found));
+    return 0;
+}
+
 pub fn sys_rename(a: Args) Result {
     var from_buf: [path_mod.MAX]u8 = undefined;
     const from = userPath(a, a.a0, a.a1, &from_buf) orelse return Errno.fault.value();

@@ -680,6 +680,19 @@ pub fn unmount(path: []const u8) Refusal!void {
     _ = try checked(syscall2(abi.number("unmount"), @intFromPtr(path.ptr), path.len));
 }
 
+/// Check a mounted volume against itself, repairing what can be repaired.
+pub fn checkVolume(path: []const u8, flags: abi.CheckFlags) Refusal!abi.CheckReport {
+    var report: abi.CheckReport = .{};
+    _ = try checked(syscall4(
+        abi.number("check_volume"),
+        @intFromPtr(path.ptr),
+        path.len,
+        @intFromPtr(&report),
+        @as(u32, @bitCast(flags)),
+    ));
+    return report;
+}
+
 /// Choose which keyboard layout the keys mean.
 pub fn setKeymap(layout: keymaps.Name) Refusal!void {
     _ = try checked(syscall1(abi.number("set_keymap"), @intFromEnum(layout)));
