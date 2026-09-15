@@ -2080,9 +2080,9 @@ fn jsClosest(ctx: *Context, this: Value, argc: c_int, argv: [*]const Value) call
     return qjs.nullValue();
 }
 
-fn jsGetById(ctx: *Context, _: Value, argc: c_int, argv: [*]const Value) callconv(.c) Value {
+fn jsGetById(ctx: *Context, this: Value, argc: c_int, argv: [*]const Value) callconv(.c) Value {
     const it = documentOf(ctx) orelse return qjs.nullValue();
-    const root = rootOf(it) orelse return qjs.nullValue();
+    const root = nodeOrRoot(it, this) orelse return qjs.nullValue();
     const name = argument(ctx, argc, argv, 0) orelse return qjs.nullValue();
     defer qjs.freeText(ctx, name.ptr);
     var found = collected(it, root, .{ .attribute = .{ .name = "id", .value = name } });
@@ -2754,6 +2754,7 @@ const node_methods = [_]qjs.ListEntry{
     .method("addEventListener", 2, &jsAddListener),
     .method("removeEventListener", 2, &jsRemoveListener),
     .method("dispatchEvent", 1, &jsDispatchEvent),
+    .method("getElementById", 1, &jsGetById),
     .method("querySelector", 1, &jsQuerySelector),
     .method("querySelectorAll", 1, &jsQuerySelectorAll),
     .method("getElementsByTagName", 1, &jsGetByTag),
@@ -2787,6 +2788,9 @@ const node_gets = reflectedEntries() ++ flaggedEntries() ++ [_]qjs.ListEntry{
     .accessor("attributes", &jsAttributes, null),
     .accessor("isConnected", &jsConnected, null),
     .accessor("ownerDocument", &jsOwnerDocument, null),
+    .accessorMagic("documentElement", &jsDocumentPart, null, 0),
+    .accessorMagic("body", &jsDocumentPart, null, 1),
+    .accessorMagic("head", &jsDocumentPart, null, 2),
     .accessor("form", &jsForm, null),
     .accessor("elements", &jsElements, null),
     .accessor("selectedIndex", &jsSelectedIndex, &jsSetSelectedIndex),
