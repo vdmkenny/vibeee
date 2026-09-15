@@ -918,6 +918,52 @@ test "Intl writes numbers, dates, lists and relative times as English does, and 
     try testing.expectEqualStrings("0", try it.run("String(Object.keys(new Intl.NumberFormat()).length)"));
 }
 
+test "a rule is tried against an element that could carry it, whatever its selector reaches for" {
+    const it = try opened(
+        "<!DOCTYPE html><html><body><div id=\"box\" class=\"card wide\"><p class=\"words\">one</p>" ++
+            "<span data-note=\"yes\">two</span></div><section><p>three</p></section></body></html>",
+        false,
+    );
+    defer it.end();
+    css.apply(heap, it.tree,
+        \\#box { color: #111111; }
+        \\.card .words { color: #222222; }
+        \\section p { color: #333333; }
+        \\span[data-note] { color: #444444; }
+        \\* { background: #f0f0f0; }
+        \\.wide > span { color: #555555; }
+        \\.nothing-here { color: #666666; }
+    , null, &rules);
+    // Everything the rules say is found: the id, the class through a
+    // descendant, the tag through one, the attribute, and the catch-all.
+    _ = try it.run("document.getElementById('box').appendChild(document.createElement('b'))");
+    try testing.expect(dom.changed(it.doc));
+    var page = try it.page();
+    defer page.deinit(heap);
+    var painted: usize = 0;
+    for (page.runs.items) |run| {
+        switch (run) {
+            .text => |text| if (text.look.paint != .none) {
+                painted += 1;
+            },
+            else => {},
+        }
+    }
+    try testing.expect(painted >= 3);
+    // Each rule found its element: the colours they declare are the page's.
+    for ([_]rgb.Colour{
+        .{ .r = 0x22, .g = 0x22, .b = 0x22 }, // .card .words, through a class
+        .{ .r = 0x33, .g = 0x33, .b = 0x33 }, // section p, through a tag
+        .{ .r = 0x55, .g = 0x55, .b = 0x55 }, // .wide > span, the nearer of two
+    }) |want| {
+        var found = false;
+        for (page.palette.items) |kept| {
+            if (kept.eql(want)) found = true;
+        }
+        try testing.expect(found);
+    }
+}
+
 test "what a script puts in the page is matched again where it went, not over the whole page" {
     const it = try opened(
         "<!DOCTYPE html><html><body><div id=\"one\"><p>a</p></div><div id=\"two\"><p>b</p></div>" ++

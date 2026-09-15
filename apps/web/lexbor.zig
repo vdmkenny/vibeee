@@ -301,6 +301,12 @@ pub extern fn lxb_selectors_opt_set_noi(engine: *Selectors, options: c_uint) voi
 /// The engine's option to match the root a find starts from as well as what
 /// is under it; without it, a find matches only what is under the root.
 pub const SELECTORS_MATCH_ROOT: c_uint = 1 << 1;
+
+/// How one part of a selector is joined to the part before it. Nought is a
+/// space, one is no space at all, which is what makes two parts one
+/// compound; the rest are the combinators written with a sign.
+pub const COMBINATOR_DESCENDANT: c_uint = 0;
+pub const COMBINATOR_CLOSE: c_uint = 1;
 pub extern fn lxb_css_memory_create() ?*CssMemory;
 pub extern fn lxb_css_memory_destroy(memory: *CssMemory, itself: bool) ?*CssMemory;
 pub extern fn lxb_css_parser_create() ?*CssParser;
@@ -386,6 +392,15 @@ pub fn tagOf(node: *const Node) ?Tag {
     return @enumFromInt(node.local_name);
 }
 
+/// An element's tag as a selector writes it: lower case, whatever the page
+/// wrote. Nothing for a node that is not an element.
+pub fn tagName(node: *const Node) ?[]const u8 {
+    if (node.type != .element) return null;
+    var len: usize = 0;
+    const text = lxb_tag_name_by_id_noi(node.local_name, &len) orelse return null;
+    return text[0..len];
+}
+
 /// The document's title, or nothing where the page gave none.
 pub fn titleOf(document: *Document) ?[]const u8 {
     var len: usize = 0;
@@ -427,6 +442,10 @@ pub extern fn lxb_dom_element_style_list_append(element: *Node, list: *Declarati
 pub extern fn lexbor_array_length_noi(array: *Array) usize;
 pub extern fn lexbor_array_get_noi(array: *Array, index: usize) ?*anyopaque;
 pub extern fn lxb_dom_element_style_remove_non_inline(element: *Node) Status;
+
+/// A tag's name as written in lower case, by the number an element keeps it
+/// under.
+pub extern fn lxb_tag_name_by_id_noi(tag_id: usize, len: *usize) ?[*]const u8;
 pub extern fn lxb_dom_document_element_styles_attach(element: *Node) Status;
 
 pub const CssMemory = opaque {};

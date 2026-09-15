@@ -1845,8 +1845,15 @@ fn printText(target: []const u8) noreturn {
         if (scripts) |doc| {
             var told: [256]u8 = undefined;
             out.trouble(scriptsText(&told));
-            var buf: [96]u8 = undefined;
-            out.trouble(std.fmt.bufPrint(&buf, ", engine {d} KiB of {d} KiB\n", .{ dom.memoryOf(doc) / 1024, js.MEMORY_MAX / 1024 }) catch "\n");
+            var buf: [160]u8 = undefined;
+            const shape: css.Rules.Shape = if (document) |*tree| tree.rules.shape() else .{ .rules = 0, .keys = 0, .loose = 0 };
+            out.trouble(std.fmt.bufPrint(&buf, ", engine {d} KiB of {d} KiB, rules {d} keyed {d} loose {d}\n", .{
+                dom.memoryOf(doc) / 1024,
+                js.MEMORY_MAX / 1024,
+                shape.rules,
+                shape.keys,
+                shape.loose,
+            }) catch "\n");
         }
     }
     var text: std.Io.Writer.Allocating = .init(gpa);

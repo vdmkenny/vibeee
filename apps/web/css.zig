@@ -879,32 +879,102 @@ pub fn sheetsOf(gpa: Allocator, document: *lexbor.Document, base: url.Url, into:
 /// that name are matched again.
 pub const Rules = struct {
     list: std.ArrayList(*lexbor.StyleRule) = .empty,
-    /// For each rule, its run of names in `names`.
-    reads: std.ArrayList(Reads) = .empty,
-    /// The names the rules' selectors read, hashed, each rule's together.
-    names: std.ArrayList(u64) = .empty,
+    /// The rules by what their subject keys on, so an element is tried
+    /// against the few that could match it rather than against all of them.
+    /// Sorted by the key once `keys_sorted`.
+    keyed: std.ArrayList(Keyed) = .empty,
+    keys_sorted: bool = false,
+    /// The rules whose subject keys on nothing, which every element is
+    /// tried against: `*`, `[hidden]`, `:root` and their like.
+    loose: std.ArrayList(u32) = .empty,
+    /// One mark per rule, for trying a rule once against an element that
+    /// several of its keys led to.
+    marks: std.ArrayList(u32) = .empty,
+    mark: u32 = 0,
 
-    const Reads = struct { first: u32, count: u32 };
+    /// A rule, under one of the names its subject keys on. A rule with
+    /// several selectors is here once for each.
+    const Keyed = struct { key: u64, rule: u32 };
 
     pub fn deinit(self: *Rules, gpa: Allocator) void {
         self.list.deinit(gpa);
-        self.reads.deinit(gpa);
-        self.names.deinit(gpa);
+        self.keyed.deinit(gpa);
+        self.loose.deinit(gpa);
+        self.marks.deinit(gpa);
         self.* = .{};
     }
 
-    /// Keep a rule, with the names its selectors read.
+    /// Keep a rule, under what each of its selectors keys on.
     fn add(self: *Rules, gpa: Allocator, rule: *lexbor.StyleRule) void {
-        const first: u32 = @intCast(self.names.items.len);
-        if (rule.selector) |list| readNames(gpa, &self.names, list, 0);
-        self.list.append(gpa, rule) catch {
-            self.names.shrinkRetainingCapacity(first);
-            return;
-        };
-        self.reads.append(gpa, .{ .first = first, .count = @intCast(self.names.items.len - first) }) catch {
-            _ = self.list.pop();
-            self.names.shrinkRetainingCapacity(first);
-        };
+        self.list.append(gpa, rule) catch return;
+        self.marks.append(gpa, 0) catch {};
+        const index: u32 = @intCast(self.list.items.len - 1);
+        self.keys_sorted = false;
+        var each: ?*const lexbor.SelectorList = rule.selector;
+        while (each) |one| : (each = one.next) {
+            if (keyOf(one)) |key| {
+                self.keyed.append(gpa, .{ .key = key, .rule = index }) catch {};
+            } else {
+                self.loose.append(gpa, index) catch {};
+                // Tried against everything already; the rest of its
+                // selectors would only lead to it again.
+                return;
+            }
+        }
+    }
+
+    /// How many rules there are, how many keys lead to them, and how many
+    /// are tried against every element.
+    pub const Shape = struct { rules: usize, keys: usize, loose: usize };
+
+    pub fn shape(self: *const Rules) Shape {
+        return .{ .rules = self.list.items.len, .keys = self.keyed.items.len, .loose = self.loose.items.len };
+    }
+
+    fn settleKeys(self: *Rules) void {
+        if (self.keys_sorted) return;
+        std.mem.sort(Keyed, self.keyed.items, {}, struct {
+            fn before(_: void, a: Keyed, b: Keyed) bool {
+                return a.key < b.key;
+            }
+        }.before);
+        self.keys_sorted = true;
+    }
+
+    /// The rules that could match `node`, each once: those keyed on its id,
+    /// on any of its classes or on its tag, and those keyed on nothing.
+    fn eachCandidate(self: *Rules, node: *lexbor.Node, taken: anytype) void {
+        self.settleKeys();
+        self.mark +%= 1;
+        if (self.mark == 0) {
+            @memset(self.marks.items, 0);
+            self.mark = 1;
+        }
+        if (lexbor.tagName(node)) |name| self.underKey(std.hash_map.hashString(name), taken);
+        if (lexbor.attribute(node, "id")) |id| self.underKey(std.hash_map.hashString(id), taken);
+        if (lexbor.attribute(node, "class")) |classes| {
+            var each = std.mem.tokenizeAny(u8, classes, &std.ascii.whitespace);
+            while (each.next()) |one| self.underKey(std.hash_map.hashString(one), taken);
+        }
+        for (self.loose.items) |index| self.tryRule(index, taken);
+    }
+
+    fn underKey(self: *Rules, key: u64, taken: anytype) void {
+        const items = self.keyed.items;
+        var low: usize = 0;
+        var high: usize = items.len;
+        while (low < high) {
+            const middle = low + (high - low) / 2;
+            if (items[middle].key < key) low = middle + 1 else high = middle;
+        }
+        var at = low;
+        while (at < items.len and items[at].key == key) : (at += 1) self.tryRule(items[at].rule, taken);
+    }
+
+    fn tryRule(self: *Rules, index: u32, taken: anytype) void {
+        if (self.marks.items[index] == self.mark) return;
+        self.marks.items[index] = self.mark;
+        taken.call(self.list.items[index]);
     }
 
     /// Whether the rule at `index` reads `name`.
@@ -916,31 +986,6 @@ pub const Rules = struct {
         return false;
     }
 };
-
-/// The names a selector list reads, into `names`: each class, id and
-/// attribute in it, and in the lists inside its pseudo-class functions,
-/// `:not()` and `:is()` among them, and the `of` an `:nth-child()` names.
-fn readNames(gpa: Allocator, names: *std.ArrayList(u64), list: *const lexbor.SelectorList, depth: u32) void {
-    if (depth > 8) return;
-    var each: ?*const lexbor.SelectorList = list;
-    while (each) |one| : (each = one.next) {
-        var part: ?*const lexbor.Selector = one.first;
-        while (part) |selector| : (part = selector.next) {
-            switch (selector.type) {
-                .id, .class, .attribute => names.append(gpa, std.hash_map.hashString(selector.name.slice())) catch return,
-                .pseudo_class_function => if (selector.u.pseudo.data) |data| switch (selector.function()) {
-                    .current, .has, .is, .not, .where => readNames(gpa, names, @ptrCast(@alignCast(data)), depth + 1),
-                    .nth_child, .nth_col, .nth_last_child, .nth_last_col, .nth_last_of_type, .nth_of_type => {
-                        const anb_of: *const lexbor.AnbOf = @ptrCast(@alignCast(data));
-                        if (anb_of.of) |of| readNames(gpa, names, of, depth + 1);
-                    },
-                    .undef, .dir, .lang, .lexbor_contains, _ => {},
-                },
-                else => {},
-            }
-        }
-    }
-}
 
 /// Take the page's own style elements back from the tree, which applied
 /// them whole as it parsed, and apply each as a linked sheet is applied:
@@ -1113,21 +1158,72 @@ const Variables = struct {
 /// gave each element goes, what it wrote on the element itself stays, and
 /// the rules that fit now are applied in their order, each with the
 /// tree's own matching walk.
-pub fn restyle(document: *lexbor.Document, rules: *const Rules, root: *lexbor.Node) void {
+pub fn restyle(document: *lexbor.Document, rules: *Rules, root: *lexbor.Node) void {
     const cascade = lexbor.domOf(document).css orelse return;
     const engine = cascade.selectors orelse return;
+    // Element by element rather than rule by rule: a page carries thousands
+    // of rules and an element is keyed to a handful of them, where every
+    // rule against every element is the two multiplied.
     var at: ?*lexbor.Node = root;
     while (at) |node| : (at = lexbor.following(node, root)) {
-        if (node.type == .element) _ = lexbor.lxb_dom_element_style_remove_non_inline(node);
-    }
-    // The root is one of the elements matched again, not only what is
-    // under it: a piece of page put in is matched from its own top.
-    lexbor.lxb_selectors_opt_set_noi(engine, lexbor.SELECTORS_MATCH_ROOT);
-    for (rules.list.items) |rule| {
-        const selector = rule.selector orelse continue;
-        _ = lexbor.lxb_selectors_find(engine, root, @ptrCast(selector), &attachTo, rule);
+        if (node.type != .element) continue;
+        _ = lexbor.lxb_dom_element_style_remove_non_inline(node);
+        var against = Against{ .engine = engine, .node = node };
+        rules.eachCandidate(node, &against);
     }
 }
+
+/// One element, and the rules tried against it: each that matches gives the
+/// element what it declares.
+const Against = struct {
+    engine: *lexbor.Selectors,
+    node: *lexbor.Node,
+
+    fn call(self: *Against, rule: *lexbor.StyleRule) void {
+        const selector = rule.selector orelse return;
+        _ = lexbor.lxb_selectors_match_node(self.engine, self.node, @ptrCast(selector), &attachTo, rule);
+    }
+};
+
+/// What the rightmost compound of `list` keys on: its id, else one of its
+/// classes, else its tag. Nothing where it keys on none of those, which is
+/// a selector that could match anything.
+fn keyOf(list: *const lexbor.SelectorList) ?u64 {
+    var last: *const lexbor.Selector = list.first orelse return null;
+    while (last.next) |next| last = next;
+    var best: ?u64 = null;
+    var rank: u8 = 0;
+    var at: ?*const lexbor.Selector = last;
+    while (at) |part| {
+        switch (part.type) {
+            .id => if (rank < 3) {
+                best = std.hash_map.hashString(part.name.slice());
+                rank = 3;
+            },
+            .class => if (rank < 2) {
+                best = std.hash_map.hashString(part.name.slice());
+                rank = 2;
+            },
+            .element => if (rank < 1) {
+                var lowered: [NAME_MAX]u8 = undefined;
+                const name = part.name.slice();
+                if (name.len <= lowered.len) {
+                    best = std.hash_map.hashString(std.ascii.lowerString(lowered[0..name.len], name));
+                    rank = 1;
+                }
+            },
+            else => {},
+        }
+        // A part joined to the one before it is in the same compound; one
+        // joined by anything else begins the subject.
+        if (part.combinator != lexbor.COMBINATOR_CLOSE) break;
+        at = part.prev;
+    }
+    return best;
+}
+
+/// The most a tag or class name in a selector comes to, for lowering one.
+const NAME_MAX = 64;
 
 /// Give a matched element what a rule declares, as the tree does when it
 /// applies a sheet.
@@ -1135,26 +1231,6 @@ fn attachTo(node: *lexbor.Node, specificity: u32, taken: ?*anyopaque) callconv(.
     const rule: *lexbor.StyleRule = @ptrCast(@alignCast(taken));
     const declarations = rule.declarations orelse return .ok;
     return lexbor.lxb_dom_element_style_list_append(node, declarations, specificity);
-}
-
-/// What a script is about to change or has changed an element's `name` to
-/// or from: the rules that read it are unmatched while the old value still
-/// holds, and matched again once the new one does, and no other rule is
-/// touched. `unmatch` goes before the change and `rematch` after it.
-pub fn unmatch(document: *lexbor.Document, rules: *const Rules, name: []const u8) void {
-    const dom = lexbor.domOf(document);
-    const hashed = std.hash_map.hashString(name);
-    for (rules.list.items, 0..) |rule, index| {
-        if (rules.readsName(index, hashed)) _ = lexbor.lxb_dom_document_style_remove(dom, rule);
-    }
-}
-
-pub fn rematch(document: *lexbor.Document, rules: *const Rules, name: []const u8) void {
-    const dom = lexbor.domOf(document);
-    const hashed = std.hash_map.hashString(name);
-    for (rules.list.items, 0..) |rule, index| {
-        if (rules.readsName(index, hashed)) _ = lexbor.lxb_dom_document_style_attach(dom, rule);
-    }
 }
 
 /// Whether a rule says anything this browser draws or retains for box layout.
