@@ -113,6 +113,12 @@ const SOON_US: usize = 0;
 const WATCH_US: usize = 1_000_000;
 /// Nothing to check: the window sleeps until something happens.
 const IDLE_US: usize = std.math.maxInt(usize);
+/// How much of an address a timing line names. A page's own address is
+/// short and a request a site makes of itself can be a thousand characters
+/// of what it is asking for; a line that wraps fourteen times says less than
+/// one that stops at the part a person reads.
+const NAMED_MAX: usize = 110;
+
 /// How long the shell gives a page's scripts after the page is here, for
 /// what they set to run soon and what they asked for. A page that draws
 /// itself with scripts needs a few seconds of them on this machine, and one
@@ -373,7 +379,7 @@ fn took(what: []const u8, started_us: u64) void {
 /// Say what came and how long it took, where `-v` asked for it.
 fn timed(what: []const u8, where: []const u8, bytes: usize, from: *const fetch_mod.Fetch) void {
     if (!verbose) return;
-    var buf: [url.ADDRESS_MAX + 96]u8 = undefined;
+    var buf: [NAMED_MAX + 128]u8 = undefined;
     const now = sys.clockMicros();
     const ms = (now -| from.started_us) / std.time.us_per_ms;
     // How much of it was reaching the site, where it was reached at all.
@@ -382,7 +388,7 @@ fn timed(what: []const u8, where: []const u8, bytes: usize, from: *const fetch_m
     // more, on a connection of its own or on one kept from the answer before.
     const steps = from.reach;
     out.trouble(std.fmt.bufPrint(&buf, "{d:>6} ms {d:>8} B  {s} {s} (reached in {d} ms, {d} redirects: name {d}, trust {d}, reach {d}, seal {d})\n", .{
-        ms,                                  bytes,                                 what,                                    where,                                reach, from.redirects,
+        ms,                                  bytes,                                 what,                                    where[0..@min(where.len, NAMED_MAX)], reach, from.redirects,
         steps.named_us / std.time.us_per_ms, steps.trusted_us / std.time.us_per_ms, steps.connected_us / std.time.us_per_ms, steps.sealed_us / std.time.us_per_ms,
     }) catch return);
 }
