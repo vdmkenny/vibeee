@@ -171,6 +171,27 @@ pub fn setPmTimerPort(p: u16) void {
     pm_timer_port = p;
 }
 
+/// Pick the counter up again where it now stands.
+///
+/// For waking from a suspend to memory. The firmware's counter is 24 bits and
+/// wraps every 4.69 seconds, so what it reads after a sleep of minutes says
+/// nothing about how long that sleep was: taken as a delta it would move the
+/// monotonic clock by an arbitrary amount in an arbitrary direction. So the
+/// accumulator is left where it was and the counter is simply read again,
+/// which costs the machine the time it spent asleep and keeps the one promise
+/// the monotonic clock makes, that it only ever goes forwards.
+///
+/// The wall clock is a different matter and is repaired by asking the
+/// hardware clock again, which did keep counting.
+pub fn resync() void {
+    if (pm_timer_port == 0) return;
+    const was = cpu.saveAndDisableInterrupts();
+    defer cpu.restoreInterrupts(was);
+
+    pm_last = readPmTimer(pm_timer_port);
+    pm_fraction = 0;
+}
+
 const PM_MASK: u32 = 0x00FF_FFFF;
 
 /// Microseconds one counter tick is worth, in thirty-two fraction bits.

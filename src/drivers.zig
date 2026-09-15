@@ -321,6 +321,7 @@ fn attachDisplay(dev: Device) anyerror!void {
     }
 
     display.setMode = &requestMode;
+    display.restore = &restoreMode;
 
     // A backend that can read the panel is asked for it here. Firmware sets a
     // mode without knowing what will run, and on these machines that means a
@@ -340,26 +341,18 @@ fn attachDisplay(dev: Device) anyerror!void {
 /// The console draws straight into the framebuffer, so a mode change it did
 /// not follow would leave every glyph landing at the wrong offset.
 fn requestMode(width: u16, height: u16, bpp: u8) display.ModeError!void {
-    const backend = display_backend orelse return error.Unsupported;
-    const set = backend.set orelse return error.Unsupported;
-
     // The console draws straight into the framebuffer, so a mode it could
     // not follow is not set at all: in text mode there is nothing to follow
     // with, and that is known before the adapter is touched.
     if (console.framebufferLayout().addr == 0) return error.Unsupported;
     const before = console.pixelSize();
 
-    const fb = set(display_dev, .{ .width = width, .height = height, .bpp = bpp }) catch |err| {
-        return switch (err) {
-            error.Unsupported => error.Unsupported,
-            error.Hardware => error.Failed,
-        };
-    };
+    const fb = try apply(.{ .width = width, .height = height, .bpp = bpp });
 
     if (!console.adoptFramebuffer(fb.phys, fb.pitch, fb.width, fb.height)) {
         // The adapter goes back to where the console still is, rather than
         // being left showing a mode nothing draws for.
-        _ = set(display_dev, .{
+        _ = apply(.{
             .width = @intCast(before.width),
             .height = @intCast(before.height),
             .bpp = bpp,
@@ -367,6 +360,45 @@ fn requestMode(width: u16, height: u16, bpp: u8) display.ModeError!void {
         return error.Failed;
     }
 
+    announce(fb);
+}
+
+/// Set the mode that is already set, the adapter having been powered down and
+/// up and forgotten it.
+///
+/// Nothing moves, which is what makes this right where `requestMode` is not:
+/// the geometry is the one already in hand, so a compositor's buffer is still
+/// the right shape and the console, if it is the one drawing, has nothing to
+/// re-lay. Its grid is redrawn all the same, because the adapter clears the
+/// pixels as it takes a mode.
+fn restoreMode() display.ModeError!void {
+    const geometry = display.describe();
+    const fb = try apply(.{
+        .width = geometry.width,
+        .height = geometry.height,
+        .bpp = modeset.Mode.adapter_choice,
+    });
+    _ = console.adoptFramebuffer(fb.phys, fb.pitch, fb.width, fb.height);
+    announce(fb);
+}
+
+/// Ask the bound adapter for a mode, in the errors the display speaks.
+fn apply(want: modeset.Mode) display.ModeError!modeset.Framebuffer {
+    const backend = display_backend orelse return error.Unsupported;
+    const set = backend.set orelse return error.Unsupported;
+
+    return set(display_dev, want) catch |err| switch (err) {
+        error.Unsupported => error.Unsupported,
+        error.Hardware => error.Failed,
+    };
+}
+
+/// Say where the pixels ended up, and take the pointer plane again.
+///
+/// Both belong to whatever mode is now set and neither survives a change of
+/// one: the write-combining range is worked out from where the scanout buffer
+/// is, and the plane's picture goes in the memory after it.
+fn announce(fb: modeset.Framebuffer) void {
     display.present(fb.phys, .{
         .width = fb.width,
         .height = fb.height,
@@ -375,9 +407,7 @@ fn requestMode(width: u16, height: u16, bpp: u8) display.ModeError!void {
     });
     console.info("video", "{d}x{d} native, panel fitter off", .{ fb.width, fb.height });
 
-    // The pointer plane, where the adapter carries one and the backend can
-    // drive it. After the mode, because where the picture goes is decided
-    // from where the scanout buffer ended up.
+    const backend = display_backend orelse return;
     const bindPointer = backend.pointer orelse return;
     const plane = bindPointer(display_dev, fb) orelse {
         console.info("video", "no pointer plane, the pointer is drawn in software", .{});

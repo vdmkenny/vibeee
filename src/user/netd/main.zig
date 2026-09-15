@@ -196,6 +196,25 @@ fn adopt() usize {
     return joined;
 }
 
+/// Give every adapter back and take it again.
+///
+/// For a machine that has just woken: the parts came back at their reset
+/// values, with no rings, no address filters and no link, and the driver
+/// state describing all of that is describing a part that no longer exists.
+/// Everything is let go first and then taken afresh, rather than one
+/// interface at a time, because the lines are shared on this machine's wiring
+/// and a line is given back only by the last interface to leave it.
+///
+/// The interfaces themselves stay. What a person configured about one is
+/// still true, and it is the stack's in any case.
+fn rebuild() void {
+    for (ifaces[0..count]) |*iface| detach(iface);
+
+    for (ifaces[0..count]) |*iface| {
+        if (attach(iface)) watchLine(iface);
+    }
+}
+
 /// Whether an interface of this kind is being driven here.
 fn anyOfClass(class: lib.ifmatch.Class) bool {
     for (ifaces[0..count]) |iface| {
@@ -382,14 +401,14 @@ fn watchLine(iface: *dev.NicDev) void {
 }
 
 /// What the loop waits on: the channel, one handle per interface's line, the
-/// doorbell, the config domain's watch, the wireless key and the supervisor's
-/// request to go. Capped, because each of those is one or none and there are
-/// at most `MAX_IFACES` lines.
+/// doorbell, the config domain's watch, the wireless key, the machine waking
+/// and the supervisor's request to go. Capped, because each of those is one
+/// or none and there are at most `MAX_IFACES` lines.
 ///
 /// Here rather than inside the loop because an interface can arrive after the
 /// loop has started: a radio switched on is a line to wait on that nothing
 /// was waiting on a moment ago.
-var sources: lib.waitset.WaitSet(MAX_IFACES + 5) = .{};
+var sources: lib.waitset.WaitSet(MAX_IFACES + 6) = .{};
 
 fn serve(channel: u32) noreturn {
     sources = .{};
@@ -432,6 +451,17 @@ fn serve(channel: u32) noreturn {
         _ = sources.add(handle);
     } else |_| {
         log.warn("netd", "the platform service reports no hotkeys; the wireless key does nothing");
+    }
+
+    // The machine coming back from a sleep. Every adapter came back at its
+    // reset values, holding none of the rings, filters or link state its
+    // driver believes it holds, so this is where they are taken again.
+    var wake_watch: ?u32 = null;
+    if (sys.watchWake()) |handle| {
+        wake_watch = handle;
+        _ = sources.add(handle);
+    } else |_| {
+        log.warn("netd", "no wake watch; the adapters would stay dead after a sleep");
     }
 
     // The supervisor's request to go. Answered by giving the lines back and
@@ -480,6 +510,10 @@ fn serve(channel: u32) noreturn {
             }
             if (hotkey_watch != null and handle == hotkey_watch.?) {
                 drainHotkeys();
+                break :dispatch;
+            }
+            if (wake_watch != null and handle == wake_watch.?) {
+                rebuild();
                 break :dispatch;
             }
         }

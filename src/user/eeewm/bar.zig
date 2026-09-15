@@ -175,6 +175,8 @@ pub const Item = struct {
         separator,
         /// Give the display back and return to the shell that started us.
         quit,
+        /// Stop with the memory alive, and come back to the same session.
+        sleep,
         reboot,
         power_off,
     };
@@ -190,7 +192,8 @@ pub const items = [_]Item{
     .{ .label = "Settings", .category = .system, .mark = .sliders, .action = .{ .run = .{ .path = "/bin/settings", .name = "settings" } } },
     .{ .label = "About this computer", .category = .system, .mark = .about, .action = .{ .run = .{ .path = "/bin/settings", .name = "settings", .arg = "about" } } },
     .{ .label = "Exit to shell", .category = .session, .mark = .exit, .action = .quit },
-    .{ .label = "Restart", .category = .session, .mark = .power, .action = .reboot },
+    .{ .label = "Sleep", .category = .session, .mark = .moon, .action = .sleep },
+    .{ .label = "Restart", .category = .session, .mark = .reload, .action = .reboot },
     .{ .label = "Shut down", .category = .session, .mark = .power, .action = .power_off },
 };
 
@@ -2193,6 +2196,8 @@ pub const Action = union(enum) {
     verb: bindings.Action,
     /// End the session and hand the display back.
     quit,
+    /// Stop with the memory alive, and come back to the same session.
+    sleep,
     reboot,
     power_off,
 };
@@ -2458,6 +2463,7 @@ fn activateEntry(index: usize) Action {
             break :blk .consumed;
         },
         .quit => .quit,
+        .sleep => .sleep,
         .reboot => .reboot,
         .power_off => .power_off,
     };

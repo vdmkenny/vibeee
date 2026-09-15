@@ -1,0 +1,9 @@
+suspend - sleep with the memory alive
+
+Stops the machine without ending anything. The firmware is asked to
+prepare, the processor's state is written into memory, and the machine
+draws almost nothing until something wakes it. Then it comes back to
+this prompt with every program where it was.
+
+Refused on a machine whose firmware names no such state; `sysinfo`
+says whether this one offers it.

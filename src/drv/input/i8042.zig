@@ -328,6 +328,43 @@ fn onIrq(_: *hal.InterruptFrame) void {
     onKeyboardInterrupt();
 }
 
+/// The controller's configuration as it stood, so it can be put back.
+///
+/// The translation setting is the point. Firmware works out how this
+/// machine's keyboard reports and sets the controller to convert accordingly,
+/// and `init` above deliberately keeps whatever it found: it is the one thing
+/// about this controller nothing here could work out again. A suspend to
+/// memory takes it, and a controller that comes back without it hands over
+/// codes from a different set, which reads as a keyboard typing other
+/// people's letters rather than as a keyboard that is broken.
+var stowed: ?Config = null;
+
+pub fn stow() void {
+    const flags = hal.saveAndDisableInterrupts();
+    defer hal.restoreInterrupts(flags);
+    stowed = config();
+}
+
+/// Set it up again after the power has been off it.
+///
+/// The configuration goes back as it was rather than being read and amended,
+/// because what is there to read is the part's own reset value and says
+/// nothing about this machine.
+pub fn restore() void {
+    const flags = hal.saveAndDisableInterrupts();
+    defer hal.restoreInterrupts(flags);
+
+    drain();
+    if (stowed) |cfg| {
+        setConfig(cfg);
+    } else {
+        console.warn("kbd: nothing was stowed to put back; the controller is as it woke", .{});
+    }
+    hal.claimLegacyIrq(KEYBOARD_LINE, onIrq);
+
+    console.info("kbd", "i8042 ready again, layout {s}", .{keymap.current().name});
+}
+
 /// Re-check the configuration after the firmware has been asked to stop
 /// emulating USB input. Firmware that proxied this controller through SMM can
 /// hand it back configured for the proxy rather than for the kernel, and a

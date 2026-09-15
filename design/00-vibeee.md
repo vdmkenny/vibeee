@@ -7,14 +7,15 @@ Claude under the author's direction. The design decisions recorded here are real
 with real reasoning, and the hardware research is verified against primary sources, but
 nothing here has been audited by a human line by line.
 
-**Implementation status.** M0, M1, and M2 are complete apart from USB suspend and resume.
+**Implementation status.** M0, M1, and M2 are complete.
 What runs, on QEMU and on the target machine: the whole boot chain, memory and interrupts,
 the O(1) scheduler, syscalls, Ring 3 with per-process address spaces and an ELF loader,
 IPC, ATA and FAT, the console and terminal, the window manager and control library with
 Settings, Monitor, Pad, Files, Calc, eTerm, and the picture viewer, keymaps, and the
 desktop. `platd` runs the AML interpreter, embedded controller, hotkeys, battery, and
 backlight against the real firmware; USB, audio, and wired networking run as userspace
-services too. Open items are the final power cut, USB suspend and resume, and Wi-Fi.
+services too, and the machine suspends to memory and comes back. Open items are the
+final power cut and Wi-Fi.
 Precisely what exists is listed in [`../docs/status.md`](../docs/status.md); this document
 is the design, and the status changes faster than design text.
 
@@ -635,7 +636,7 @@ Rule for every C dependency: it lives in `third_party/`, is vendored at a pinned
 - **Battery**: `_BIF`/`_BST` values on this machine are **percentages mislabelled as mAh** `[HIGH]`. Detect (design capacity 5200 with last-full ≤100 and granularity 52) and correct, rather than doing the naive division that every generic OS gets wrong here.
 - **WiFi kill (Fn+F2)** power-gates the PCIe slot, so the card physically vanishes. Flow: hotkey → `platd` notifies `devmgd` → `netd` quiesces and closes the device → `WLDS(0)` → on re-enable, `WLDS(1)` → rescan bus 1 slot 0 → `netd` re-attaches. `netd` must treat all-`0xFFFFFFFF` reads as "device gone", not as data. State persists in the EC across reboots, so boot-with-WiFi-off is a normal case to handle.
 - **Camera** is BIOS-disabled by default *and* gated by `CAMS`: Settings must be able to explain that, not just fail.
-- **S3 suspend**: freeze userspace → quiesce servers in dependency order → save device state (we never re-POST the VBIOS, so the display driver's full register save/restore list is load-bearing) → `_PTS` → set waking vector in FACS → PM1 `SLP_TYP`/`SLP_EN` → real-mode trampoline on resume → restore in reverse order → resync timers.
+- **S3 suspend** (done, `suspend`): `platd` evaluates `_PTS` and arms the wake, then asks the kernel. The kernel writes the filesystems out, stows what only memory will keep (the processor's descriptor tables and control registers, the MTRRs, the interrupt controllers' redirection entries, the PCI headers, the input controller's configuration), lays a real-mode trampoline in low memory, writes its address into the FACS waking vector and writes PM1 `SLP_TYP`/`SLP_EN`. Waking re-enters through that trampoline, and everything is put back in the order it can be: memory types, controllers, syscall registers, timers, buses, screen, input, wall clock. Then `platd` evaluates `_WAK` and tells the services that drive hardware to take their devices again. **A machine whose display cannot be set a mode refuses to suspend at all**: what firmware set was set by code that no longer runs, so such a screen comes back dark and is never drawn on again.
 - **Turbo mode**: opt-in, off by default, big warnings. Reprogram the **ICS9LPR426A** PLL over SMBus at slave 0x69 (block read/modify/write, N in byte 12, M in byte 11 bits 5:0), stepping **70 → 85 → 100 MHz** because a direct jump locks the machine `[HIGH]`, plus the KB3310 GPIO voltage select (pin 0x66, Index-IO port 0xFC2C bit 6) for stability at 100 MHz. That's the rated 900 MHz, a 43% clock increase, which is very noticeable in this class of machine. Guarded: revert-on-panic, revert-on-thermal, off across suspend, and a first-run "this may destabilise your machine" dialog. Note the memory clock rides the same FSB, so this is also a RAM overclock and not every module survives it.
 
 ---
@@ -682,8 +683,8 @@ Toolchain: Zig (pinned), NASM, mtools, and nothing else. No autotools, no libc o
 |---|---|---|---|
 | **M0** | Boot chain, kernel entry, PMM/paging/heap, IDT, LAPIC/IOAPIC, timers, scheduler, syscalls, Ring 3, IPC, ramfs, VESA console, i8042 keyboard, `vsh` | QEMU | **Done** |
 | **M1** | PATA + FAT32, `init`/`devmgd`, libc, multicall utils, touchpad, **GMA900 native modeset**, `eeewm` + `libeui`, eTerm, keymaps | **First real-hardware boot** | **Done** |
-| **M2** | `usbd` (EHCI + mass storage + ublk), `platd` (uACPI, EC, hotkeys, battery, backlight), `sndd` (HDA + ALC662), `netd` ethernet + lwIP + DHCP/DNS/SNTP, Pad/Monitor/Settings | Hardware | **Done**, less USB suspend and resume: `netd` is verified on the machine through the whole stack, `sndd` runs the routing graph over both controllers, and `usbd` carries disks, keyboards, mice and hubs |
-| **M3** | AR2425 WiFi + WPA2 supplicant, S3 suspend/resume, UVC webcam, install-to-SSD, A/B updater, turbo mode, and new GUI applications such as Mines and Draw | Hardware | Not started |
+| **M2** | `usbd` (EHCI + mass storage + ublk), `platd` (uACPI, EC, hotkeys, battery, backlight), `sndd` (HDA + ALC662), `netd` ethernet + lwIP + DHCP/DNS/SNTP, Pad/Monitor/Settings | Hardware | **Done**: `netd` is verified on the machine through the whole stack, `sndd` runs the routing graph over both controllers, and `usbd` carries disks, keyboards, mice and hubs |
+| **M3** | AR2425 WiFi + WPA2 supplicant, UVC webcam, install-to-SSD, A/B updater, turbo mode, and new GUI applications such as Mines and Draw | Hardware | Not started. S3 suspend and resume, which this milestone also carried, is done and proven in the emulator |
 | **M4** | Polish: 2D acceleration if profiling justifies, C3 idle, power tuning, ARM/HAL second-board proof, app bundles | Hardware | Not started |
 | **M5** | Browser experiment (`lexbor` + `quickjs` + Zig TLS), explicitly exploratory | Hardware | **Under way, and staying exploratory**: `apps/web` fetches, parses, cascades, lays out in one column, runs a page's scripts and brings its pictures. It draws mainstream pages in part rather than in full; [`docs/status.md`](../docs/status.md) says what is missing. Not part of the system image |
 

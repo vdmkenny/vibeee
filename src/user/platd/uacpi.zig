@@ -67,14 +67,20 @@ pub extern fn uacpi_finalize_gpe_initialization() Status;
 pub extern fn uacpi_context_set_loop_timeout(seconds: u32) void;
 pub extern fn uacpi_status_to_string(status: Status) [*:0]const u8;
 
-/// The sleep states, S0 through S5. Only the one that means off is named:
-/// suspend states need a resume path before asking for them means anything.
+/// The sleep states, S0 through S5. Two of the six are named, being the two
+/// this machine has a way back from: one wakes, and the other is off.
 pub const SleepState = enum(c_uint) {
+    suspend_to_memory = 3,
     soft_off = 5,
 };
 
 pub extern fn uacpi_prepare_for_sleep_state(state: SleepState) Status;
 pub extern fn uacpi_enter_sleep_state(state: SleepState) Status;
+/// The two halves of coming back, which only a state that wakes ever uses.
+/// The first runs before the machine sleeps, arming what will wake it; the
+/// second runs once it has, and is the firmware's `_BFS` and `_WAK`.
+pub extern fn uacpi_prepare_for_wake_from_sleep_state(state: SleepState) Status;
+pub extern fn uacpi_wake_from_sleep_state(state: SleepState) Status;
 pub extern fn uacpi_reboot() Status;
 
 // ---------------------------------------------------------------------------

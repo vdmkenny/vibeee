@@ -20,6 +20,7 @@ const probe = @import("../probe.zig");
 const random = @import("../random.zig");
 const sched = @import("../sched.zig");
 const shutdown_mod = @import("../shutdown.zig");
+const sleep_mod = @import("../sleep.zig");
 const sysinfo = @import("../sysinfo.zig");
 const tty = @import("../tty.zig");
 const watchdog = @import("../watchdog.zig");
@@ -359,6 +360,38 @@ const Leftover = struct {
         if (self.quiet_devices) probe.dropClaims(t.id);
     }
 };
+
+/// Sleep, and answer when the machine wakes.
+///
+/// Nothing else is stopped: every program stays where it was, which is the
+/// whole point of this state and the whole difference from `shutdown`. The
+/// services quiet their own devices before asking and wake them afterwards,
+/// because what a device holds is the driver's business and not the kernel's.
+/// An event signalled whenever the machine has woken from a suspend.
+pub fn sys_wake_watch(_: Args) Result {
+    // Already holding one for this caller, which is what the handle below
+    // takes over and what the release gives back if there is no handle to
+    // be had.
+    const waiting = sleep_mod.watch() orelse return Errno.nomem.value();
+    const handle = ctx.installHandle(.{
+        .rights = .{ .read = true, .write = true },
+        .data = .{ .event = waiting },
+    }) orelse {
+        event_mod.release(waiting);
+        return Errno.nomem.value();
+    };
+    return @intCast(handle);
+}
+
+pub fn sys_suspend_to_memory(_: Args) Result {
+    if (ctx.require(.{ .power = true })) |denied| return denied;
+
+    return switch (sleep_mod.toMemory()) {
+        .woke => 1,
+        .refused => 0,
+        .unoffered => Errno.nodev.value(),
+    };
+}
 
 pub fn sys_shutdown(a: Args) Result {
     if (ctx.require(.{ .power = true })) |denied| return denied;

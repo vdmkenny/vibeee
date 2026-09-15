@@ -615,6 +615,24 @@ pub fn quiesce() Refusal!void {
     _ = try checked(syscall0(abi.number("quiesce")));
 }
 
+/// An event that fires whenever the machine has woken from a suspend.
+///
+/// What a service driving hardware waits on: its devices came back at their
+/// reset values, and taking them again is the driver's own to do.
+pub fn watchWake() Refusal!u32 {
+    return @intCast(try checked(syscall0(abi.number("wake_watch"))));
+}
+
+/// Suspend the machine to memory and come back when it wakes.
+///
+/// True if it slept, false if the machine would not. Fails with ENODEV where
+/// the firmware names no such state. The caller keeps running either way, and
+/// so does everything else: quieting a device before the sleep and waking it
+/// afterwards is each driver's own business.
+pub fn suspendToMemory() Refusal!bool {
+    return try checked(syscall0(abi.number("suspend_to_memory"))) != 0;
+}
+
 pub fn shutdown(action: usize) noreturn {
     _ = syscall1(abi.number("shutdown"), action);
     unreachable;

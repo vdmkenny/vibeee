@@ -208,8 +208,8 @@ Two drivers: `acm` for the abstract control model, matched by class and subclass
 A controller that loses its power loses every conversation the bus was holding, so
 waking from sleep is not a matter of carrying on: everything is given up and found
 again. That is one call on the controller seam each way, `quiesce` and `rebuild`,
-and one verb on the service, which `usb rebuild` asks for by hand. S3 does not exist
-yet; when it does, this is what it calls.
+and one verb on the service, which `usb rebuild` asks for by hand and which `platd`
+asks for on every wake from a suspend to memory.
 
 **A volume follows its disk by where the disk sits, not by its address.** The walk
 hands out addresses in the order it finds things, so a disk that never moved comes

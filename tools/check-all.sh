@@ -210,6 +210,54 @@ grep -q "the bus is back with 2 devices" "$LOGBUS.txt" ||
     fail "the mount did not survive the bus being rebuilt (see $LOGBUS)"
 echo "the bus went down and came back, and the disk behind the hub kept its mount"
 
+step "the machine asleep and awake again, with its screen, its keys and its disk"
+# The whole suspend path, which the emulator can run because its display
+# adapter has a backend: a machine whose screen could not be set a mode again
+# refuses to sleep at all, so without that this would only ever run on the
+# hardware it is hardest to run on.
+#
+# Typed at twice, once before the sleep and once after, and the second time
+# through the monitor because the keys of a line typed while the machine is
+# asleep are simply not there to be read.
+#
+# Both waits are on what the machine says rather than on a length of time.
+# Waking one that has not finished going to sleep does nothing at all, and a
+# letter sent while it is still putting itself back is a letter gone: the
+# keyboard controller holds one byte, and the whole resume runs with
+# interrupts off. Neither is a fixed number of seconds on a loaded host.
+LOGS3=$BUILD/check-suspend.log
+QEMU_CPU="$QEMU_CPU" tools/qemu-shot.sh "$BUILD/check-suspend.png" -w 30 -p 3 -s 6 \
+    -t "disk
+suspend" \
+    -m "wait-for sleeping
+system_wakeup
+wait-for awake
+sendkey d
+sendkey i
+sendkey s
+sendkey k
+sendkey ret" \
+    -- -drive if=ide,format=raw,file="$DEV_IMAGE" >/dev/null \
+    || fail "the emulator did not run (see $LOGS3)"
+plain "$LOGS3" > "$LOGS3.txt"
+! grep -qi "panic" "$LOGS3.txt" || fail "the kernel panicked across the sleep (see $LOGS3)"
+grep -q "suspend sleeping" "$LOGS3.txt" || fail "the machine was never asked to sleep (see $LOGS3)"
+grep -q "suspend awake" "$LOGS3.txt" || fail "the machine did not come back (see $LOGS3)"
+# The screen: set again by a driver, because what firmware set was set by code
+# that no longer runs.
+grep -q "native, panel fitter off" "$LOGS3.txt" || fail "the display did not come back (see $LOGS3)"
+# The input controller, which is not on a bus and comes back with its
+# interrupt off and its translation lost.
+grep -q "i8042 ready" "$LOGS3.txt" || fail "the keyboard controller did not come back (see $LOGS3)"
+# The adapters, which the platform service asks their driver to take again.
+[ "$(grep -c "link 1000 Mbit" "$LOGS3.txt")" -ge 2 ] ||
+    fail "the network adapter was not taken again after the wake (see $LOGS3)"
+# And the proof that the keys reach a shell and the volumes are still there:
+# the same listing before the sleep and after it.
+[ "$(grep -Ec '^hd0 +64 MiB +read-write' "$LOGS3.txt")" -ge 2 ] ||
+    fail "the machine did not answer the keyboard after waking (see $LOGS3)"
+echo "the machine slept, woke, and came back with its screen, its keys, its disk and its wire"
+
 step "the card through a USB reader: its volumes arrive"
 cp "$IMAGE" "$SD_COPY"
 LOG3=$BUILD/check-boot3.log

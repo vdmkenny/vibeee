@@ -81,10 +81,7 @@ pub fn setupBootPaging() linksection(".text.boot") callconv(.c) void {
     const dir: [*]Entry = @ptrFromInt(@intFromPtr(&boot_page_directory));
 
     // Identity map, so the instruction after `mov cr0` is still fetchable.
-    var i: usize = 0;
-    while (i < IDENTITY_MIB / 4) : (i += 1) {
-        dir[i] = large(i * LARGE_PAGE_SIZE, .{ .present = true, .write = true });
-    }
+    identityInto(dir);
 
     // The kernel window: 0xC0000000..0xFFFFFFFF linearly onto physical 0.
     // Mapping the whole gigabyte up front means the linear map never has to be
@@ -92,7 +89,7 @@ pub fn setupBootPaging() linksection(".text.boot") callconv(.c) void {
     // not exist simply never get handed out by the allocator.
     const kernel_pde_start = KERNEL_VMA / LARGE_PAGE_SIZE;
     const kernel_pde_end = MMIO_BASE / LARGE_PAGE_SIZE;
-    i = 0;
+    var i: usize = 0;
     while (kernel_pde_start + i < kernel_pde_end) : (i += 1) {
         dir[kernel_pde_start + i] = large(i * LARGE_PAGE_SIZE, .{
             .present = true,
@@ -150,6 +147,35 @@ pub fn syncKernelMapping(addr: usize) bool {
     running[index] = master[index];
     flushAll();
     return true;
+}
+
+/// Put the identity mapping back, for as long as something has to run at a
+/// physical address again.
+///
+/// Waking from a suspend to memory is the one thing that does: the firmware
+/// jumps to a page of low memory with paging off, and the instruction after
+/// the one that turns paging back on is fetched from wherever that page
+/// already is. So the directory handed to the processor there has to map it
+/// where it sits, exactly as boot's did.
+///
+/// Only the master directory is touched. A program's address space owns its
+/// own low half and never sees this; the kernel switches to the master before
+/// it sleeps.
+pub fn restoreIdentityMapping() void {
+    identityInto(pageDirectory());
+    flushAll();
+}
+
+/// Write the low entries that map physical memory at its own addresses.
+///
+/// Inline because one of its two callers is `setupBootPaging`, which runs
+/// before the kernel is reachable at the addresses it was linked for and so
+/// cannot call anything: what is written has to be written where it stands.
+inline fn identityInto(dir: [*]Entry) void {
+    var i: usize = 0;
+    while (i < IDENTITY_MIB / 4) : (i += 1) {
+        dir[i] = large(i * LARGE_PAGE_SIZE, .{ .present = true, .write = true });
+    }
 }
 
 /// Remove the identity mapping. Called once the kernel is executing from its

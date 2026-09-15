@@ -140,8 +140,9 @@ pub fn init(bi: *const bootinfo.BootInfo) void {
 
     // Carve out the regions that are usable per E820 but must never be handed
     // out. Reserving the first megabyte wholesale costs 256 frames and saves a
-    // whole class of subtle bugs (BIOS data area, EBDA, video memory, the
-    // trampoline page we will need for S3 resume and for SMP later).
+    // whole class of subtle bugs (BIOS data area, EBDA, video memory, and the
+    // page the trampoline a suspend to memory wakes through is copied into,
+    // which is where an SMP start will go too).
     reserveRange(0, 0x100000);
 
     const kstart = @intFromPtr(&__kernel_phys_start);

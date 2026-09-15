@@ -308,3 +308,45 @@ pub inline fn readCr2() u32 {
         : [out] "=r" (-> u32),
     );
 }
+
+/// The two control registers whose whole contents have to survive a suspend
+/// to memory.
+///
+/// Waking leaves them at their reset values: caching off in CR0, every
+/// extension off in CR4. The trampoline puts back the two bits it cannot run
+/// without and the kernel puts back the rest, which is why both are read and
+/// written whole here rather than a bit at a time.
+pub inline fn readCr0() u32 {
+    return asm volatile ("movl %%cr0, %[out]"
+        : [out] "=r" (-> u32),
+    );
+}
+
+pub inline fn writeCr0(value: u32) void {
+    asm volatile ("movl %[v], %%cr0"
+        :
+        : [v] "r" (value),
+        : .{ .memory = true });
+}
+
+pub inline fn readCr4() u32 {
+    return asm volatile ("movl %%cr4, %[out]"
+        : [out] "=r" (-> u32),
+    );
+}
+
+pub inline fn writeCr4(value: u32) void {
+    asm volatile ("movl %[v], %%cr4"
+        :
+        : [v] "r" (value),
+        : .{ .memory = true });
+}
+
+/// Where the interrupt descriptor table is, as the processor holds it.
+pub inline fn storeIdt() TableRegister {
+    var register: TableRegister = undefined;
+    asm volatile ("sidt %[out]"
+        : [out] "=m" (register),
+    );
+    return register;
+}

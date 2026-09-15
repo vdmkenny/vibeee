@@ -64,8 +64,12 @@ pub fn init() void {
 
     Msr.sysenter_cs.write(gdt.KERNEL_CODE);
     Msr.sysenter_eip.write(@intFromPtr(&sysenterEntry));
-    // The stack is per-thread and set on every switch, below.
     armed = true;
+    // Whoever is running keeps the stack they had. Nothing at boot has one
+    // yet; waking from a suspend to memory does, and the thread that asked
+    // to sleep would otherwise make its next syscall onto whatever address
+    // the register powers up holding.
+    Msr.sysenter_esp.write(running_stack);
 }
 
 /// Point the fast path at a thread's kernel stack.
@@ -74,8 +78,13 @@ pub fn init() void {
 /// does: a stale value sends the next syscall onto a stack that belongs to
 /// someone else, or to nobody.
 pub fn setKernelStack(esp0: u32) void {
+    running_stack = esp0;
     if (armed) Msr.sysenter_esp.write(esp0);
 }
+
+/// The stack the last switch named, kept because the register holding it is
+/// the processor's and the processor forgets it across a sleep.
+var running_stack: u32 = 0;
 
 // ---------------------------------------------------------------------------
 // int 0x80

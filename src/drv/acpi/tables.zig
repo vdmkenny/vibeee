@@ -72,6 +72,24 @@ const Fadt = extern struct {
     }
 };
 
+/// The firmware's own scratch table, the part of it this kernel writes.
+///
+/// One field matters here: where to jump on waking. Firmware reads it out of
+/// memory it kept alive through the sleep, which is the only channel there
+/// is between a machine going down and the same machine coming back.
+const Facs = extern struct {
+    signature: [4]u8,
+    length: u32 align(1),
+    hardware_signature: u32 align(1),
+    firmware_waking_vector: u32 align(1),
+    global_lock: u32 align(1),
+    flags: u32 align(1),
+    /// Where a sixty-four bit operating system would put the same address.
+    /// Written as zero: the two are alternatives, and firmware told both
+    /// takes the wide one.
+    x_firmware_waking_vector: u64 align(1),
+};
+
 pub const Info = struct {
     /// The system control interrupt's number, as the FADT names it.
     sci_int: u16 = 0,
@@ -188,6 +206,24 @@ pub fn init(rsdp_phys: u32) void {
     info.facs = fadt.firmware_ctrl;
     if (findSleepState(fadt.dsdt, "_S5_")) |found| info.off = found;
     if (findSleepState(fadt.dsdt, "_S3_")) |found| info.suspend_to_memory = found;
+}
+
+/// Tell the firmware where to jump when the machine wakes.
+///
+/// False where there is no such table or it is too short to hold the field,
+/// which is a machine that cannot be suspended to memory whatever its DSDT
+/// says: without this the firmware wakes and has nowhere to go.
+pub fn setWakingVector(phys: u32) bool {
+    if (!have_info or info.facs == 0) return false;
+    const table = mapTable(info.facs) orelse return false;
+    if (!std.mem.eql(u8, &table.signature, "FACS")) return false;
+
+    const facs: *align(1) volatile Facs = @ptrCast(@constCast(table));
+    if (facs.length < @sizeOf(Facs)) return false;
+
+    facs.firmware_waking_vector = phys;
+    facs.x_firmware_waking_vector = 0;
+    return true;
 }
 
 /// Extract the S5 sleep type values from the DSDT.

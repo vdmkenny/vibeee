@@ -33,6 +33,12 @@ pub fn setPowerOps(ops: PowerOps) void {
     power = ops;
 }
 
+/// Whether anything here knows how to cut the power, as against halting and
+/// leaving the switch to a person.
+pub fn canPowerOff() bool {
+    return power.off != null;
+}
+
 /// Flush and detach every filesystem, then carry out `action`.
 ///
 /// Does not return.

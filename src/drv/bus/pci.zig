@@ -117,6 +117,87 @@ fn scanSlot(bus: u8, slot: u5, cb: Callback) void {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Across a suspend to memory
+// ---------------------------------------------------------------------------
+
+/// One function's header as it stood, so it can be put back.
+///
+/// Suspending to memory takes the power off the bus, and every function comes
+/// back at its reset values: no address assigned, nothing decoded, no bus
+/// mastering. The addresses themselves are the firmware's to choose and it
+/// chose them before this kernel ran, so nothing here could work them out
+/// again. They are copied out instead, while they are still there to copy.
+const Stowed = struct {
+    at: lib.pci.Location,
+    /// The header from the command word to the interrupt line, which is every
+    /// word of it that is written rather than read. The identity words above
+    /// it are the part's own and outlive the power.
+    words: [WORDS]u32,
+
+    const FIRST = lib.pci.COMMAND_OFFSET;
+    const LAST: u8 = 0x3C;
+    const WORDS = (LAST - FIRST) / @sizeOf(u32) + 1;
+
+    fn offsetOf(index: usize) u8 {
+        return FIRST + @as(u8, @intCast(index)) * @sizeOf(u32);
+    }
+};
+
+/// How many functions this remembers. Every machine this runs on has a
+/// handful; a bus with more than this is one where the last few come back at
+/// their reset values, which is said rather than silently allowed.
+const STOWED_MAX = 48;
+
+var stowed: [STOWED_MAX]Stowed = undefined;
+var stowed_count: usize = 0;
+var stowed_overflowed = false;
+
+/// Copy every function's header out, before the power goes.
+pub fn stow() void {
+    stowed_count = 0;
+    stowed_overflowed = false;
+    enumerate(&stowOne);
+}
+
+fn stowOne(at: lib.pci.Location, _: u16, _: u16) void {
+    if (stowed_count == stowed.len) {
+        stowed_overflowed = true;
+        return;
+    }
+    const kept = &stowed[stowed_count];
+    kept.at = at;
+    for (&kept.words, 0..) |*word, i| word.* = configRead32(at, Stowed.offsetOf(i));
+    stowed_count += 1;
+}
+
+/// Put them all back, in the order they were found.
+///
+/// Bus order, which puts every bridge before what is behind it: a bridge that
+/// has forgotten which buses it forwards hides everything on the far side, so
+/// it has to be answering again before anything there is written to.
+///
+/// The command word goes last of each function's, because it is the one that
+/// says what the part decodes: enabled while its addresses were still at
+/// their reset values, a part would answer for memory that belongs to
+/// something else.
+pub fn restore() void {
+    for (stowed[0..stowed_count]) |kept| {
+        var i = kept.words.len;
+        while (i > 1) {
+            i -= 1;
+            configWrite32(kept.at, Stowed.offsetOf(i), kept.words[i]);
+        }
+        // Zeroes above the command half, which is where the status bits are:
+        // writing back what was read there would clear every one that has
+        // been set since.
+        configWrite32(kept.at, Stowed.FIRST, @as(u16, @truncate(kept.words[0])));
+    }
+    if (stowed_overflowed) {
+        console.warn("pci: more functions than can be stowed; the last are at their reset values", .{});
+    }
+}
+
 /// Take active-state power management away from every PCI-to-PCI bridge.
 ///
 /// ASPM is negotiated per link pair, and clearing it on an endpoint stops

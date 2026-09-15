@@ -182,6 +182,7 @@ fn answer(message: *const sys.Message, body: *proto.Rep, granted: *?u32) proto.S
         .hotkey_watch => hotkey.subscribe(granted),
         .feature => featureRead(request.param, &body.body.feature),
         .feature_set => featureWrite(request.param, &body.body.feature),
+        .suspend_to_memory => suspendToMemory(),
     };
 }
 
@@ -231,6 +232,47 @@ fn powerOff() proto.Status {
     // news: it is what the pattern-matched path did every time.
     log.warn("platd", "the sleep write was made and the machine is still here");
     return .refused;
+}
+
+/// Sleep with the memory alive, and answer once the machine is back.
+///
+/// Three parties, each doing the part only it can. The firmware's own methods
+/// are evaluated here, because that needs the interpreter: `_PTS` on the way
+/// down and `_WAK` on the way up, with the arming of whatever will wake the
+/// machine in between. The processor's state and the trampoline the firmware
+/// jumps to are the kernel's, and the call in the middle is where the machine
+/// actually stops: it returns having slept for as long as somebody left it
+/// shut, or straight away if nothing would sleep.
+///
+/// Nothing is stopped. Every program stays where it was, which is what this
+/// state is for.
+fn suspendToMemory() proto.Status {
+    const state = uacpi.SleepState.suspend_to_memory;
+
+    log.note("platd", "suspend: asking the firmware to prepare");
+    if (!step("_PTS", uacpi.uacpi_prepare_for_sleep_state(state))) return .refused;
+    if (!step("wake setup", uacpi.uacpi_prepare_for_wake_from_sleep_state(state))) return .refused;
+
+    log.note("platd", "suspend: sleeping");
+    const slept = sys.suspendToMemory() catch |err| {
+        log.warn("platd", if (err == error.NoDevice)
+            "this machine names no state to suspend to"
+        else
+            "the kernel refused to suspend");
+        return .refused;
+    };
+
+    // `_WAK` either way. The firmware was told to prepare and is owed the
+    // other half of that whether or not the machine ever stopped.
+    _ = step("_WAK", uacpi.uacpi_wake_from_sleep_state(state));
+
+    if (!slept) {
+        log.warn("platd", "the sleep write was made and the machine never stopped");
+        return .refused;
+    }
+
+    log.note("platd", "suspend: awake");
+    return .ok;
 }
 
 fn restart() proto.Status {

@@ -76,7 +76,12 @@ pub const Icon = enum {
     calculator,
     /// Settings. Sliders rather than a cog: a cog at this size is a blob.
     sliders,
+    /// A ring with a stroke through its gap: the symbol on every power
+    /// switch made since this machine was.
     power,
+    /// A crescent. What a machine asleep is drawn as, everywhere, and the
+    /// one picture in a session menu that is not about ending anything.
+    moon,
     /// A tick, for the chosen row of a list that has one.
     check,
     /// The other answer: what was looked at and not kept.
@@ -444,16 +449,33 @@ const art = [_]Picture{
         .icon = .power,
         .rows = .{
             "............",
-            "............",
             ".....##.....",
+            ".....##.....",
+            "..##.##.##..",
             "..#..##..#..",
             ".#...##...#.",
-            "#....##....#",
-            "#..........#",
-            "#..........#",
+            ".#...##...#.",
             ".#........#.",
-            "..########..",
+            "..#......#..",
+            "..##....##..",
+            "....####....",
             "............",
+        },
+    },
+    .{
+        .icon = .moon,
+        .rows = .{
+            "............",
+            ".......#....",
+            ".......##...",
+            ".......###..",
+            ".......####.",
+            ".......####.",
+            "......#####.",
+            ".....######.",
+            "....######..",
+            "..#######...",
+            "...#####....",
             "............",
         },
     },

@@ -273,8 +273,9 @@ pub fn legacyVector(irq: u8) u8 {
 var gsi_vectors: [MAX_GSI]?u8 = @splat(null);
 var vector_triggers: [256]?irq_mod.Trigger = @splat(null);
 
-/// An IOAPIC has twenty-four inputs. Two of them would be a server part.
-pub const MAX_GSI = 48;
+/// Every line every controller this kernel maps could have. Two controllers
+/// would be a server part, and this machine has one.
+pub const MAX_GSI = irq_mod.MAX_CONTROLLERS * ioapic.MAX_INPUTS;
 
 comptime {
     const last_legacy_vector = LEGACY_VECTOR_BASE + irq_mod.MAX_LINES - 1;

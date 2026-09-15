@@ -32,6 +32,11 @@ const Mapped = struct {
 var controllers: [irq.MAX_CONTROLLERS]Mapped = undefined;
 var count: usize = 0;
 
+/// How many inputs one controller has. Fixed by the part: every IOAPIC of
+/// this era has twenty-four, and a machine with more of them has more
+/// controllers rather than wider ones.
+pub const MAX_INPUTS = 24;
+
 pub fn active() bool {
     return count > 0;
 }
@@ -229,6 +234,45 @@ pub fn unmaskIfMatches(gsi: u32, expected: Route) void {
         !entry.route.masked) return;
     entry.route.masked = false;
     writeEntry(owner, line, entry);
+}
+
+/// Every redirection entry as it stands, and the same entries written back.
+///
+/// Waking from a suspend to memory leaves the controllers reset, with every
+/// line masked and pointed nowhere. What each line was is not something boot
+/// can be asked for again: the drivers have unmasked what they claimed since
+/// then, and re-running the boot routing would put them all back behind a
+/// mask nothing would ever lift. So what is there is copied out and copied
+/// back.
+var stowed: [irq.MAX_CONTROLLERS][MAX_INPUTS]Redirect = undefined;
+
+pub fn stow() void {
+    each(struct {
+        fn copy(c: *Mapped, which: usize, line: u32) void {
+            stowed[which][line] = readEntry(c, line);
+        }
+    }.copy);
+}
+
+pub fn restore() void {
+    each(struct {
+        fn copy(c: *Mapped, which: usize, line: u32) void {
+            writeEntry(c, line, stowed[which][line]);
+        }
+    }.copy);
+}
+
+/// Every line of every controller, with interrupts held off for the whole
+/// pass: the register file is addressed a line at a time through one window,
+/// so anything that touched it in between would be reading somebody else's
+/// selection.
+fn each(comptime what: fn (*Mapped, usize, u32) void) void {
+    const was = hold();
+    defer release(was);
+    for (controllers[0..count], 0..) |*c, which| {
+        const pins = @min(c.info.inputs, MAX_INPUTS);
+        for (0..pins) |line| what(c, which, @intCast(line));
+    }
 }
 
 fn find(gsi: u32) ?*Mapped {

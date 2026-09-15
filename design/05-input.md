@@ -215,9 +215,16 @@ status = inb(0x64); while (status & OBF):
   no F0 pending): keyboard/EC rebooted (brownout) ⇒ silently re-run step 11.
 - **Spontaneous 0xAA 0x00** on AUX: touchpad announced itself after reset ⇒
   re-run the probe ladder (§7). This also covers resume from S3.
-- **Suspend/resume**: on S3 entry, send 0xAD/0xA7 and mask GSIs; on resume run
-  the full init. Keymap/lock state lives in the GUI server and survives; kernel
-  replays LED state via the stored last `set_leds` value.
+- **Suspend/resume** (done, less the LED replay): on S3 entry the controller's
+  configuration byte is copied out, and on resume it is written back and the
+  line claimed again. The configuration rather than a fresh `init` because the
+  translation setting in it is firmware's and cannot be worked out again: a
+  controller that comes back without it hands over codes from the other set,
+  which reads as a keyboard typing someone else's letters. The pointing device
+  is asked again in its own sequence, since the wheel and the third button are
+  a knock on the mouse rather than a setting on the controller. Keymap and lock
+  state live in the GUI server and survive; the kernel does not yet replay LED
+  state.
 - No periodic polling in steady state, the watchdog is purely event-driven
   (a periodic prod would generate constant EC traffic for nothing).
 

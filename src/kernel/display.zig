@@ -282,6 +282,32 @@ pub fn requestMode(width: u16, height: u16, bpp: u8) ModeError!void {
     try backend(width, height, bpp);
 }
 
+/// Set the mode that is already set, the adapter having forgotten it.
+///
+/// Its own hook rather than `setMode`, because the two are different
+/// questions. Asking for a different mode is refused unless the console can
+/// follow it onto a new geometry; putting back the one that is already there
+/// moves nothing, so it is right even while a compositor owns the screen and
+/// the console is drawing nowhere.
+pub var restore: ?*const fn () ModeError!void = null;
+
+/// Whether what is on the screen can be put back after the adapter has been
+/// powered down and up.
+///
+/// A mode set by firmware was set by code that no longer runs. The screen
+/// looks right until the machine sleeps, and then it is a picture being
+/// written into memory nothing reads: the adapter comes back at its reset
+/// defaults and only a driver can move it off them. So this is false unless
+/// a backend can put it back, and a machine where it is false must not be
+/// suspended.
+pub fn canResume() bool {
+    return available and restore != null;
+}
+
+pub fn restoreMode() ModeError!void {
+    return (restore orelse return error.Unsupported)();
+}
+
 /// Hand the display back and return the console to it. Only the owner's to
 /// do: the handle to the screen closes in the process that took it, whether
 /// by its own hand or by its end, and nobody else's close is heard.

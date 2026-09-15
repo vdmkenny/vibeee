@@ -18,7 +18,9 @@
 #
 # `-m` sends raw QEMU monitor commands after the typing, one per line, which is
 # how the pointing device is exercised: `mouse_move dx dy`, `mouse_button mask`
-# with 1 left, 2 middle, 4 right.
+# with 1 left, 2 middle, 4 right. A line of `wait-for TEXT` is not a monitor
+# command: it holds the rest of the sequence until the machine says TEXT, which
+# is how a step that has to happen in order stays in order on a loaded host.
 #
 # The CPU model comes from QEMU_CPU, which the Makefile exports. It must match
 # the target: emulating something less capable than the real Celeron M makes
@@ -228,10 +230,28 @@ if [ -n "$TYPE" ]; then
     done
 fi
 
+# A monitor line of `wait-for TEXT` is not sent to the emulator: it holds the
+# rest of the sequence until that text appears in the transcript. Counting
+# delays instead is what a loaded host turns into a flake, and the machine
+# says when it has got somewhere far better than any number of seconds does.
+awaitLine() {
+    i=0
+    while [ $i -lt 400 ]; do
+        grep -q "$1" "$LOG" 2>/dev/null && return 0
+        sleep 0.1
+        i=$((i + 1))
+    done
+    echo "qemu-shot: nothing said \"$1\" within forty seconds" >&2
+    return 1
+}
+
 if [ -n "$MONITOR" ]; then
     printf '%s\n' "$MONITOR" | while IFS= read -r line; do
         [ -n "$line" ] || continue
-        monitor "$line"
+        case "$line" in
+            "wait-for "*) awaitLine "${line#wait-for }" || true ;;
+            *) monitor "$line" ;;
+        esac
         sleep 0.3
     done
 fi

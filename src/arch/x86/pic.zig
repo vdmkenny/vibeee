@@ -115,6 +115,25 @@ pub fn setMask(line: u8, masked: bool) void {
     if (!masked and line >= 8) setMask(CASCADE_LINE, false);
 }
 
+/// What the two controllers hold that only memory will keep: which lines
+/// were let through.
+///
+/// The rest of a controller's state is what `remap` writes, and writing it
+/// again says the same thing. The masks are the part nothing else knows.
+var stowed: ?[2]u8 = null;
+
+pub fn stow() void {
+    stowed = .{ port.inb(Chip.first.data), port.inb(Chip.second.data) };
+}
+
+/// Set the pair up again and put the masks back.
+pub fn restore(base: u8) void {
+    remap(base);
+    const masks = stowed orelse [2]u8{ 0xFF, 0xFF };
+    port.outb(Chip.first.data, masks[0]);
+    port.outb(Chip.second.data, masks[1]);
+}
+
 /// Say an interrupt is finished. The second controller is told first: it
 /// reports through the first, which cannot retire the cascade until its
 /// partner has retired the line behind it.

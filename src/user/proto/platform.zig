@@ -46,6 +46,10 @@ pub const Tag = enum(u8) {
     feature,
     /// Power it on or off. `param` carries the same, `on` included.
     feature_set,
+    /// Stop the machine with its memory alive. Answers when it wakes, which
+    /// is what makes this the one request here that comes back having taken
+    /// as long as a person left the machine shut.
+    suspend_to_memory,
 };
 
 pub const Req = extern struct {

@@ -13,6 +13,8 @@ const port = @import("port.zig");
 const paging = @import("paging.zig");
 const context = @import("context.zig");
 const timer = @import("timer.zig");
+const nmiwatch = @import("nmiwatch.zig");
+const s3 = @import("s3.zig");
 
 pub const PAGE_SIZE = paging.PAGE_SIZE;
 pub const KERNEL_BASE = paging.KERNEL_VMA;
@@ -95,7 +97,7 @@ pub const resolveIrq = idt.resolveIrq;
 pub const claimGsi = idt.claimGsi;
 pub const releaseGsi = idt.releaseGsi;
 
-pub const armNmiWatchdog = @import("nmiwatch.zig").arm;
+pub const armNmiWatchdog = nmiwatch.arm;
 pub const wedgeSoon = timer.wedgeSoon;
 
 pub fn deferIrq(token: IrqToken) void {
@@ -172,6 +174,8 @@ pub fn initInterruptController(routing: ?irq.Routing) void {
     }
     console.warn("apic: described but unusable; using the 8259s", .{});
 }
+
+pub const sleepToMemory = s3.sleepToMemory;
 
 pub const FpuState = fpu.State;
 pub const enableFpu = fpu.enable;

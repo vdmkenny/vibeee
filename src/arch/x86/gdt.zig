@@ -22,14 +22,34 @@ pub const USER_CODE: u16 = 0x18 | 3; // RPL 3
 pub const USER_DATA: u16 = 0x20 | 3;
 pub const TSS_SEL: u16 = 0x28;
 
+/// Which entry that selector names. A selector is a byte offset into the
+/// table, and the two are written once here rather than once each.
+const TSS_INDEX = TSS_SEL / @sizeOf(Entry);
+
+/// The four bits that describe a segment, which in a system descriptor
+/// together name a kind of thing instead. One layout, two readings, which is
+/// why they are grouped rather than left loose among the rest.
+const Kind = packed struct(u4) {
+    accessed: bool = false,
+    rw: bool = false,
+    direction: bool = false,
+    executable: bool = false,
+
+    fn segment(exec: bool) Kind {
+        return .{ .rw = true, .executable = exec };
+    }
+
+    /// A 32-bit task nobody is running. The processor marks a task busy in
+    /// its own descriptor the moment it loads it, and refuses to load one
+    /// that already says so.
+    const task_free = Kind{ .accessed = true, .executable = true };
+};
+
 const Entry = packed struct(u64) {
     limit_low: u16,
     base_low: u16,
     base_mid: u8,
-    accessed: bool,
-    rw: bool,
-    direction: bool,
-    executable: bool,
+    kind: Kind,
     descriptor_type: bool, // 1 = code/data, 0 = system
     dpl: u2,
     present: bool,
@@ -40,15 +60,12 @@ const Entry = packed struct(u64) {
     granularity: bool, // 1 = limit in 4 KiB pages
     base_high: u8,
 
-    fn make(base: u32, limit: u32, dpl: u2, exec: bool, system: bool) Entry {
+    fn make(base: u32, limit: u32, dpl: u2, kind: Kind, system: bool) Entry {
         return .{
             .limit_low = @truncate(limit & 0xFFFF),
             .base_low = @truncate(base & 0xFFFF),
             .base_mid = @truncate((base >> 16) & 0xFF),
-            .accessed = false,
-            .rw = true,
-            .direction = false,
-            .executable = exec,
+            .kind = kind,
             .descriptor_type = !system,
             .dpl = dpl,
             .present = true,
@@ -123,10 +140,10 @@ var tss: Tss align(16) = .{};
 
 pub fn init(kernel_stack_top: u32) void {
     gdt[0] = @bitCast(@as(u64, 0));
-    gdt[1] = Entry.make(0, 0xFFFFF, 0, true, false); // kernel code
-    gdt[2] = Entry.make(0, 0xFFFFF, 0, false, false); // kernel data
-    gdt[3] = Entry.make(0, 0xFFFFF, 3, true, false); // user code
-    gdt[4] = Entry.make(0, 0xFFFFF, 3, false, false); // user data
+    gdt[1] = Entry.make(0, 0xFFFFF, 0, .segment(true), false); // kernel code
+    gdt[2] = Entry.make(0, 0xFFFFF, 0, .segment(false), false); // kernel data
+    gdt[3] = Entry.make(0, 0xFFFFF, 3, .segment(true), false); // user code
+    gdt[4] = Entry.make(0, 0xFFFFF, 3, .segment(false), false); // user data
 
     tss = .{
         .ss0 = KERNEL_DATA,
@@ -136,11 +153,7 @@ pub fn init(kernel_stack_top: u32) void {
         .iomap_base = @sizeOf(Tss),
     };
 
-    var tss_entry = Entry.make(@intFromPtr(&tss), @sizeOf(Tss) - 1, 0, true, true);
-    tss_entry.accessed = true; // for a TSS descriptor this bit means "busy=0, type=9"
-    tss_entry.rw = false;
-    tss_entry.direction = false;
-    gdt[5] = tss_entry;
+    gdt[TSS_INDEX] = Entry.make(@intFromPtr(&tss), @sizeOf(Tss) - 1, 0, .task_free, true);
 
     // Loaded in the same breath as the segment reload below: the far jump has
     // to be the next instruction the CPU runs, so this one cannot be a call.
@@ -162,6 +175,30 @@ pub fn init(kernel_stack_top: u32) void {
           [ds] "i" (KERNEL_DATA),
         : .{ .memory = true, .eax = true });
 
+    retakeTask();
+}
+
+/// Where the table is, as `lgdt` takes it.
+///
+/// For waking from a suspend to memory: the processor comes back with no
+/// descriptor tables at all, and the first instructions that run after it
+/// have no stack to be handed anything on. They read this.
+pub fn describe() cpu.TableRegister {
+    return cpu.TableRegister.of(&gdt);
+}
+
+/// Take the task register back.
+///
+/// Waking clears it, and the descriptor in memory still says the task is
+/// busy, which is what `ltr` refuses. Clearing that bit is the whole of the
+/// repair: nothing else about the entry changed while the machine was
+/// asleep, the memory holding it having been kept alive the whole time.
+pub fn retakeTask() void {
+    // Said again because the processor is the one that said it was busy, and
+    // it no longer remembers doing so: what a machine coming back from a
+    // suspend to memory finds in the descriptor is the mark its own last
+    // `ltr` left, and the mark is what the next one refuses on.
+    gdt[TSS_INDEX].kind = .task_free;
     asm volatile ("ltr %[sel]"
         :
         : [sel] "r" (TSS_SEL),

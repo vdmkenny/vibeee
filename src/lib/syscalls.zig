@@ -1991,6 +1991,35 @@ pub const table = [_]Syscall{
             "of its own, so a follower writing to a USB one is the only way a boot is read " ++
             "as text rather than photographed.",
     },
+    .{
+        .number = 75,
+        .name = "suspend_to_memory",
+        .summary = "Stop the machine with its memory alive, and return when it wakes.",
+        .args = &.{},
+        .returns = "1 if it slept and woke, 0 if the machine refused",
+        .errors = &.{ E.perm, E.nodev },
+        .notes = "A call that takes as long as the sleep does and then comes back, which is " ++
+            "the whole difference from shutdown. The caller is left running and every other " ++
+            "program with it: what the kernel does here is write the filesystems out, save " ++
+            "what the processor will not keep, and put that back on the other side. Quieting " ++
+            "the devices and waking them again is each service's own to do around this call. " ++
+            "Refused on a machine whose firmware names no such state, which is what nodev " ++
+            "says.",
+    },
+    .{
+        .number = 76,
+        .name = "wake_watch",
+        .summary = "An event signalled whenever the machine has woken from a suspend.",
+        .args = &.{},
+        .returns = "A handle to wait on",
+        .errors = &.{E.nomem},
+        .notes = "One event for the machine, handed to whoever asks. What a service that " ++
+            "drives hardware waits on: a part that lost its power lost everything its " ++
+            "driver believed about it, and nothing but that driver can say what it should " ++
+            "hold instead. An event rather than being told directly, because whoever did " ++
+            "the telling would be inside its own request while it told, and a driver taking " ++
+            "its device back has questions for the other services as it does so.",
+    },
 };
 
 // Numbers must be unique and contiguous from zero: the dispatcher indexes the

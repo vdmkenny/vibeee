@@ -74,6 +74,7 @@ const builtins = [_]Builtin{
     .{ .name = "exit", .summary = manual.summaryOf("exit"), .run = &cmdExit },
     .{ .name = "off", .summary = manual.summaryOf("off"), .run = &cmdPowerOff },
     .{ .name = "reboot", .summary = manual.summaryOf("reboot"), .run = &cmdReboot },
+    .{ .name = "suspend", .summary = manual.summaryOf("suspend"), .run = &cmdSuspend },
 };
 
 export fn _start(frame: [*]const u32) callconv(.c) noreturn {
@@ -695,4 +696,27 @@ fn cmdPowerOff(_: []const []const u8) u8 {
 fn cmdReboot(_: []const []const u8) u8 {
     out.flush();
     return requestPower(.reboot, sys.REBOOT);
+}
+
+/// Sleep, and come back to the same prompt.
+///
+/// The one power request that answers: everything stays where it was, so the
+/// line after this one is printed by the same shell that printed the one
+/// before. There is no kernel fallback, because a machine with nothing
+/// serving has nothing to arm what would wake it.
+fn cmdSuspend(_: []const []const u8) u8 {
+    out.flush();
+
+    platform.ask(.suspend_to_memory) catch |err| {
+        out.text(switch (err) {
+            error.NoService => "no platform service to ask\n",
+            else => "the machine would not sleep\n",
+        });
+        out.flush();
+        return 1;
+    };
+
+    out.text("awake\n");
+    out.flush();
+    return 0;
 }

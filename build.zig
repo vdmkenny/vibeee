@@ -1152,6 +1152,35 @@ pub fn build(b: *std.Build) void {
     b.step("driver-manifests", "Regenerate drivers/*.man from what each driver answers for")
         .dependOn(&driver_manifests.step);
 
+    // The wake trampoline, assembled from real-mode assembly and written out
+    // as bytes the kernel copies into low memory. The address is here rather
+    // than in either file because both have to agree on it: the trampoline's
+    // own jumps name absolute addresses, so it runs at this address or
+    // nowhere.
+    const S3_TRAMPOLINE_AT = "0x2000";
+    const s3_asm = b.addSystemCommand(&.{ "nasm", "-f", "bin", "-DORIGIN=" ++ S3_TRAMPOLINE_AT });
+    s3_asm.addFileArg(b.path("boot/s3wake.asm"));
+    s3_asm.addArg("-o");
+    const s3_bin = s3_asm.addOutputFileArg("s3wake.bin");
+
+    const s3_blob = b.addRunArtifact(b.addExecutable(.{
+        .name = "gen-s3wake",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/gen_s3wake.zig"),
+            .target = b.graph.host,
+            .optimize = .ReleaseSafe,
+        }),
+    }));
+    s3_blob.addFileArg(s3_bin);
+    s3_blob.addArg("src/arch/x86/s3wake.zig");
+    s3_blob.addArg(S3_TRAMPOLINE_AT);
+    s3_blob.has_side_effects = true;
+
+    const s3_tidy = b.addFmt(.{ .paths = &.{"src/arch/x86/s3wake.zig"} });
+    s3_tidy.step.dependOn(&s3_blob.step);
+    b.step("s3-trampoline", "Regenerate src/arch/x86/s3wake.zig from boot/s3wake.asm")
+        .dependOn(&s3_tidy.step);
+
     // ---------------------------------------------------------------------
     // Console fonts, converted from BDF at build time so the .bdf stays the
     // source of truth and the generated tables are never hand-edited.

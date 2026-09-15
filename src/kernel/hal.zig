@@ -39,6 +39,9 @@ pub const caps = struct {
     pub const has_ioapic: bool = @hasDecl(impl, "ioapicInit");
     /// Whether this architecture can take its clock from a firmware counter.
     pub const firmware_clock: bool = @hasDecl(impl, "setPmTimerPort");
+    /// Whether this architecture can stop with its memory alive and come
+    /// back to where it was.
+    pub const sleeps_to_memory: bool = @hasDecl(impl, "sleepToMemory");
 };
 
 // ---------------------------------------------------------------------------
@@ -211,6 +214,21 @@ else
     struct {
         fn quiet(_: bool) void {}
     }.quiet;
+
+/// Stop the machine with its memory alive, and put the processor back
+/// together when it wakes. `enter` is the write that stops it, the chipset
+/// being somebody else's concern; the answer is whether the machine slept.
+///
+/// Refused where the architecture has no such state, which is the same
+/// answer a machine whose firmware does not offer one gives.
+pub const sleepToMemory = if (@hasDecl(impl, "sleepToMemory"))
+    impl.sleepToMemory
+else
+    struct {
+        fn refuse(_: *const fn (u32) callconv(.c) void) bool {
+            return false;
+        }
+    }.refuse;
 
 /// Seize the machine on purpose, a few seconds from now, from interrupt
 /// context: the test that proves the watchdog's panic path on hardware.

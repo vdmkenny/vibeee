@@ -101,6 +101,17 @@ pub fn init(phys: u32) bool {
 
     const virt = paging.mapMmio(phys, 0x1000, .uncached) catch return false;
     base = @ptrFromInt(virt);
+    arm();
+    return true;
+}
+
+/// Switch the unit on and open it, without mapping it again.
+///
+/// Apart from boot this is what waking from a suspend to memory needs: the
+/// aperture is where it always was, the mapping to it survived in memory, and
+/// what the unit itself was holding did not.
+pub fn arm() void {
+    if (base == null) return;
 
     // The firmware normally leaves it enabled, but a machine that came out of
     // a mode where it was not would deliver nothing at all.
@@ -115,7 +126,6 @@ pub fn init(phys: u32) bool {
     // Separate from the enable in the MSR: that one powers the unit, this one
     // lets interrupts through.
     write(.spurious, @bitCast(Spurious{ .vector = SPURIOUS_VECTOR, .enabled = true }));
-    return true;
 }
 
 pub fn id() u8 {

@@ -25,6 +25,8 @@ const klog = @import("klog.zig");
 const pmm = @import("pmm.zig");
 const probe = @import("probe.zig");
 const sched = @import("sched.zig");
+const shutdown = @import("shutdown.zig");
+const sleep = @import("sleep.zig");
 const builtin = @import("builtin");
 const svc = @import("svc.zig");
 const vfs = @import("vfs.zig");
@@ -74,6 +76,10 @@ pub const Platform = struct {
 };
 
 var platform: Platform = .{};
+
+fn yesNo(yes: bool) []const u8 {
+    return if (yes) "yes" else "no";
+}
 
 pub fn setPlatform(p: Platform) void {
     platform = p;
@@ -126,6 +132,7 @@ pub const Key = enum {
     @"threads.list",
     acpi,
     @"acpi.pm",
+    power,
     pci,
     disks,
     storage,
@@ -371,6 +378,16 @@ pub fn query(name: []const u8, buf: []u8) Error!usize {
                 platform.pm1a_event,   platform.pm1a_event_len,
                 platform.pm1a_control, platform.pm1a_control_len,
                 platform.pm_block,     platform.pm_block_len,
+            });
+        },
+        .power => {
+            // What this machine can be asked to do about power. Both answers
+            // need two things to be true at once, the firmware naming the
+            // state and something here knowing how to reach it, which is why
+            // they are asked of the kernel rather than read off a table.
+            w.print("off {s}\nsuspend {s}", .{
+                yesNo(shutdown.canPowerOff()),
+                yesNo(sleep.offered()),
             });
         },
         .pci => {

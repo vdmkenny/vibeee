@@ -24,6 +24,7 @@ const acpi_power = @import("drv/acpi/power.zig");
 const clock = @import("kernel/clock.zig");
 const cmos = @import("drv/rtc/cmos.zig");
 const shutdown = @import("kernel/shutdown.zig");
+const sleep = @import("kernel/sleep.zig");
 const smbios = @import("drv/platform/smbios.zig");
 const sysinfo = @import("kernel/sysinfo.zig");
 const kbd = @import("drv/input/i8042.zig");
@@ -145,6 +146,80 @@ pub fn reportVideo() void {
 /// Separate from `earlyDevices` and called well before it: the interrupt
 /// controller is chosen from the MADT, and that happens before there is a heap
 /// or a driver of any kind. Reading tables needs neither.
+/// Take the wall clock from the hardware clock.
+///
+/// At boot, and again after a suspend to memory. The monotonic counter the
+/// wall clock is derived from does not run while the machine sleeps, so the
+/// offset established at boot is wrong by however long the sleep lasted, and
+/// the only thing on the board that kept counting is the chip that exists to.
+///
+/// Read exactly at these two moments, never on demand: from here on the wall
+/// clock runs off the monotonic counter, so nothing pays a CMOS round trip to
+/// ask the time.
+fn adoptWallClock(announce: bool) void {
+    const t = cmos.now();
+    if (cmos.looksUnset(t)) {
+        if (announce) {
+            console.warn("rtc: clock not set; timestamps and TLS will be wrong until corrected", .{});
+        }
+        return;
+    }
+
+    clock.setCivil(.{
+        .year = t.year,
+        .month = t.month,
+        .day = t.day,
+        .hour = t.hour,
+        .minute = t.minute,
+        .second = t.second,
+    }, "rtc");
+    if (announce) {
+        console.info("rtc", "{d:0>4}-{d:0>2}-{d:0>2} {d:0>2}:{d:0>2}:{d:0>2} UTC", .{
+            t.year, t.month, t.day, t.hour, t.minute, t.second,
+        });
+    }
+}
+
+/// What the board copies out before the power goes.
+///
+/// Only what nothing could work out again: the addresses firmware assigned on
+/// the buses, and how the input controller was told to convert what the
+/// keyboard sends. Everything else is set from what this kernel already knows.
+fn beforeSleep() void {
+    pci.stow();
+    kbd.stow();
+}
+
+/// What the board puts right the moment the processor is back.
+///
+/// The order is the substance. The buses first: every part on them lost the
+/// addresses firmware gave it, and until those are back nothing else here can
+/// reach anything at all. Then the screen, which is a part on one of those
+/// buses and is what everything after this is said on. Then the input
+/// controller, which sits beside the processor rather than on a bus and comes
+/// back with its interrupt switched off, which is a keyboard that is present
+/// and silent. And last the wall clock, which is derived from a counter that
+/// does not run while the machine sleeps.
+fn afterSleep() void {
+    pci.restore();
+
+    // What is already in the console's grid is drawn again as the mode comes
+    // back, so anything said between here and there is on the screen too.
+    display.restoreMode() catch |err| {
+        console.warn("suspend: the display did not come back: {s}", .{@errorName(err)});
+    };
+
+    kbd.restore();
+    // The pointing device rather than the controller: it is the mouse itself
+    // that is asked, in a sequence of its own, to report a wheel and three
+    // buttons, and it comes back a plain two-button mouse.
+    _ = mouse.init();
+
+    // Without announcing it: the sleep has its own narration and the hour is
+    // not news in the middle of it.
+    adoptWallClock(false);
+}
+
 pub fn readFirmwareTables(bi: *const bootinfo.BootInfo) void {
     acpi_root = bi.rsdp;
     acpi.init(bi.rsdp);
@@ -240,6 +315,11 @@ pub fn earlyDevices(bi: *const bootinfo.BootInfo) void {
     publishPlatform(bi);
 
     shutdown.setPowerOps(.{ .off = acpi_power.off, .reset = acpi_power.reset });
+    sleep.setOps(.{
+        .enter = acpi_power.suspendToMemory,
+        .stow = beforeSleep,
+        .restore = afterSleep,
+    });
 
     if (acpi.get()) |a| {
         if (a.off.found) {
@@ -253,24 +333,7 @@ pub fn earlyDevices(bi: *const bootinfo.BootInfo) void {
         }
     }
 
-    // The RTC is read exactly once. From here on the wall clock runs off the
-    // monotonic counter, so nothing pays for a CMOS round trip to ask the time.
-    const t = cmos.now();
-    if (cmos.looksUnset(t)) {
-        console.warn("rtc: clock not set; timestamps and TLS will be wrong until corrected", .{});
-    } else {
-        clock.setCivil(.{
-            .year = t.year,
-            .month = t.month,
-            .day = t.day,
-            .hour = t.hour,
-            .minute = t.minute,
-            .second = t.second,
-        }, "rtc");
-        console.info("rtc", "{d:0>4}-{d:0>2}-{d:0>2} {d:0>2}:{d:0>2}:{d:0>2} UTC", .{
-            t.year, t.month, t.day, t.hour, t.minute, t.second,
-        });
-    }
+    adoptWallClock(true);
 
     kbd.init();
 

@@ -25,6 +25,7 @@ ORG 0x8000
 ;   0x0000-0x0500  IVT and BIOS data area
 ;   0x0500-0x0900  VBE scratch, below
 ;   0x1000-0x2000  panic record (kernel/panicring.zig), never touched here
+;   0x2000-0x2100  wake trampoline (boot/s3wake.asm), written by the kernel
 ;   0x5000-0x6000  font
 ;   0x6000-0x7000  BootInfo
 ;   0x7000-0x7100  E820 scratch

@@ -158,6 +158,8 @@ fn wmMain() noreturn {
     listenTo(.keyboard_settings, @intCast(keyboard_event));
     listenTo(.power_settings, @intCast(power_event));
     listenTo(.network, @intCast(network_event));
+    wake_event = sys.watchWake() catch 0;
+    listenTo(.woken, wake_event);
 
     // The desktop paints its own ground, and only the parts of it that show:
     // filling the screen and then covering most of it again is the flash this
@@ -484,6 +486,7 @@ fn run() noreturn {
         if (askedToQuit()) quit();
         if (settingsChanged()) acted = true;
         if (networkChanged()) acted = true;
+        if (wokeFromSleep()) acted = true;
 
         // Applications are this process's children, so their exits arrive
         // here. Collecting them is both how a window closed from inside an
@@ -593,6 +596,10 @@ const Source = enum {
     /// a network the radio has heard. The bar's icon and its menu are what
     /// change, so the bar is told rather than asking on the clock's timer.
     network,
+    /// The machine coming back from a sleep. The adapter was set its mode
+    /// again on the way up and clears the pixels as it takes one, so
+    /// everything on the screen has to be drawn afresh.
+    woken,
     /// The supervisor asking the desktop to go, answered the way its own
     /// menu's leaving is: every window asked to close, the display given back.
     quit,
@@ -1343,6 +1350,8 @@ var settings_event: u32 = 0;
 var power_event: u32 = 0;
 var keyboard_event: u32 = 0;
 var network_event: u32 = 0;
+/// The machine waking from a sleep, or zero where nothing offers one.
+var wake_event: u32 = 0;
 
 /// The network service said something changed. Only the bar has anything to
 /// show for it, so only the bar is repainted: setting the whole desktop dirty
@@ -1359,6 +1368,33 @@ fn woke(event: u32) bool {
         return true;
     }
     _ = sys.waitMany(&.{event}, sys.POLL) catch return false;
+    return true;
+}
+
+/// Stop the machine with the session where it is.
+///
+/// Asked of the platform service, which is the only thing that can evaluate
+/// the firmware's own methods, and which does not answer until the machine is
+/// awake again. The redraw is not done here: waking signals the same event
+/// every other service watches, and the loop below answers it.
+fn goToSleep() void {
+    // Nothing is said when it refuses. The service says why in the record,
+    // which is where an answer of that kind belongs; the session is exactly
+    // where it was and the menu has already closed over it.
+    proto.platform.ask(.suspend_to_memory) catch {};
+}
+
+/// Draw everything again, the machine having been asleep.
+///
+/// Nothing about the session changed while it slept: the same windows are
+/// open at the same places. What changed is the screen itself, which was set
+/// its mode again by a part that clears its pixels as it takes one, so what
+/// is on it is nothing.
+fn wokeFromSleep() bool {
+    if (wake_event == 0) return false;
+    if (!woke(wake_event)) return false;
+    cursor.invalidate();
+    dirty = true;
     return true;
 }
 
@@ -1460,6 +1496,7 @@ fn apply(action: bar.Action) void {
         .close_window => |index| requestClose(index),
         .close_desktop => |tag| closeDesktop(tag),
         .quit => quit(),
+        .sleep => goToSleep(),
         .reboot => sys.shutdown(sys.REBOOT),
         .power_off => sys.shutdown(sys.POWER_OFF),
         // Wherever it is: the launcher finds a window by name, and a window

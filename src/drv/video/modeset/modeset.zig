@@ -10,6 +10,7 @@
 //! The table below names them by the machines they shipped in rather than only
 //! by their part numbers, because that is how anyone will look one up.
 
+const bochs_backend = @import("bochs.zig");
 const gen3_backend = @import("gen3.zig");
 const gen3_pointer = @import("gen3cursor.zig");
 const display = @import("../../../kernel/display.zig");
@@ -150,6 +151,13 @@ pub const backends = [_]Backend{
         .describes = "GMA 500, PowerVR",
         .fits = &anyOf(0x8086, &poulsbo),
     },
+    .{
+        .name = "bochs",
+        .describes = "the adapter emulators have",
+        .fits = &bochs_backend.fits,
+        .set = &bochs_backend.set,
+        .inspect = &bochs_backend.inspect,
+    },
 };
 
 /// The best backend for an adapter, or null when nothing knows it.
@@ -218,8 +226,15 @@ test "GMA 500 is recognised as itself rather than as Intel graphics" {
     try std.testing.expectEqualStrings("poulsbo", nameFor(0x8086, 0x8108).?);
 }
 
+test "the adapter an emulator offers is driven rather than left alone" {
+    // Which is what makes suspend to memory something the gate can prove: a
+    // display nothing can set a mode on cannot come back from a sleep, and a
+    // machine whose display cannot come back refuses to sleep.
+    try std.testing.expectEqualStrings("bochs", nameFor(0x1234, 0x1111).?);
+    try std.testing.expectEqualStrings("bochs", nameFor(0x80EE, 0xBEEF).?);
+}
+
 test "an adapter nothing knows falls through to the firmware's mode" {
-    // QEMU's Bochs adapter, and anything else this has never seen.
-    try std.testing.expectEqual(@as(?[]const u8, null), nameFor(0x1234, 0x1111));
     try std.testing.expectEqual(@as(?[]const u8, null), nameFor(0x8086, 0xFFFF));
+    try std.testing.expectEqual(@as(?[]const u8, null), nameFor(0x1234, 0x1112));
 }

@@ -201,6 +201,16 @@ fn serve() noreturn {
         sources[source_count] = device.irq;
         source_count += 1;
     }
+    // The machine coming back from a sleep. A controller that lost its
+    // power lost its ring pointers, its stream descriptors and everything
+    // its codec was told, so the hardware is opened again.
+    const wake_event = sys.watchWake() catch 0;
+    const wake_index: ?usize = if (wake_event != 0) source_count else null;
+    if (wake_event != 0) {
+        sources[source_count] = wake_event;
+        source_count += 1;
+    }
+
     // The supervisor's request to go, last so the engines keep their
     // places. Answered by stopping what is playing, so the codec is not
     // left fetching from memory nobody owns.
@@ -224,6 +234,10 @@ fn serve() noreturn {
         }
 
         const index: usize = @intCast(woke);
+        if (wake_index != null and index == wake_index.?) {
+            takeTheHardwareAgain();
+            continue;
+        }
         if (quit_index != null and index == quit_index.?) {
             for (devices[0..device_count]) |*device| {
                 if (device.running[@intFromEnum(dev.Direction.playback)]) stopPlayback(device);
@@ -240,6 +254,32 @@ fn serve() noreturn {
             if (done.any()) advance(device, done);
             sys.irqAck(device.irq, done.any());
         }
+    }
+}
+
+/// Open every device again, the machine having been asleep.
+///
+/// The hardware only. The graph is this service's own and nothing in it
+/// moved: the nodes, the ports and whatever anybody connected are all still
+/// true, and a client's stream still points where it pointed. What is no
+/// longer true is everything the controller was holding, which `open` writes
+/// afresh.
+///
+/// Whatever was playing is not resumed. The ring it was fetching from is
+/// still there but the engine's place in it is not, and a stream picked up
+/// mid-buffer is a burst of noise; a client that wants to go on asks again.
+fn takeTheHardwareAgain() void {
+    for (devices[0..device_count]) |*device| {
+        device.running = .{ false, false };
+
+        if (!device.ops.open(device.location)) {
+            log.warn("sndd", "the device did not open again after the sleep");
+            continue;
+        }
+        // The pin is quiesced by the open, and opens again once the handler
+        // path stands, which is the order every driver here keeps.
+        pci.enableInterrupt(device.location);
+        log.note("sndd", "driving the hardware again");
     }
 }
 

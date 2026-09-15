@@ -16,8 +16,10 @@ In-kernel display driver stack with one narrow contract (`DisplayDev`) and three
 - **gma900**, the real driver: native LVDS modeset of the 800×480 panel on pipe B, framebuffers
   in stolen memory, WC via MTRR, vblank IRQ, optional VGA-out on pipe A, HW cursor (done), S3
   save/restore, optional gen3 blitter module (M3).
-- **bochsfb**: QEMU test backend (Bochs dispi ports): 800×480×32 **with real flipping** so the GUI
-  server's full code path (including flip) runs in QEMU, where GMA 900 cannot be emulated.
+- **bochs** (done): emulator backend, over the Bochs dispi ports, plus the plain VGA registers
+  that decide whether anything is drawn at all. No flip yet. What it is for beyond convenience:
+  suspend to memory is refused on a machine whose display cannot be set a mode, so without this
+  the whole suspend path would only ever run on the hardware it is hardest to run on.
 - **vesafb**, safety-mode backend: 640×480×32 VBE mode set by the bootloader in real mode;
   no flip, no S3 resume.
 
@@ -390,7 +392,19 @@ Order vs ACPI S3, suspend: GUI freeze → `suspend0()` (teardown §8.2-reverse, 
 platform svc `_PTS`/S3. Resume: wake vector → CPU/MTRR/APIC/timers → PCI restore →
 **display `resume0()` early** (so panic/console works for the rest of resume) → restore aux regs →
 full modeset → signal GUI → GUI full-damage redraw (stolen survives S3 in self-refresh, but we
-don't rely on it). vesafb: `caps.can_resume=false` → platform svc refuses S3 in safety mode
+don't rely on it).
+
+**What exists.** The re-run half is done and is what `display.restoreMode` asks for: the
+composition root calls it on every wake, straight after PCI is restored and before anything
+else is said, and the console redraws its own grid into whatever the mode turns out to be.
+The aux registers captured once at boot are **not** saved or restored yet, which is the
+remaining gen3 work: a 701 waking may come back with the firmware's panel power delays and
+watermarks lost. MTRRs and PCI headers are restored generically, as this section assumed.
+
+A backend that cannot set a mode reports it by having no `set`, and the kernel refuses to
+suspend at all rather than sleeping into a screen that can never be drawn on again. That is
+what `vesafb` amounts to on a machine with no recognised adapter, and it is why the emulator
+has the **bochs** backend (§1): otherwise none of the above would ever run outside hardware.
 (the s2ram VBE_POST requirement is exactly what we cannot do from protected mode).
 
 ## 11. VESA 640×480 fallback driver (vesafb) + QEMU seam (bochsfb)

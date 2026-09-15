@@ -214,14 +214,22 @@ fn attach(driver: Driver, location: pci.Location) Attach {
 
 fn serve() noreturn {
     // The channel, every controller's interrupt, the serial service's
-    // own pair, and every offered volume's doorbell, with the request to
-    // go at the end. The set is rebuilt whenever a disk comes or goes,
-    // which is the only time it changes.
+    // own pair, every offered volume's doorbell, the machine waking, and
+    // the request to go at the end. The set is rebuilt whenever a disk
+    // comes or goes, which is the only time it changes.
     const SOURCES = 1 + MAX_CONTROLLERS + SERIAL_SOURCES +
-        @import("lib").volume.MAX_VOLUMES + 1;
+        @import("lib").volume.MAX_VOLUMES + 2;
     var sources: [SOURCES]u32 = undefined;
     var source_count: usize = 0;
     quit_event = quit.event();
+
+    // The machine coming back from a sleep. A controller that lost its
+    // power lost every conversation the bus was holding, so the bus is put
+    // down and built again, which is what `usb rebuild` asks for by hand.
+    wake_event = sys.watchWake() catch 0;
+    if (wake_event == 0) {
+        log.warn("usbd", "no wake watch; the bus would stay down after a sleep");
+    }
 
     while (true) {
         source_count = watchList(&sources);
@@ -233,6 +241,11 @@ fn serve() noreturn {
         // The supervisor's request to go. The volumes go with the process:
         // the kernel withdraws what it offered when the offerer is gone.
         if (quit_event != 0 and sources[index] == quit_event) sys.exit(0);
+        if (wake_event != 0 and sources[index] == wake_event) {
+            _ = rebuild();
+            out.flush();
+            continue;
+        }
         if (index == 0) {
             drain();
             continue;
@@ -311,12 +324,19 @@ fn watchList(into: []u32) usize {
     }
     count += serial.watching(into[count..]);
     count += volume.doorbells(into[count..]);
+    if (wake_event != 0) {
+        into[count] = wake_event;
+        count += 1;
+    }
     if (quit_event != 0) {
         into[count] = quit_event;
         count += 1;
     }
     return count;
 }
+
+/// The machine waking from a sleep, or zero when nothing offered one.
+var wake_event: u32 = 0;
 
 /// How many handles the serial service waits on: the channel programs
 /// ask it on, and the doorbell they ring.
@@ -407,7 +427,10 @@ fn rebuild() u32 {
         if (controller.ops.rebuild()) carried += 1;
     }
     if (carried == 0) {
-        log.fail("usbd", "no controller came back");
+        // Nothing to bring back is not a failure. A machine with no
+        // controller on it says so once at boot and has nothing more to
+        // say every time it wakes.
+        if (controller_count > 0) log.fail("usbd", "no controller came back");
     } else {
         log.begin("usbd", .key);
         out.decimal(carried);

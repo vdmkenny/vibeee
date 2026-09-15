@@ -162,6 +162,63 @@ pub fn writeCombine(phys: usize, len: usize) Outcome {
     return .taken;
 }
 
+/// The range registers as they stand, and the same values written back.
+///
+/// The MTRRs are the processor's, so waking from a suspend to memory finds
+/// them at their reset values: every range switched off and everything
+/// uncacheable, which leaves the framebuffer as slow to draw into as it was
+/// before anyone asked for write-combining. Nothing else remembers what was
+/// programmed, since the ranges here are partly the firmware's own.
+const Stowed = struct {
+    default: Default,
+    ranges: [MAX_RANGES]struct { base: Base, mask: Mask },
+    count: usize,
+};
+
+/// As many variable ranges as any processor of this family has.
+const MAX_RANGES = 8;
+
+var stowed: ?Stowed = null;
+
+pub fn stow() void {
+    if (!cpu.Features.detect().mtrr) return;
+
+    var kept = Stowed{
+        .default = readAs(Default, DEF_TYPE),
+        .ranges = undefined,
+        .count = @min(readAs(Capability, MTRRCAP).variable_count, MAX_RANGES),
+    };
+    for (0..kept.count) |slot| {
+        kept.ranges[slot] = .{
+            .base = readAs(Base, baseMsr(slot)),
+            .mask = readAs(Mask, maskMsr(slot)),
+        };
+    }
+    stowed = kept;
+}
+
+pub fn restore() void {
+    const kept = stowed orelse return;
+
+    // The manual's sequence, the same one a change goes through: nothing may
+    // be cached while the types move.
+    const flags = cpu.saveAndDisableInterrupts();
+    defer cpu.restoreInterrupts(flags);
+
+    disableCaches();
+    var default = kept.default;
+    default.enabled = false;
+    write(DEF_TYPE, default);
+
+    for (0..kept.count) |slot| {
+        write(baseMsr(slot), kept.ranges[slot].base);
+        write(maskMsr(slot), kept.ranges[slot].mask);
+    }
+
+    write(DEF_TYPE, kept.default);
+    enableCaches();
+}
+
 fn baseMsr(slot: usize) u32 {
     return PHYS_BASE0 + 2 * @as(u32, @intCast(slot));
 }
