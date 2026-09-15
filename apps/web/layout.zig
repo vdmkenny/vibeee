@@ -301,7 +301,7 @@ fn wantsBox(box: page_mod.Container) bool {
     }
     if (style.display == .@"inline") return false;
     for ([_]page_mod.Unit{ style.height, style.min_height, style.max_height }) |unit| switch (unit) {
-        .px, .em, .vh => return true,
+        .px, .em, .rem, .vh => return true,
         .auto, .percent, .vw => {},
     };
     if (box.ground != .none) return true;
@@ -1626,7 +1626,7 @@ fn Placer(comptime Metrics: type) type {
         /// it is a share of something not known yet.
         fn fixedOf(self: *const Self, unit: page_mod.Unit) ?i32 {
             return switch (unit) {
-                .px, .em => self.resolved(unit, 0),
+                .px, .em, .rem => self.resolved(unit, 0),
                 .auto, .percent, .vw, .vh => null,
             };
         }
@@ -1724,6 +1724,7 @@ fn Placer(comptime Metrics: type) type {
                 .auto => return null,
                 .px => |px| px,
                 .em => |ems| ems * EM,
+                .rem => |ems| ems * (self.page.root_text orelse EM),
                 .percent => |share| share / 100 * @as(f32, @floatFromInt(base)),
                 .vw => |share| share / 100 * @as(f32, @floatFromInt(self.viewport.w)),
                 .vh => |share| share / 100 * @as(f32, @floatFromInt(self.viewport.h)),
@@ -2962,6 +2963,29 @@ test "a box the page moves from where the flow put it keeps the room it had" {
     try testing.expectEqual(still.layout.lines.items[1].y, moved.layout.lines.items[1].y);
     try testing.expectEqual(still.line(1)[0].x, moved.line(1)[0].x);
     try testing.expectEqual(still.layout.height, moved.layout.height);
+}
+
+test "a length in rem is a share of the page's own text size" {
+    var b = try flexed(400, flex, &.{
+        .{ .words = "aa", .style = .{ .width = .{ .rem = 10 } } },
+        .{ .words = "bb", .style = .{ .width = .{ .em = 10 } } },
+    });
+    defer b.deinit();
+    // With no size of its own, a page is measured in the size the browser's
+    // text starts at, which is what an em is measured in either way.
+    try testing.expectEqual(@as(i32, 160), b.layout.placed.items[0].area.w);
+    try testing.expectEqual(@as(i32, 160), b.layout.placed.items[1].area.w);
+
+    var own = try flexed(400, flex, &.{
+        .{ .words = "aa", .style = .{ .width = .{ .rem = 10 } } },
+        .{ .words = "bb", .style = .{ .width = .{ .em = 10 } } },
+    });
+    defer own.deinit();
+    own.page.root_text = 10;
+    own.layout.deinit(testing.allocator);
+    own.layout = try build(testing.allocator, &own.page, 400, eighteen, Fixed{});
+    try testing.expectEqual(@as(i32, 100), own.layout.placed.items[0].area.w);
+    try testing.expectEqual(@as(i32, 160), own.layout.placed.items[1].area.w);
 }
 
 test "a height that is a share of a height not known is no height at all" {

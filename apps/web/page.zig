@@ -72,7 +72,12 @@ pub const Colours = packed struct(u16) {
 pub const Unit = union(enum) {
     auto,
     px: f32,
+    /// A share of the text size around it, which this browser reads as a
+    /// share of the size a page's text starts at.
     em: f32,
+    /// A share of the page's own text size, which is the size its root is
+    /// given and which a page may set for itself.
+    rem: f32,
     percent: f32,
     vw: f32,
     vh: f32,
@@ -510,6 +515,10 @@ pub const Page = struct {
     encoding: Charset = .utf8,
     /// What the page is painted on, where it paints anything.
     ground: Swatch = .none,
+    /// How many pixels the page's own text size comes to, which is what a
+    /// length written in `rem` is a share of. Nothing where the page leaves
+    /// it, which is the size the browser's text starts at.
+    root_text: ?f32 = null,
 
     pub fn deinit(self: *Page, gpa: std.mem.Allocator) void {
         self.title.deinit(gpa);

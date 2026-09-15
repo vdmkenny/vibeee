@@ -891,6 +891,20 @@ fn unread(node: *Node) bool {
     return lexbor.hasAttribute(node, "hidden") or !css.shows(node);
 }
 
+/// The text size the page gives its root, which is what a length written in
+/// `rem` is a share of. Nothing where the page says nothing.
+fn rootText(top: *Node) ?f32 {
+    var at = lexbor.following(top, top);
+    while (at) |node| : (at = lexbor.following(node, top)) {
+        switch (lexbor.tagOf(node) orelse continue) {
+            .html => return css.rootText(node),
+            .body => return null,
+            else => {},
+        }
+    }
+    return null;
+}
+
 /// Where the page says its version for a window like `screen` is, written
 /// into `buf`: a link in its head that is an alternate for media the window
 /// is, which is how a site with a separate site for small screens names it.
@@ -925,6 +939,7 @@ pub fn extract(gpa: std.mem.Allocator, document: *lexbor.Document, base: url.Url
     defer walker.containers.deinit(gpa);
     const top = lexbor.nodeOf(document);
     page.ground = try walker.pageGround(top);
+    page.root_text = rootText(top);
     const root = top;
     try walker.inherit(root);
     walker.restyle();

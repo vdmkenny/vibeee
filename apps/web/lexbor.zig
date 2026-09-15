@@ -572,6 +572,7 @@ pub const Property = enum(usize) {
     flex_grow = 0x001d,
     flex_shrink = 0x001e,
     flex_wrap = 0x001f,
+    font_size = 0x0025,
     height = 0x002a,
     justify_content = 0x0030,
     left = 0x0031,
@@ -852,6 +853,13 @@ pub const LengthPercentage = extern struct {
         length: Length,
         percentage: Number,
     },
+};
+
+/// A font's size as upstream keeps one: the keyword written, or the length
+/// or share written in its place, which is what `kind` says.
+pub const Sized = extern struct {
+    kind: Keyword,
+    length: LengthPercentage,
 };
 
 pub const Unit = enum(c_uint) {

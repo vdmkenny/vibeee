@@ -41,6 +41,24 @@ pub const Paint = union(enum) {
     transparent,
 };
 
+/// The text size a page gives its root, in pixels, which is what a length
+/// written in `rem` is a share of. A share is a share of the size the
+/// browser's text starts at, and so is an em or a rem written there, since
+/// the root has no text around it to take one from. Nothing where the page
+/// says nothing, or says it in a unit this browser does not read.
+pub fn rootText(node: *const Node) ?f32 {
+    const sized = valueOf(lexbor.Sized, node, .font_size) orelse return null;
+    return switch (unitOf(&sized.length)) {
+        .px => |px| px,
+        .em, .rem => |ems| ems * ROOT_TEXT,
+        .percent => |share| share / 100 * ROOT_TEXT,
+        .auto, .vw, .vh => null,
+    };
+}
+
+/// The size a page's text starts at, before a page says anything.
+const ROOT_TEXT: f32 = 16;
+
 /// Whether the page lets an element be seen: not taken out of it with
 /// `display: none`, not hidden with `visibility`, and not made wholly
 /// see-through, which is how a page hides what waits for a script or a
@@ -133,7 +151,7 @@ fn pixelsOf(node: *const Node, property: lexbor.Property, most: lexbor.Property)
 fn fixedPixels(unit: page_mod.Unit) ?u16 {
     const value: f32 = switch (unit) {
         .px => |px| px,
-        .em => |ems| ems * 16,
+        .em, .rem => |ems| ems * 16,
         .auto, .percent, .vw, .vh => return null,
     };
     if (!(value >= 0)) return null;
@@ -304,7 +322,8 @@ fn unitOf(length: *const lexbor.LengthPercentage) page_mod.Unit {
         .number => .{ .px = @floatCast(length.value.percentage.num) },
         .length => switch (length.value.length.unit) {
             .undef, .px => .{ .px = @floatCast(length.value.length.num) },
-            .em, .rem => .{ .em = @floatCast(length.value.length.num) },
+            .em => .{ .em = @floatCast(length.value.length.num) },
+            .rem => .{ .rem = @floatCast(length.value.length.num) },
             .vw => .{ .vw = @floatCast(length.value.length.num) },
             .vh => .{ .vh = @floatCast(length.value.length.num) },
             else => .auto,

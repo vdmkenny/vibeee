@@ -737,7 +737,7 @@ test "a stylesheet's flex and grid words are read: the shorthand, wrapping, the 
     try testing.expect(at + 5 < boxes.len);
     const row = boxes[at].style;
     try testing.expect(row.wrap);
-    try testing.expectEqual(page_mod.Unit{ .em = 1 }, row.gap);
+    try testing.expectEqual(page_mod.Unit{ .rem = 1 }, row.gap);
     try testing.expectEqual(page_mod.BoxStyle.Items.center, row.items);
     const a = boxes[at + 1].style;
     try testing.expectEqual(@as(f32, 1), a.grow);
@@ -793,6 +793,26 @@ test "a sheet's variables stand for what its root sets, or the fallback, and a p
     try testing.expect(std.mem.findScalar(rgb.Colour, page.palette.items, .hex(0x123456)) != null);
     try testing.expect(!a.lifted());
     try testing.expect(boxes[at + 1].style.lifted());
+}
+
+test "a page that sets its own text size is measured in it" {
+    const it = try opened("<!DOCTYPE html><html><body><p id=\"a\">a</p></body></html>", false);
+    defer it.end();
+    css.apply(heap, it.tree,
+        \\html { font-size: 62.5%; }
+        \\#a { width: 10rem; height: 2em; }
+    , null, &rules);
+    var page = try it.page();
+    defer page.deinit(heap);
+    // Ten pixels a rem, as the page asked; an em is still the size the
+    // browser's own text starts at.
+    try testing.expectEqual(@as(?f32, 10), page.root_text);
+    var at: usize = 0;
+    const boxes = page.containers.items;
+    while (at < boxes.len and boxes[at].style.width != .rem) at += 1;
+    try testing.expect(at < boxes.len);
+    try testing.expectEqual(page_mod.Unit{ .rem = 10 }, boxes[at].style.width);
+    try testing.expectEqual(page_mod.Unit{ .em = 2 }, boxes[at].style.height);
 }
 
 test "a box that cuts off what spills past it says so, whichever way overflow is written" {
