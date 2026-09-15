@@ -765,6 +765,24 @@ fn plausible() fat.Bpb {
     };
 }
 
+test "a volume claiming more than its medium holds is refused" {
+    // Everything above sizes its working set from the cluster count, and the
+    // cluster count comes from the boot sector. Reads past the medium are
+    // refused by the block layer whatever happens here, so what this bounds
+    // is the memory a card can ask the machine for by being plugged in.
+    const gpa = testing.allocator;
+    const bytes = try gpa.alloc(u8, 4 * block.SECTOR_SIZE);
+    defer gpa.free(bytes);
+
+    var fake = Image{ .gpa = gpa, .bytes = bytes, .fat_count = 1 };
+    fake.dev = .{ .name = "crafted", .ctx = &fake, .ops = &Image.ops, .sectors = 4 };
+
+    var bpb = plausible();
+    bpb.total_sectors_32 = std.math.maxInt(u32);
+    craft(bytes, bpb);
+    try testing.expectError(error.NotFat, fat.mount(&fake.dev));
+}
+
 test "a boot sector no formatter would write is refused, not trapped on" {
     // A boot sector is bytes off a medium anybody can write. Each of these
     // is a field pushed to where the arithmetic over it stops being
@@ -817,6 +835,11 @@ test "a boot sector no formatter would write is refused, not trapped on" {
         .{ .what = "a root below the first cluster there is", .bpb = blk: {
             var b = plausible();
             b.root_cluster = 1;
+            break :blk b;
+        } },
+        .{ .what = "more sectors than the medium it is written on", .bpb = blk: {
+            var b = plausible();
+            b.total_sectors_32 = std.math.maxInt(u32);
             break :blk b;
         } },
     };

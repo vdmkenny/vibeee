@@ -368,6 +368,11 @@ pub fn mount(dev: *const block.Device) Error!Volume {
     else
         bpb.total_sectors_32;
     if (total_sectors == 0) return error.NotFat;
+    // And no larger than what it is written on. Nothing below reads past the
+    // medium, since the block layer refuses that, but everything above sizes
+    // itself from the cluster count: a card claiming four billion sectors is
+    // a card asking for a working set the machine does not have.
+    if (total_sectors > dev.sectors) return error.NotFat;
 
     const root_dir_sectors = (@as(u32, bpb.root_entries) * 32 + bpb.bytes_per_sector - 1) /
         bpb.bytes_per_sector;
