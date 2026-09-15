@@ -703,3 +703,199 @@ test "what a network said about its protection is kept, not pointed at" {
     const twice = beaconFrame(&frame, .{ .ess = true, .privacy = true }, elements[0..at]);
     try testing.expectEqual(@as(?Bss, null), Bss.fromBeacon(frame[0..twice], .{}, null));
 }
+
+// ---------------------------------------------------------------------------
+// Fuzzing
+//
+// Every frame these read was written by somebody else and arrived over the
+// air. There is no handshake in front of a beacon: a station hears whatever
+// is transmitted near it, including from a transmitter that means it harm,
+// and the elements at the end of one are a run of lengths that the sender
+// chose. Walking those is the most exposed parsing in this system.
+//
+// The frame is built here with the shape a real one has and the search
+// chooses what is wrong with it, because a frame of random bytes fails the
+// version check in the first two bytes and reaches nothing.
+//
+// What must hold is that a parser is total: for any bytes at all it answers
+// or declines, and never traps and never reads past what it was given. And
+// that it is deterministic, since a parser that answers differently the
+// second time is reading something that was never in the frame.
+
+const fuzzing = @import("fuzzing.zig");
+const Choices = fuzzing.Choices;
+
+/// Room for a header, the fixed fields behind it, and a few elements.
+const FRAME_BYTES = 320;
+
+/// One information element, as a sender lays it out: an identity, a length,
+/// and that many bytes. The length is the sender's claim and nothing else,
+/// which is the whole difficulty.
+fn writeTlv(into: []u8, at: usize, id: u8, claimed: u8, actual: usize) usize {
+    if (at + 2 > into.len) return at;
+    into[at] = id;
+    into[at + 1] = claimed;
+    const room = @min(actual, into.len - at - 2);
+    return at + 2 + room;
+}
+
+/// The element identities this system actually reads. A run of elements
+/// nothing looks at exercises the walk and nothing beyond it, so most are
+/// drawn from here and the rest from anywhere.
+const READ_IDS = [_]u8{ 0, 1, 3, 5, 7, 42, 45, 48, 50, 61, 221 };
+
+/// A frame with a management header, fixed fields, and a run of elements.
+///
+/// Built as a sender would build one and then interfered with, rather than
+/// assembled from arbitrary numbers: a frame that fails the version check in
+/// its first two bytes reaches none of the walking underneath, and that is
+/// what almost every arbitrary frame does.
+fn plausibleFrame(from: Choices, buf: []u8) []u8 {
+    @memset(buf, 0);
+
+    // Management, version zero, which is what gets past the first check.
+    // Mostly a beacon or a probe response, since those are the two that
+    // reach the element walk at all.
+    // One of the subtypes something here reads, mostly: a frame of a kind
+    // nothing parses reaches no parser.
+    const subtype: u16 = switch (from.one(enum {
+        beacon,
+        probe_response,
+        association_request,
+        association_response,
+        disassociation,
+        authentication,
+        deauthentication,
+        any,
+    })) {
+        .beacon => 8,
+        .probe_response => 5,
+        .association_request => 0,
+        .association_response => 1,
+        .disassociation => 10,
+        .authentication => 11,
+        .deauthentication => 12,
+        .any => @intCast(from.below(16)),
+    };
+    std.mem.writeInt(u16, buf[0..2], subtype << 4, .little);
+    for (buf[2..24]) |*b| b.* = from.int(u8);
+
+    // The fixed fields a beacon carries before its elements. Occasionally
+    // short, which is the case where the body ends before they do.
+    var at: usize = 24 + (if (from.odds(8)) from.below(12) else 12);
+    at = @min(at, buf.len);
+
+    // A name first, most of the time, because a beacon without one is not a
+    // network and is dropped before its other elements are looked at.
+    if (!from.odds(4) and at + 2 < buf.len) {
+        const name_len = 1 + from.below(32);
+        const body_at = at + 2;
+        at = writeTlv(buf, at, 0, @intCast(name_len), name_len);
+        for (buf[body_at..@min(at, buf.len)]) |*b| b.* = 'a' + @as(u8, @intCast(from.below(26)));
+    }
+
+    // And a protection element behind it, as a protected network's beacon
+    // carries. Written here as well as among the elements below, because the
+    // transcript it produces is what a key exchange is later held to and is
+    // worth reaching often.
+    if (!from.odds(3) and at + 2 < buf.len) {
+        const payload = 2 + from.below(24);
+        const body_at = at + 2;
+        at = writeTlv(buf, at, 48, @intCast(payload), payload);
+        const wrote = @min(at, buf.len);
+        for (buf[body_at..wrote]) |*b| b.* = from.int(u8);
+        if (body_at + 2 <= wrote) std.mem.writeInt(u16, buf[body_at..][0..2], 1, .little);
+    }
+
+    for (0..from.upTo(8)) |_| {
+        if (at + 2 >= buf.len) break;
+        const id: u8 = if (from.odds(4))
+            from.int(u8)
+        else
+            READ_IDS[from.below(READ_IDS.len)];
+        // A length that is what follows it, and a length that is a lie:
+        // longer than what is left, the largest there is, or nothing.
+        // Mostly a length a name or a key description could really be,
+        // since a payload longer than the field allows is refused before
+        // anything is read out of it.
+        const actual = if (from.odds(4)) from.below(48) else from.below(33);
+        const claimed: u8 = switch (from.one(enum { honest, honest_again, longer, huge, zero })) {
+            .honest, .honest_again => @intCast(actual),
+            .longer => @intCast(@min(255, actual + 1 + from.below(64))),
+            .huge => 255,
+            .zero => 0,
+        };
+        const body_at = at + 2;
+        at = writeTlv(buf, at, id, claimed, actual);
+        // Something for a parser to find, rather than the zeros the buffer
+        // started as: an all-zero payload is one shape out of many.
+        for (buf[body_at..@min(at, buf.len)]) |*b| b.* = from.int(u8);
+
+        // A protection element says its version first, and is refused
+        // outright if that is not the one version there is. Written most of
+        // the time, or the transcript behind it is never reached.
+        if (id == 48 and !from.odds(4) and body_at + 2 <= @min(at, buf.len)) {
+            std.mem.writeInt(u16, buf[body_at..][0..2], 1, .little);
+        }
+    }
+
+    // Mostly whole. A frame is cut when the air cut it, which is worth
+    // reaching and is not the common case.
+    if (!from.odds(4)) return buf[0..at];
+    return buf[0..switch (from.one(enum { cut, header_only, tiny })) {
+        .cut => from.below(at + 1),
+        .header_only => @min(24, at),
+        .tiny => from.below(24),
+    }];
+}
+
+/// Every parser over one frame, twice, saying the same thing both times.
+fn parseOneFrame(from: Choices) anyerror!void {
+    var buf: [FRAME_BYTES]u8 = undefined;
+    const frame = plausibleFrame(from, &buf);
+
+    // Each of these either answers or declines. Reaching the end of this
+    // function at all is most of what is being asserted: a parser that
+    // walked past the frame would have trapped on the way.
+    const auth = Auth.parse(frame);
+    const request = AssocRequest.parse(frame);
+    const response = AssocResponse.parse(frame);
+    const farewell = Farewell.parse(frame);
+
+    var transcript = ieee80211.Rsn.Transcript{};
+    const bss = Bss.fromBeacon(frame, .{}, &transcript);
+
+    // Nothing a parser reports may be longer than the frame it came from.
+    if (bss) |found| {
+        try std.testing.expect(found.ssid.len <= frame.len);
+        try std.testing.expect(transcript.len <= frame.len);
+    }
+
+    // And asking again gives the same answer. A parser whose answer moves is
+    // reading memory the frame does not own.
+    var again = ieee80211.Rsn.Transcript{};
+    try std.testing.expectEqual(auth != null, Auth.parse(frame) != null);
+    try std.testing.expectEqual(request != null, AssocRequest.parse(frame) != null);
+    try std.testing.expectEqual(response != null, AssocResponse.parse(frame) != null);
+    try std.testing.expectEqual(farewell != null, Farewell.parse(frame) != null);
+
+    const bss_again = Bss.fromBeacon(frame, .{}, &again);
+    try std.testing.expectEqual(bss == null, bss_again == null);
+    if (bss) |found| {
+        try std.testing.expectEqualSlices(u8, found.ssid.slice(), bss_again.?.ssid.slice());
+        try std.testing.expectEqualSlices(u8, transcript.slice(), again.slice());
+    }
+}
+
+test "fuzz: a frame off the air is parsed or declined, never trusted" {
+    const Target = struct {
+        fn one(_: void, smith: *std.testing.Smith) anyerror!void {
+            return parseOneFrame(.{ .fuzzer = smith });
+        }
+    };
+    try std.testing.fuzz({}, Target.one, .{});
+}
+
+test "a management frame built at random is parsed or declined, the same way twice" {
+    try fuzzing.seeded(parseOneFrame, 0x802_11, 3000);
+}

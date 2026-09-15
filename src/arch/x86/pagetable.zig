@@ -477,3 +477,125 @@ test "an address falls in the entries that cover it" {
     // index the other half of the answer.
     try testing.expectEqual(@as(usize, 0), tableIndex(LARGE_PAGE_SIZE));
 }
+
+// ---------------------------------------------------------------------------
+// Fuzzing
+//
+// This is the check that stands between a syscall and a program's own
+// mappings, so what it must never do is say yes about a page the program
+// could not reach itself. Written cases cover the ways that were thought of;
+// this compares the walk against a second one that has none of its
+// shortcuts.
+//
+// The walk skips a whole four megabytes when a directory entry covers them
+// and stops each inner loop at whichever comes first of the range's end and
+// the region's. The reference below does neither: it looks up one page at a
+// time and asks about each. Where the two disagree, the shortcut is wrong.
+//
+// **Addresses stay inside thirty-two bits**, because that is the width the
+// machine has. On the host a `usize` is wider, so a range that would wrap on
+// the machine merely gets large here, and the walk would index the directory
+// past its end for an address no real program could name. The one case worth
+// keeping is a length that overflows a `usize` outright, which is what a
+// wrapping range looks like from inside the check.
+
+const fuzzing = @import("lib").fuzzing;
+const Choices = fuzzing.Choices;
+
+/// How many four-megabyte regions the fixture can hold tables for, plus the
+/// ones beyond them: one given a large entry, and one left unmapped.
+const REGIONS = 4;
+const LARGE_REGION = REGIONS;
+const UNMAPPED_REGION = REGIONS + 1;
+
+/// An address in or around what the fixture maps.
+fn address(from: Choices) usize {
+    const region = from.below(UNMAPPED_REGION + 1);
+    const page = from.below(1026);
+    const within: usize = if (from.odds(3)) from.below(PAGE_SIZE) else 0;
+    return region * LARGE_PAGE_SIZE + page * PAGE_SIZE + within;
+}
+
+/// The same question, asked one page at a time with no shortcuts.
+fn naively(space: *Space, virt: usize, len: usize, access: Access) bool {
+    if (len == 0) return true;
+    const end = std.math.add(usize, virt, len) catch return false;
+
+    var at = std.mem.alignBackward(usize, virt, PAGE_SIZE);
+    while (at < end) {
+        const pde = space.directory[directoryIndex(at)];
+        if (!access.allowedBy(pde)) return false;
+        if (!pde.large) {
+            Space.current = space;
+            const table = Space.resolve(pde.address());
+            if (!access.allowedBy(table[tableIndex(at)])) return false;
+        }
+        const next = at +| PAGE_SIZE;
+        if (next == at) break;
+        at = next;
+    }
+    return true;
+}
+
+/// A space with a few pages in it, and the walk's answer about a range of it.
+fn walkOneSpace(from: Choices) anyerror!void {
+    var space = Space{};
+
+    for (0..from.upTo(8)) |_| {
+        // Inside the regions the fixture keeps tables for, since a table is
+        // made for each region touched and it has four.
+        const virt = from.below(REGIONS) * LARGE_PAGE_SIZE + from.below(1024) * PAGE_SIZE;
+        space.map(virt, .{
+            .user = !from.odds(4),
+            .write = !from.odds(3),
+        });
+    }
+
+    // A region answered by its directory entry alone, which is the walk's
+    // one shortcut and the only place it moves by more than a page.
+    if (from.odds(2)) {
+        space.directory[LARGE_REGION] = .{
+            .present = true,
+            .large = true,
+            .user = !from.odds(4),
+            .write = !from.odds(3),
+            .frame = 0,
+        };
+    }
+
+    const virt = address(from);
+    const len = switch (from.one(enum { none, pages, region, wrapping })) {
+        .none => 0,
+        .pages => from.below(3 * PAGE_SIZE + 1),
+        // Long enough to cross out of one region into the next, which is
+        // where the walk stops one loop and starts another.
+        .region => LARGE_PAGE_SIZE - PAGE_SIZE + from.below(3 * PAGE_SIZE),
+        // A range that ends below where it starts, which is what the check
+        // is written in sixty-four bits to catch.
+        .wrapping => std.math.maxInt(usize) - from.below(4 * PAGE_SIZE),
+    };
+    const access = from.one(Access);
+
+    // Ranges that leave the address space the machine has, without wrapping a
+    // `usize`, cannot happen where this runs for real.
+    const end = std.math.add(usize, virt, len) catch {
+        try testing.expect(!space.permits(virt, len, access));
+        return;
+    };
+    if (end > ADDRESS_SPACE) return;
+
+    try testing.expectEqual(naively(&space, virt, len, access), space.permits(virt, len, access));
+}
+
+test "fuzz: the walk and a walk with none of its shortcuts agree" {
+    const Target = struct {
+        fn one(_: void, smith: *std.testing.Smith) anyerror!void {
+            return walkOneSpace(.{ .fuzzer = smith });
+        }
+    };
+    try std.testing.fuzz({}, Target.one, .{});
+}
+
+test "the walk agrees with one that checks every page separately" {
+    try fuzzing.seeded(walkOneSpace, 0x9A9E_BEEF, 4000);
+}

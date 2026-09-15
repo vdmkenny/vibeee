@@ -240,12 +240,35 @@ beside the driver that is the only thing reading them, and its tests run from
   target that calls `std.testing.fuzz`. It does not work on Zig 0.16.0: the compiler's
   own test runner fails to build in fuzz mode, and a four-line project with one fuzz
   test fails identically, so there is nothing here to fix. Each target therefore has a
-  seeded counterpart beside it, driving the same code from a generator through the same
-  `Choices` union, and that is what runs in `make test`. The volume check has one: three
-  hundred volumes built through the driver, damaged in ways described in the
-  filesystem's own terms rather than as bytes, and required to mount, check, and settle,
-  where settling means a second check finds nothing. Every branch of the checker is
-  reached across a run, cross-linked clusters included.
+  seeded counterpart beside it, driving the same code from a generator through the one
+  `Choices` union in [`lib/fuzzing.zig`](../src/lib/fuzzing.zig), and those run in
+  `make test`. A target builds a plausible input and lets the search choose what is
+  wrong with it, described in the format's own terms rather than as bytes: an input
+  assembled from arbitrary numbers fails the first check it meets and reaches none of
+  the arithmetic underneath, which is where the failures are. There are five, each over
+  something written by somebody else:
+  - **A volume**, in [`fat/check.zig`](../src/kernel/fat/check.zig): built through the
+    driver, damaged, and required to mount, check and settle, where settling means a
+    second check finds nothing. Every branch of the checker is reached, cross-linked
+    clusters included.
+  - **A boot sector**, in the same file: fields pushed to where the arithmetic over
+    them stops being arithmetic. It found two, both fixed: a table size that overflowed
+    where the data area starts, and a volume claiming more sectors than its medium.
+  - **A program image**, in [`elf/plan.zig`](../src/kernel/elf/plan.zig): a plan that
+    comes back is checked against everything the loader will assume of it, since the
+    loader asks nothing again. Every segment's bytes inside the file, nothing reaching
+    the kernel's half or the page at zero, no two segments sharing a page, and the entry
+    inside something executable.
+  - **A receive page**, in [`netd/rxpage.zig`](../src/user/netd/rxpage.zig): records as
+    the Attansic L1E writes them, then interfered with. The walk must always move on or
+    stop, and a frame it hands out must lie inside the page it was given.
+  - **A management frame**, in [`lib/mlme.zig`](../src/lib/mlme.zig): the only parsing
+    here with no handshake in front of it. Every parser must answer or decline for any
+    bytes at all, and answer the same way twice.
+  - **A page table**, in [`arch/x86/pagetable.zig`](../src/arch/x86/pagetable.zig):
+    the check standing between a syscall and a program's own mappings, compared against
+    a second walk with none of its shortcuts. Where the two disagree, the shortcut is
+    wrong.
 - `zig build check`: the layering rules, and a check that no module imports something it never uses.
 - `make check-all`: the gate a change passes before it is done. The tree is formatted as
   `zig fmt` formats it, the layering holds, the host tests pass, both images build, the root

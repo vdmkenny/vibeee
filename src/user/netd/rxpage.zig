@@ -348,3 +348,141 @@ test "the record is the shape the part writes" {
     try testing.expect(!(Received.Fault{ .ip_checksum = true }).spoilt());
     try testing.expect(!(Received.Fault{ .overflow = true }).spoilt());
 }
+
+// ---------------------------------------------------------------------------
+// Fuzzing
+//
+// The part writes into this page and the walk reads it, so the page is the
+// boundary between a driver and silicon nobody here can emulate. A page of
+// random bytes fails the sequence check on its first record and stops, so the
+// page is filled with records a working part would write and the search
+// chooses what to change about them.
+//
+// What must hold is that the walk always makes progress or stops, and that a
+// frame it hands out lies inside the page it was given. Those two together
+// are what keeps a part that has gone wrong from becoming a service that
+// spins or reads someone else's memory.
+
+const fuzzing = lib.fuzzing;
+const Choices = fuzzing.Choices;
+
+/// A record as a working part writes one, with a frame behind it.
+fn writeRecord(page: []u8, at: usize, sequence: u16, frame_bytes: u14, spoilt: bool) usize {
+    const record: *align(ALIGN) Received = @ptrCast(@alignCast(&page[at]));
+    record.* = .{
+        .sequence = sequence,
+        .size = .{ .bytes = frame_bytes },
+        .packet = .{ .faulty = spoilt },
+        .fault = .{ .bad_crc = spoilt },
+    };
+    return at + std.mem.alignForward(usize, RECORD_BYTES + frame_bytes, ALIGN);
+}
+
+/// Something to change about a page the part has filled.
+const Tamper = union(enum) {
+    /// A record's length, which is what says where the next one begins.
+    size: struct { at: usize, to: u14 },
+    /// A record's count, which is what says the record is this lap's.
+    sequence: struct { at: usize, to: u16 },
+    /// Whether the part says the wire broke the frame.
+    spoilt: struct { at: usize, on: bool },
+    /// A byte anywhere, including inside a frame's own bytes.
+    byte: struct { at: usize, to: u8 },
+    /// How far the part says it has written, which the walk is not
+    /// entitled to believe either.
+    written: usize,
+
+    fn choose(from: Choices, page_len: usize, records: []const usize) Tamper {
+        const where = if (records.len == 0) 0 else records[from.below(records.len)];
+        return switch (from.one(std.meta.Tag(Tamper))) {
+            .size => .{ .size = .{ .at = where, .to = @truncate(from.int(u16)) } },
+            .sequence => .{ .sequence = .{ .at = where, .to = @truncate(from.int(u16)) } },
+            .spoilt => .{ .spoilt = .{ .at = where, .on = from.odds(2) } },
+            .byte => .{ .byte = .{ .at = from.below(page_len), .to = from.int(u8) } },
+            .written => .{ .written = from.below(page_len + 1) },
+        };
+    }
+};
+
+/// Walk a page a working part filled and something then interfered with.
+fn walkOneTamperedPage(from: Choices) anyerror!void {
+    const gpa = std.testing.allocator;
+    const page = try gpa.alignedAlloc(u8, .fromByteUnits(ALIGN), PAGE_ROOM);
+    defer gpa.free(page);
+    @memset(page, 0);
+
+    // Fill it the way a part that is working fills one.
+    var starts: [32]usize = undefined;
+    var count: usize = 0;
+    var at: usize = 0;
+    var sequence: u16 = 0;
+    while (count < starts.len) {
+        const frame_bytes: u14 = @intCast(ETH_FCS + 1 + from.below(MAX_FRAME - ETH_FCS));
+        const next_at = at + std.mem.alignForward(usize, RECORD_BYTES + frame_bytes, ALIGN);
+        if (next_at > PAGE_BYTES) break;
+        starts[count] = at;
+        count += 1;
+        at = writeRecord(page, at, sequence, frame_bytes, from.odds(8));
+        sequence +%= 1;
+    }
+    var written = at;
+
+    for (0..from.upTo(4)) |_| {
+        switch (Tamper.choose(from, page.len, starts[0..count])) {
+            .size => |t| {
+                const record: *align(ALIGN) Received = @ptrCast(@alignCast(&page[t.at]));
+                record.size.bytes = t.to;
+            },
+            .sequence => |t| {
+                const record: *align(ALIGN) Received = @ptrCast(@alignCast(&page[t.at]));
+                record.sequence = t.to;
+            },
+            .spoilt => |t| {
+                const record: *align(ALIGN) Received = @ptrCast(@alignCast(&page[t.at]));
+                record.packet.faulty = t.on;
+                record.fault.bad_crc = t.on;
+            },
+            .byte => |t| page[t.at] = t.to,
+            .written => |w| written = w,
+        }
+    }
+
+    var walk = Walk{};
+    // Bounded, because a walk that does not stop is the failure being looked
+    // for: it must not be able to outlast one record per thirty-two bytes.
+    const most = PAGE_ROOM / ALIGN + 2;
+    var steps: usize = 0;
+    while (steps < most) : (steps += 1) {
+        const before = walk.at;
+        switch (walk.next(page, written)) {
+            .empty, .lost => break,
+            .broken => {},
+            .frame => |frame| {
+                // Inside the page it was given, every byte of it.
+                const start = @intFromPtr(frame.ptr) - @intFromPtr(page.ptr);
+                try std.testing.expect(start <= page.len);
+                try std.testing.expect(start + frame.len <= page.len);
+                try std.testing.expect(frame.len >= 1);
+                try std.testing.expect(frame.len <= MAX_FRAME - ETH_FCS);
+            },
+        }
+        // And it has moved on, so that asking again cannot ask the same
+        // question forever.
+        try std.testing.expect(walk.at > before);
+        try std.testing.expect(walk.at <= page.len);
+    }
+    try std.testing.expect(steps < most);
+}
+
+test "fuzz: a page the part filled wrongly is walked without spinning or straying" {
+    const Target = struct {
+        fn one(_: void, smith: *std.testing.Smith) anyerror!void {
+            return walkOneTamperedPage(.{ .fuzzer = smith });
+        }
+    };
+    try std.testing.fuzz({}, Target.one, .{});
+}
+
+test "a page tampered with at random is walked without spinning or straying" {
+    try fuzzing.seeded(walkOneTamperedPage, 0x1E_A11E, 400);
+}

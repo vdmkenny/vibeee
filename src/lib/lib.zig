@@ -26,6 +26,8 @@ pub const devspec = @import("devspec.zig");
 pub const castore = @import("castore.zig");
 pub const font = @import("font.zig");
 pub const framemap = @import("framemap.zig");
+/// Test-only: where a fuzz target's choices come from. See `fuzzing.zig`.
+pub const fuzzing = @import("fuzzing.zig");
 pub const logo = @import("logo.zig");
 pub const ipv4 = @import("ipv4.zig");
 pub const join = @import("join.zig");

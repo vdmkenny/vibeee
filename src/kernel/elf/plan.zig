@@ -480,3 +480,190 @@ test "an image asking for more segments than a plan holds is refused" {
     const plan = try image.plan();
     try testing.expectEqual(@as(usize, MAX_SEGMENTS), plan.count);
 }
+
+// ---------------------------------------------------------------------------
+// Fuzzing
+//
+// Random bytes are not a program image: they fail the first four checks above
+// and never reach the arithmetic, which is where the interesting failures are.
+// So the image is built here with the shape a linker gives one, and what the
+// search chooses is the numbers in its fields.
+//
+// The numbers are drawn from the places where the checks live rather than
+// from the whole of thirty-two bits: inside the file, on a page boundary,
+// just below where the kernel starts, and just below the top of the address
+// space. The last of those is the threat this file's own header describes, a
+// file naming an offset near the top and a length that carries the sum around
+// to zero.
+
+const fuzzing = @import("lib").fuzzing;
+const Choices = fuzzing.Choices;
+
+/// A field value, from the regions where a check could be got past.
+fn field(from: Choices) u32 {
+    return switch (from.one(enum { nearby, inside, page, near_kernel, near_top, anything })) {
+        // A short move, which is what reaches a collision between two
+        // segments or an entry point just outside the one that holds it.
+        .nearby => BASE +% @as(u32, @intCast(PAGE * from.below(24))) -% 8 * PAGE,
+        .inside => @intCast(from.below(@sizeOf(@FieldType(Image, "bytes")))),
+        .page => @intCast(PAGE * (1 + from.below(8))),
+        .near_kernel => @intCast(LIMITS.kernel_base - from.below(3 * PAGE)),
+        .near_top => @intCast(std.math.maxInt(u32) - from.below(3 * PAGE)),
+        .anything => from.int(u32),
+    };
+}
+
+/// Where a built image puts its first segment. Well clear of the page at
+/// zero and well clear of where the kernel starts, so that moving a field
+/// either way reaches a boundary.
+const BASE: u32 = 0x0800_0000;
+
+/// Which field of an image to move.
+const Move = union(enum) {
+    /// One field of one program header.
+    segment: struct { which: usize, field: Field, to: u32 },
+    /// Where the table is, how many entries it has, or how big it says they
+    /// are. Each has a check in front of the table ever being read.
+    table: struct { field: enum { phoff, phnum, phentsize }, to: u32 },
+    /// The first instruction.
+    entry: u32,
+    /// What the file says it is. Each of these is checked before anything
+    /// else is read, and a file failing one is not this machine's to run.
+    identity: enum { magic, class, data, machine, kind },
+
+    const Field = enum { offset, vaddr, filesz, memsz, kind, flags };
+
+    fn choose(from: Choices, count: usize) Move {
+        return switch (from.one(std.meta.Tag(Move))) {
+            .segment => .{ .segment = .{
+                .which = from.below(count),
+                .field = from.one(Field),
+                .to = field(from),
+            } },
+            .table => .{ .table = .{
+                .field = from.one(@FieldType(@FieldType(Move, "table"), "field")),
+                .to = field(from),
+            } },
+            .entry => .{ .entry = field(from) },
+            .identity => .{ .identity = from.one(@FieldType(Move, "identity")) },
+        };
+    }
+
+    fn apply(self: Move, image: *Image) void {
+        switch (self) {
+            .segment => |s| {
+                const ph = image.program(s.which);
+                switch (s.field) {
+                    .offset => ph.offset = s.to,
+                    .vaddr => ph.vaddr = s.to,
+                    .filesz => ph.filesz = s.to,
+                    .memsz => ph.memsz = s.to,
+                    .kind => ph.type = @enumFromInt(s.to),
+                    .flags => ph.flags = @bitCast(s.to),
+                }
+            },
+            .table => |t| switch (t.field) {
+                .phoff => image.header().phoff = t.to,
+                .phnum => image.header().phnum = @truncate(t.to),
+                .phentsize => image.header().phentsize = @truncate(t.to),
+            },
+            .entry => |e| image.header().entry = e,
+            .identity => |which| switch (which) {
+                .magic => image.header().magic[0] +%= 1,
+                .class => image.header().class = .bits64,
+                .data => image.header().data = .big,
+                .machine => image.header().machine = .arm,
+                .kind => image.header().type = .relocatable,
+            },
+        }
+    }
+};
+
+/// An image a linker could have produced: segments a page apart, each taking
+/// its bytes from inside the file, and an entry point in the first of them.
+///
+/// Built valid and then moved, because a file assembled from arbitrary
+/// numbers is refused by the first check it meets and never reaches the
+/// arithmetic underneath.
+fn plausibleImage(from: Choices, count: usize) Image {
+    var headers: [MAX_SEGMENTS + 2]ProgramHeader = undefined;
+    const table_end: u32 = @sizeOf(Header) + @sizeOf(ProgramHeader) * headers.len;
+
+    for (headers[0..count], 0..) |*ph, i| {
+        const span: u32 = @intCast(PAGE * (1 + from.below(2)));
+        ph.* = .{
+            .type = .load,
+            .offset = table_end,
+            // Far enough apart that a segment has to be moved a long way to
+            // collide with its neighbour, and close enough that several fit.
+            .vaddr = BASE + @as(u32, @intCast(i)) * 8 * PAGE,
+            .paddr = 0,
+            .filesz = @intCast(from.below(256)),
+            .memsz = span,
+            .flags = .{
+                .executable = i == 0,
+                .writable = i != 0,
+                .readable = true,
+            },
+            .alignment = PAGE,
+        };
+    }
+    return Image.holding(headers[0..count], BASE);
+}
+
+/// Everything a plan says must be true of it, because the loader is about to
+/// act on all of it without asking again.
+fn planOneImage(from: Choices) anyerror!void {
+    // Past what a plan will hold, so that a file asking for more segments
+    // than the kernel keeps room for is reached as well.
+    const count = from.upTo(MAX_SEGMENTS + 2);
+    var image = plausibleImage(from, count);
+
+    const moves = from.upTo(3);
+    for (0..moves) |_| Move.choose(from, count).apply(&image);
+
+    const made = image.plan() catch return;
+
+    // A plan that came back is a plan the loader will carry out.
+    try testing.expect(made.count >= 1);
+    try testing.expect(made.count <= MAX_SEGMENTS);
+
+    var entry_is_in_code = false;
+    for (made.list(), 0..) |segment, i| {
+        // Every byte copied comes from inside the file.
+        try testing.expect(segment.bytes <= segment.span);
+        try testing.expect(segment.from + segment.bytes <= image.bytes.len);
+
+        // Nothing reaches the kernel's half, and nothing takes the page at
+        // zero, which is the one that has to keep faulting.
+        try testing.expect(segment.at + segment.span <= LIMITS.kernel_base);
+        try testing.expect(segment.first(PAGE) != 0);
+
+        // The heap starts past everything the image asked for.
+        try testing.expect(segment.last(PAGE) <= made.brk);
+
+        // No two segments want the same page, whichever order they are in.
+        for (made.list(), 0..) |other, j| {
+            if (i == j) continue;
+            try testing.expect(!segment.collidesWith(other, PAGE));
+        }
+
+        if (segment.executable and segment.holds(made.entry)) entry_is_in_code = true;
+    }
+
+    // And the first instruction is somewhere the file actually loads.
+    try testing.expect(entry_is_in_code);
+}
+
+test "fuzz: a plan the loader is given is one it can carry out" {
+    const Target = struct {
+        fn one(_: void, smith: *std.testing.Smith) anyerror!void {
+            return planOneImage(.{ .fuzzer = smith });
+        }
+    };
+    try std.testing.fuzz({}, Target.one, .{});
+}
+
+test "a program image built at random is planned or refused, never believed wrongly" {
+    try fuzzing.seeded(planOneImage, 0xE1F_0F0F, 4000);
+}

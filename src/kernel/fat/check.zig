@@ -32,8 +32,11 @@
 const std = @import("std");
 const block = @import("../block.zig");
 const fat = @import("../fat.zig");
+const fuzzing = @import("lib").fuzzing;
 const table = @import("alloc.zig");
 const verdict = @import("verdict.zig");
+
+const Choices = fuzzing.Choices;
 
 const Volume = fat.Volume;
 
@@ -898,46 +901,6 @@ test "a boot sector no formatter would write is refused, not trapped on" {
 // alone it would spend most of its budget rewriting file contents, which
 // nothing here reads.
 
-/// Where one run's choices come from.
-///
-/// The fuzzer hands out values through a `Smith`, which has an encoding of
-/// its own: bytes put in one do not map onto the values that come out, so a
-/// generator cannot be made to drive one by handing it random bytes. Both
-/// sources are named here instead, and everything below chooses through this,
-/// so the search and the seeded run damage volumes in exactly the same way.
-const Choices = union(enum) {
-    fuzzer: *std.testing.Smith,
-    seeded: std.Random,
-
-    fn int(self: Choices, comptime T: type) T {
-        return switch (self) {
-            .fuzzer => |smith| smith.value(T),
-            .seeded => |random| random.int(T),
-        };
-    }
-
-    fn below(self: Choices, len: usize) usize {
-        return switch (self) {
-            .fuzzer => |smith| smith.index(len),
-            .seeded => |random| random.uintLessThan(usize, len),
-        };
-    }
-
-    fn upTo(self: Choices, at_most: u8) u8 {
-        return switch (self) {
-            .fuzzer => |smith| smith.valueRangeAtMost(u8, 1, at_most),
-            .seeded => |random| random.intRangeAtMost(u8, 1, at_most),
-        };
-    }
-
-    fn tag(self: Choices, comptime T: type) T {
-        return switch (self) {
-            .fuzzer => |smith| smith.value(T),
-            .seeded => |random| random.enumValue(T),
-        };
-    }
-};
-
 /// A way of damaging a volume.
 const Damage = union(enum) {
     /// One byte anywhere. Reaches the boot sector and the directory records,
@@ -962,7 +925,7 @@ const Damage = union(enum) {
     size: struct { which: usize, to: u32 },
 
     fn choose(from: Choices, image: *Image) Damage {
-        return switch (from.tag(std.meta.Tag(Damage))) {
+        return switch (from.one(std.meta.Tag(Damage))) {
             .byte => .{ .byte = .{
                 .at = from.below(image.bytes.len),
                 .to = from.int(u8),
@@ -1055,11 +1018,5 @@ test "fuzz: a volume damaged anywhere mounts, checks, and settles" {
 }
 
 test "a volume damaged at random mounts, checks, and settles" {
-    // The same target from a seeded generator. Much worse than a
-    // coverage-guided search at finding the rare case, and it runs here:
-    // `zig build test --fuzz` does not compile in Zig 0.16.0, failing inside
-    // the compiler's own test runner, so until that is fixed this is what
-    // exercises the property.
-    var prng = std.Random.DefaultPrng.init(0x7A7A_C0FFEE);
-    for (0..300) |_| try checkOneDamagedVolume(.{ .seeded = prng.random() });
+    try fuzzing.seeded(checkOneDamagedVolume, 0x7A7A_C0FFEE, 300);
 }
