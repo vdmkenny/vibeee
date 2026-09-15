@@ -236,6 +236,16 @@ beside the driver that is the only thing reading them, and its tests run from
   prove a file is in the run is to make one of its tests fail on purpose and watch the
   suite go red
   across all eight masks.
+- `make fuzz` searches the host tests rather than running each once, driving every
+  target that calls `std.testing.fuzz`. It does not work on Zig 0.16.0: the compiler's
+  own test runner fails to build in fuzz mode, and a four-line project with one fuzz
+  test fails identically, so there is nothing here to fix. Each target therefore has a
+  seeded counterpart beside it, driving the same code from a generator through the same
+  `Choices` union, and that is what runs in `make test`. The volume check has one: three
+  hundred volumes built through the driver, damaged in ways described in the
+  filesystem's own terms rather than as bytes, and required to mount, check, and settle,
+  where settling means a second check finds nothing. Every branch of the checker is
+  reached across a run, cross-linked clusters included.
 - `zig build check`: the layering rules, and a check that no module imports something it never uses.
 - `make check-all`: the gate a change passes before it is done. The tree is formatted as
   `zig fmt` formats it, the layering holds, the host tests pass, both images build, the root

@@ -481,15 +481,40 @@ const Image = struct {
     /// answered from the cache rather than from the medium.
     fn put(self: *Image, cluster: u32, value: u32) void {
         var copy: u32 = 0;
-        while (copy < self.fat_count) : (copy += 1) {
-            const sector = RESERVED + copy * FAT_SECTORS;
-            const at = sector * block.SECTOR_SIZE + cluster * 4;
-            std.mem.writeInt(u32, self.bytes[at..][0..4], value, .little);
-        }
+        while (copy < self.fat_count) : (copy += 1) self.putIn(copy, cluster, value);
+    }
+
+    /// The same into one copy alone, which is what losing power between the
+    /// two writes of an entry leaves behind.
+    fn putIn(self: *Image, copy: u32, cluster: u32, value: u32) void {
+        const sector = RESERVED + copy * FAT_SECTORS;
+        const at = sector * block.SECTOR_SIZE + cluster * 4;
+        std.mem.writeInt(u32, self.bytes[at..][0..4], value, .little);
     }
 
     fn volume(self: *Image) !fat.Volume {
         return fat.mount(&self.dev);
+    }
+
+    /// How many records the root directory's one cluster holds.
+    const RECORDS_PER_CLUSTER = block.SECTOR_SIZE / 32;
+
+    /// Point one record of the root directory at a different cluster, both
+    /// halves of it, without going through the driver.
+    fn pointRecord(self: *Image, which: usize, cluster: u32) void {
+        const root = (RESERVED + @as(u32, self.fat_count) * FAT_SECTORS) * block.SECTOR_SIZE;
+        const at = root + which % RECORDS_PER_CLUSTER * 32;
+        // The two halves sit where the format put them, twenty and twenty-six
+        // bytes into the record.
+        std.mem.writeInt(u16, self.bytes[at + 20 ..][0..2], @truncate(cluster >> 16), .little);
+        std.mem.writeInt(u16, self.bytes[at + 26 ..][0..2], @truncate(cluster), .little);
+    }
+
+    /// Rewrite one record's length, which the format keeps at the end of it.
+    fn resizeRecord(self: *Image, which: usize, size: u32) void {
+        const root = (RESERVED + @as(u32, self.fat_count) * FAT_SECTORS) * block.SECTOR_SIZE;
+        const at = root + which % RECORDS_PER_CLUSTER * 32;
+        std.mem.writeInt(u32, self.bytes[at + 28 ..][0..4], size, .little);
     }
 };
 
@@ -852,4 +877,189 @@ test "a boot sector no formatter would write is refused, not trapped on" {
         try testing.expect(volume.first_data_sector <= fake.dev.sectors);
         try testing.expect(volume.cluster_count <= fake.dev.sectors);
     }
+}
+
+// ---------------------------------------------------------------------------
+// Fuzzing
+//
+// Run with `zig build fuzz`. Not part of `make check-all`: a fuzzer runs until
+// it is stopped, and the gate has to finish.
+//
+// Random bytes are not a volume. A boot sector carries a signature, a sector
+// size this driver insists on and a cluster size that must be a power of two,
+// so a fuzzer inventing one from nothing would spend its whole run being
+// refused by the first four checks in `mount`. The volume is therefore built
+// here through the driver's own calls, and what the fuzzer chooses is the
+// damage done to it afterwards.
+//
+// The damage is described in the filesystem's own terms rather than as bytes,
+// so that the fuzzer's choices land where the format has meaning: a table
+// entry, a table entry in one copy only, or a byte anywhere. Given bytes
+// alone it would spend most of its budget rewriting file contents, which
+// nothing here reads.
+
+/// Where one run's choices come from.
+///
+/// The fuzzer hands out values through a `Smith`, which has an encoding of
+/// its own: bytes put in one do not map onto the values that come out, so a
+/// generator cannot be made to drive one by handing it random bytes. Both
+/// sources are named here instead, and everything below chooses through this,
+/// so the search and the seeded run damage volumes in exactly the same way.
+const Choices = union(enum) {
+    fuzzer: *std.testing.Smith,
+    seeded: std.Random,
+
+    fn int(self: Choices, comptime T: type) T {
+        return switch (self) {
+            .fuzzer => |smith| smith.value(T),
+            .seeded => |random| random.int(T),
+        };
+    }
+
+    fn below(self: Choices, len: usize) usize {
+        return switch (self) {
+            .fuzzer => |smith| smith.index(len),
+            .seeded => |random| random.uintLessThan(usize, len),
+        };
+    }
+
+    fn upTo(self: Choices, at_most: u8) u8 {
+        return switch (self) {
+            .fuzzer => |smith| smith.valueRangeAtMost(u8, 1, at_most),
+            .seeded => |random| random.intRangeAtMost(u8, 1, at_most),
+        };
+    }
+
+    fn tag(self: Choices, comptime T: type) T {
+        return switch (self) {
+            .fuzzer => |smith| smith.value(T),
+            .seeded => |random| random.enumValue(T),
+        };
+    }
+};
+
+/// A way of damaging a volume.
+const Damage = union(enum) {
+    /// One byte anywhere. Reaches the boot sector and the directory records,
+    /// which have no other case here.
+    byte: struct { at: usize, to: u8 },
+    /// A cluster's table entry, in every copy. The chains are what the check
+    /// is about, so this is the case that reaches most of it.
+    entry: struct { cluster: u32, to: u32 },
+    /// A cluster's table entry in the first copy alone, leaving the copies
+    /// disagreeing, which is what losing power between the two writes does.
+    one_copy: struct { cluster: u32, to: u32 },
+    /// One cluster pointed at another that the volume really has. A random
+    /// value almost always points off the volume, which is one fault; this
+    /// is how the other two are reached, a chain running into another
+    /// chain's clusters or back into its own.
+    link: struct { cluster: u32, to: u32 },
+    /// A record's first cluster moved to another the volume has, which is
+    /// what puts two records on one chain.
+    record: struct { which: usize, to: u32 },
+    /// A record's recorded length, which is the other half of what the check
+    /// compares a chain against.
+    size: struct { which: usize, to: u32 },
+
+    fn choose(from: Choices, image: *Image) Damage {
+        return switch (from.tag(std.meta.Tag(Damage))) {
+            .byte => .{ .byte = .{
+                .at = from.below(image.bytes.len),
+                .to = from.int(u8),
+            } },
+            .entry => .{ .entry = .{
+                .cluster = @intCast(from.below(Image.CLUSTERS)),
+                .to = from.int(u32),
+            } },
+            .one_copy => .{ .one_copy = .{
+                .cluster = @intCast(from.below(Image.CLUSTERS)),
+                .to = from.int(u32),
+            } },
+            .link => .{ .link = .{
+                .cluster = @intCast(from.below(Image.CLUSTERS)),
+                .to = @intCast(FIRST_CLUSTER + from.below(Image.CLUSTERS - FIRST_CLUSTER)),
+            } },
+            .record => .{ .record = .{
+                .which = from.below(Image.RECORDS_PER_CLUSTER),
+                .to = @intCast(FIRST_CLUSTER + from.below(Image.CLUSTERS - FIRST_CLUSTER)),
+            } },
+            .size => .{
+                .size = .{
+                    .which = from.below(Image.RECORDS_PER_CLUSTER),
+                    // Lengths around the cluster size, where the rounding up to
+                    // whole clusters is, rather than anywhere in four billion.
+                    .to = @intCast(from.below(4 * block.SECTOR_SIZE)),
+                },
+            },
+        };
+    }
+
+    fn apply(self: Damage, image: *Image) void {
+        switch (self) {
+            .byte => |b| image.bytes[b.at] = b.to,
+            .entry => |e| image.put(e.cluster, e.to),
+            .one_copy => |e| image.putIn(0, e.cluster, e.to),
+            .link => |e| image.put(e.cluster, e.to),
+            .record => |r| image.pointRecord(r.which, r.to),
+            .size => |r| image.resizeRecord(r.which, r.to),
+        }
+    }
+};
+
+/// What a damaged volume must still do.
+///
+/// The interesting half is the last of these. Repairing a volume is only
+/// worth anything if the result needs no further repair: a second check
+/// finding something means either a repair that did not hold or one that
+/// caused new damage. No single hand-written case establishes that.
+fn checkOneDamagedVolume(from: Choices) anyerror!void {
+    const gpa = testing.allocator;
+    const image = try Image.init(gpa, 2);
+    defer image.deinit();
+
+    {
+        var vol = try image.volume();
+        _ = try makeFile(&vol, "a.txt", 900);
+        const dir = try fat.createDirectory(&vol, fat.rootIterator(&vol), "sub", 0);
+        var inner = try fat.createFile(&vol, fat.iterate(&vol, dir), "deep.txt", 0);
+        try fat.resize(&vol, &inner, 1500, 0);
+    }
+
+    const rounds = from.upTo(8);
+    for (0..rounds) |_| Damage.choose(from, image).apply(image);
+
+    // Refusing the volume is an answer, and so is running out of memory or
+    // failing to read it. Trapping is not, and neither is failing to return.
+    var vol = image.volume() catch return;
+    const first = run(&vol, gpa, .{}) catch return;
+
+    // A volume the check could not vouch for is left alone on purpose, so it
+    // says nothing about what a second pass would find.
+    if (!first.sound()) return;
+
+    var settled = try image.volume();
+    const second = run(&settled, gpa, .{}) catch return;
+    if (!second.quiet()) {
+        std.debug.print("checked once and still wanting: {any}\n", .{second});
+        return error.CheckDidNotSettle;
+    }
+}
+
+test "fuzz: a volume damaged anywhere mounts, checks, and settles" {
+    const Target = struct {
+        fn one(_: void, smith: *std.testing.Smith) anyerror!void {
+            return checkOneDamagedVolume(.{ .fuzzer = smith });
+        }
+    };
+    try std.testing.fuzz({}, Target.one, .{});
+}
+
+test "a volume damaged at random mounts, checks, and settles" {
+    // The same target from a seeded generator. Much worse than a
+    // coverage-guided search at finding the rare case, and it runs here:
+    // `zig build test --fuzz` does not compile in Zig 0.16.0, failing inside
+    // the compiler's own test runner, so until that is fixed this is what
+    // exercises the property.
+    var prng = std.Random.DefaultPrng.init(0x7A7A_C0FFEE);
+    for (0..300) |_| try checkOneDamagedVolume(.{ .seeded = prng.random() });
 }

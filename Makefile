@@ -155,7 +155,7 @@ STAGE1_BIN := $(BUILD)/stage1.bin
 STAGE2_BIN := $(BUILD)/stage2.bin
 MKIMAGE    := $(BUILD)/mkimage
 
-.PHONY: all clean image qemu qemu-sd run test tools sd update-sd help apps app hero echat roll fmt check check-all
+.PHONY: all clean image qemu qemu-sd run test fuzz tools sd update-sd help apps app hero echat roll fmt check check-all
 
 all: image
 
@@ -527,6 +527,30 @@ qemu-ide: $(IMAGE)
 test: qr-verify
 	$(ZIG) build test
 	$(ZIG) build test-hero test-echat test-eeemod test-roll
+
+# The same tests, searched rather than run once each.
+#
+# `--fuzz` is the build system's own flag: it instruments the tests for
+# coverage and drives every one that calls `std.testing.fuzz` until it finds a
+# failure or is stopped. Not part of `check-all` for that reason, and not part
+# of `test`: the gate has to finish.
+#
+# **This does not work on Zig 0.16.0.** The compiler's own test runner fails to
+# build in fuzz mode, passing the wrong `StackTrace` to `writeStackTrace`; a
+# four-line project with one fuzz test and no dependencies fails the same way,
+# so there is nothing here to fix. The targets are written and compiled by
+# `test` regardless, and each has a seeded counterpart beside it that drives
+# the same code from a generator, which is what covers the property until the
+# search works.
+#
+# LIMIT bounds it, in iterations, with a K/M/G suffix allowed. Without one it
+# runs until interrupted.
+#
+#   make fuzz
+#   make fuzz LIMIT=200K
+.PHONY: fuzz
+fuzz:
+	$(ZIG) build test --fuzz$(if $(LIMIT),=$(LIMIT),)
 
 # The tree is formatted, as `zig fmt` formats it. Checked rather than
 # assumed: the one file a hand-aligned table exempts is the one that drifts.
