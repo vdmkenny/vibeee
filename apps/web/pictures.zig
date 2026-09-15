@@ -1,12 +1,12 @@
-//! A page's pictures: fetched one at a time once its words are on screen,
+//! A page's pictures: fetched a few at a time once its words are on screen,
 //! decoded, and kept at the widest they are drawn.
 //!
-//! One at a time, because the machine has one processor and a picture is a
-//! site to reach, a file to take in and a decode: several at once would
-//! make each of them later, and the first one latest of all. One after
-//! another, they share one connection where the site keeps it open. The page
-//! is read while they come, and each takes its place as it arrives, what the
-//! page says it shows standing in for it until then.
+//! A few, not all: the machine has one processor and a decode is its own
+//! work, so asking for every picture at once would only make each of them
+//! later. A few keeps the network busy while one is being taken in and
+//! decoded, and keeps the connections to the site they come from open
+//! between them. The page is read while they come, and each takes its place
+//! as it arrives, what the page says it shows standing in for it until then.
 //!
 //! The first asked for is the first at or below the top of the view, so
 //! what somebody is looking at arrives first; the rest follow in the page's
@@ -76,13 +76,28 @@ pub const Kept = struct {
 };
 
 /// What a step came to.
-pub const Step = union(enum) {
-    /// Waiting on the network, as the fetch says.
-    wait: fetch_mod.Wait,
-    /// This picture has arrived, or will not: the room it takes has changed.
-    settled: u16,
-    /// Nothing is on its way, and nothing more is to be asked for.
-    idle,
+pub const Step = struct {
+    /// Whether any picture was asked for or moved along: there is more to do
+    /// on the next pass.
+    working: bool = false,
+    /// Whether any picture arrived, or will not: the room they take has
+    /// changed, so the page is set out again.
+    settled: bool = false,
+};
+
+/// How many pictures are asked for at once.
+///
+/// Not all of them: the machine has one processor and a decode is its own
+/// work, so the network is not what holds a page's pictures up once a few
+/// are on their way. Three keeps one arriving while another is decoded, on
+/// three connections the site keeps open between pictures.
+pub const AT_ONCE = 3;
+
+/// One picture being asked for, on a connection of its own.
+const Ask = struct {
+    fetch: fetch_mod.Fetch = .{ .asking = .{ .wanted = .picture } },
+    /// Which of the page's pictures it is for, while it is for one.
+    which: ?u16 = null,
 };
 
 /// How a page's pictures are drawn, which is how they are kept and asked for:
@@ -113,9 +128,8 @@ pub const Pictures = struct {
     /// What the pictures that are here hold between them, in bytes.
     held: usize = 0,
 
-    fetch: fetch_mod.Fetch = .{ .asking = .{ .wanted = .picture } },
-    /// Which picture the fetch is for, while it is for one.
-    fetching: ?u16 = null,
+    /// The pictures on their way, each on a connection of its own.
+    asks: [AT_ONCE]Ask = @splat(.{}),
 
     /// Take on `page`'s pictures, drawn as `drawn` says.
     ///
@@ -128,8 +142,6 @@ pub const Pictures = struct {
         if (!std.meta.eql(self.drawn, drawn)) self.forget(gpa);
         self.drawn = drawn;
         const was = self.states;
-        const coming = self.fetching;
-        self.fetching = null;
         self.held = 0;
 
         // A page with no room to follow its pictures still reads: they are
@@ -147,15 +159,19 @@ pub const Pictures = struct {
                 self.held += weightOf(kept);
             }
         }
-        // The one on its way carries on where the page still asks for it,
-        // and is let go where it does not.
-        if (coming) |at| {
-            if (at < was.len) {
-                if (waitingFor(now, was[at].key)) |index| {
-                    now[index].state = .coming;
-                    self.fetching = @intCast(index);
-                } else self.fetch.cancel(gpa);
+        // Those on their way carry on where the page still asks for them,
+        // and are let go where it does not.
+        for (&self.asks) |*ask| {
+            const at = ask.which orelse continue;
+            ask.which = null;
+            if (at >= was.len) {
+                ask.fetch.cancel(gpa);
+                continue;
             }
+            if (waitingFor(now, was[at].key)) |index| {
+                now[index].state = .coming;
+                ask.which = @intCast(index);
+            } else ask.fetch.cancel(gpa);
         }
         for (was) |held| switch (held.state) {
             .here => |kept| gpa.free(kept.picture.pixels),
@@ -201,7 +217,7 @@ pub const Pictures = struct {
     /// fetched, how they are drawn and what is asked of sites for them stay,
     /// being settings.
     pub fn forget(self: *Pictures, gpa: std.mem.Allocator) void {
-        self.fetch.cancel(gpa);
+        for (&self.asks) |*ask| ask.fetch.cancel(gpa);
         for (self.states) |held| switch (held.state) {
             .here => |kept| gpa.free(kept.picture.pixels),
             .waiting, .coming, .failed, .blocked => {},
@@ -210,7 +226,7 @@ pub const Pictures = struct {
         const settings: Pictures = .{
             .enabled = self.enabled,
             .drawn = self.drawn,
-            .fetch = .{ .asking = self.fetch.asking, .blocklist = self.fetch.blocklist },
+            .asks = @splat(.{ .fetch = .{ .asking = self.asks[0].fetch.asking, .blocklist = self.asks[0].fetch.blocklist } }),
         };
         self.* = settings;
     }
@@ -218,10 +234,12 @@ pub const Pictures = struct {
     /// Put the picture on its way back, to be asked for again later: the
     /// network is wanted for a page.
     pub fn pause(self: *Pictures, gpa: std.mem.Allocator) void {
-        const index = self.fetching orelse return;
-        self.fetch.cancel(gpa);
-        self.fetching = null;
-        self.states[index].state = .waiting;
+        for (&self.asks) |*ask| {
+            const index = ask.which orelse continue;
+            ask.fetch.cancel(gpa);
+            ask.which = null;
+            self.states[index].state = .waiting;
+        }
     }
 
     /// Ask for nothing more of this page's pictures.
@@ -255,7 +273,33 @@ pub const Pictures = struct {
 
     /// Whether a picture is on its way, or one is still to be asked for.
     pub fn busy(self: *const Pictures) bool {
-        return self.fetching != null or (self.expected() and self.waitingFrom(0) != null);
+        return self.coming() or (self.expected() and self.waitingFrom(0) != null);
+    }
+
+    /// Whether any picture is on its way.
+    pub fn coming(self: *const Pictures) bool {
+        for (&self.asks) |ask| {
+            if (ask.which != null) return true;
+        }
+        return false;
+    }
+
+    /// Whether a picture could be asked for now: one is waiting and there is
+    /// a connection free to ask for it on.
+    pub fn wouldAsk(self: *const Pictures) bool {
+        if (!self.expected() or self.waitingFrom(0) == null) return false;
+        for (&self.asks) |ask| {
+            if (ask.which == null) return true;
+        }
+        return false;
+    }
+
+    /// The fetches the pictures come on, for the window to wait on them and
+    /// to give each of them its settings.
+    pub fn fetches(self: *Pictures) [AT_ONCE]*fetch_mod.Fetch {
+        var each: [AT_ONCE]*fetch_mod.Fetch = undefined;
+        for (&self.asks, &each) |*ask, *one| one.* = &ask.fetch;
+        return each;
     }
 
     pub fn stateOf(self: *const Pictures, index: u16) State {
@@ -272,21 +316,34 @@ pub const Pictures = struct {
         return .{ .settled = settled, .total = self.states.len };
     }
 
-    /// Take the next step: ask for the next picture, the first still waiting
-    /// from `from` on, or take what has arrived of the one on its way.
+    /// Take the next step of every picture on its way, and ask for as many
+    /// more as there are connections free for: the first still waiting from
+    /// `from` on, so that what is on screen comes first.
     pub fn advance(self: *Pictures, gpa: std.mem.Allocator, page: *const Page, from: u16) Step {
-        if (self.fetching == null) {
-            const next = if (self.expected()) self.waitingFrom(from) orelse self.waitingFrom(0) else null;
-            if (next) |index| return self.begin(gpa, page, index);
-            // Nothing more to ask for, so a connection kept for the next
-            // picture has none to carry. Let go of once, this being asked
-            // again on every pass the page takes.
-            if (self.fetch.state != .idle) self.fetch.cancel(gpa);
-            return .idle;
+        var step = Step{};
+        for (&self.asks) |*ask| {
+            if (ask.which == null) continue;
+            step.working = true;
+            if (ask.fetch.advance(gpa) != .over) continue;
+            self.arrive(gpa, ask);
+            step.settled = true;
         }
-        const wait = self.fetch.advance(gpa);
-        if (wait != .over) return .{ .wait = wait };
-        return .{ .settled = self.arrive(gpa) };
+        var at = from;
+        for (&self.asks) |*ask| {
+            if (ask.which != null) continue;
+            const next = if (self.expected()) self.waitingFrom(at) orelse self.waitingFrom(0) else null;
+            const index = next orelse {
+                // Nothing more to ask for on this one, so a connection kept
+                // for the next picture has none to carry. Let go of once,
+                // this being asked again on every pass the page takes.
+                if (ask.fetch.state != .idle) ask.fetch.cancel(gpa);
+                continue;
+            };
+            if (self.begin(gpa, page, ask, index)) step.settled = true;
+            step.working = true;
+            at = index + 1;
+        }
+        return step;
     }
 
     /// The first picture still waiting at or after `from`.
@@ -298,36 +355,37 @@ pub const Pictures = struct {
         return null;
     }
 
-    /// Whether a picture at `source` is from a site on the blocklist.
+    /// Whether a picture at `source` is from a site on the blocklist. Every
+    /// ask is given the same list, so the first speaks for them all.
     fn refuses(self: *const Pictures, source: []const u8) bool {
-        return self.fetch.refuses(url.parse(source) orelse return false);
+        return self.asks[0].fetch.refuses(url.parse(source) orelse return false);
     }
 
-    fn begin(self: *Pictures, gpa: std.mem.Allocator, page: *const Page, index: u16) Step {
+    /// Ask for the picture `index` on `ask`. True where it settled at once,
+    /// which a picture on this machine does, having nobody to wait for.
+    fn begin(self: *Pictures, gpa: std.mem.Allocator, page: *const Page, ask: *Ask, index: u16) bool {
         const which = page.pictures.items[index];
         const source = page.string(which.source);
         const where = url.parse(source) orelse {
             self.states[index].state = .failed;
-            return .{ .settled = index };
+            return true;
         };
         if (where.scheme == .file) {
-            // A picture on this machine is read in one go, having nobody to
-            // wait for.
             const bytes = ulib.file.readAlloc(gpa, where.file(), fetch_mod.PICTURE_MAX) catch {
                 self.states[index].state = .failed;
-                return .{ .settled = index };
+                return true;
             };
             defer gpa.free(bytes);
             self.states[index].state = self.take(gpa, bytes);
-            return .{ .settled = index };
+            return true;
         }
         self.states[index].state = .coming;
-        self.fetching = index;
-        self.fetch.asking.width = self.widthOf(which);
-        self.fetch.begin(gpa, source);
+        ask.which = index;
+        ask.fetch.asking.width = self.widthOf(which);
+        ask.fetch.begin(gpa, source);
         // Reaching the site blocks, so it waits for the next chance, once the
         // pass that says a picture is coming has been drawn.
-        return .{ .wait = .none };
+        return false;
     }
 
     /// How wide a picture is drawn at most, in the screen's own pixels: as
@@ -338,14 +396,13 @@ pub const Pictures = struct {
         return @intCast(@min(@as(u32, given) * self.drawn.scale, self.drawn.widest));
     }
 
-    /// The fetch is over: the picture, or the end of trying for it.
-    fn arrive(self: *Pictures, gpa: std.mem.Allocator) u16 {
-        const index = self.fetching.?;
-        self.fetching = null;
-        defer self.fetch.release(gpa);
-        const answered = self.fetch.state == .done and self.fetch.response.status / 100 == 2;
-        self.states[index].state = if (answered) self.take(gpa, self.fetch.body.bytes.items) else .failed;
-        return index;
+    /// One ask is over: the picture, or the end of trying for it.
+    fn arrive(self: *Pictures, gpa: std.mem.Allocator, ask: *Ask) void {
+        const index = ask.which.?;
+        ask.which = null;
+        defer ask.fetch.release(gpa);
+        const answered = ask.fetch.state == .done and ask.fetch.response.status / 100 == 2;
+        self.states[index].state = if (answered) self.take(gpa, ask.fetch.body.bytes.items) else .failed;
     }
 
     /// A picture from its file, kept at the widest it is drawn.

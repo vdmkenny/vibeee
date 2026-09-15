@@ -92,9 +92,12 @@ const HELD_MAX = proto.net.SOCKETS_PER_PROCESS;
 /// The connections kept after answers, for the next request to the same
 /// site from any fetch: reaching a site and sealing the connection is the
 /// step that blocks, and a site is reached once for a page rather than once
-/// for each thing on it. One a site, the oldest giving way: a page's
-/// stylesheets, scripts and pictures come from where the page came and from
-/// a site or two beside it, and its next page from one of those.
+/// for each thing on it.
+///
+/// As many to a site as there is room for, the oldest giving way: a page's
+/// stylesheets, scripts and pictures are asked for several at a time and
+/// mostly come from where the page came, so keeping one connection a site
+/// would have every ask but the first reach the site again.
 var pool: Bounded(Kept, HELD_MAX) = .{};
 
 /// How many connections the fetches hold between them, open or kept.
@@ -133,14 +136,8 @@ fn takeFromPool(where: url.Url) ?Kept {
     return null;
 }
 
-/// Keep a connection, in place of one to the same site, and in place of
-/// the oldest where there is no more room.
+/// Keep a connection, in place of the oldest where there is no more room.
 fn putInPool(kept: Kept) void {
-    for (pool.slice(), 0..) |old, index| {
-        if (!old.goesTo(.{ .scheme = kept.scheme, .host = kept.host.slice(), .port = kept.port, .path = "" })) continue;
-        dropKept(index);
-        break;
-    }
     if (pool.isFull()) dropKept(0);
     pool.append(kept) catch drop(kept.wire);
 }

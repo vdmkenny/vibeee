@@ -155,15 +155,17 @@ var fetch: fetch_mod.Fetch = .{};
 /// the page's own fetch, which may be mid-page, and from the pictures',
 /// which may be mid-picture.
 var script_fetch: fetch_mod.Fetch = .{};
-/// What that fetch is bringing: one of the page's own scripts, or one of
-/// the scripts' asks.
-var script_job: ScriptJob = .idle;
 /// The page's own scripts still to come, by address in the page's order.
 var queued: dom.Scripts = .{};
-/// The page's own script being brought.
+/// The page's own script being brought, and whether one is.
 var queued_own: links.Link = .{ .address = "", .media = "" };
+var script_coming = false;
 
-const ScriptJob = union(enum) { idle, own, ask: u32 };
+/// What the page's scripts ask for, on a connection of its own: an answer
+/// a script waits for does not wait for the next script to come.
+var ask_fetch: fetch_mod.Fetch = .{};
+/// Which ask that fetch is answering, while it is answering one.
+var asked: ?u32 = null;
 /// The cookies sites set and scripts write, kept while the browser is open:
 /// they belong to a site, and go with every request to it.
 var jar: cookie_mod.Jar = .{};
@@ -435,10 +437,16 @@ fn keptFrom() ?blocklist_mod.Blocklist {
     return .{ .hashes = &blocklist_data.hashes };
 }
 
-/// The page's fetch, which brings its stylesheets and scripts too, its
-/// pictures', and the one that answers its scripts.
-fn fetches() [3]*fetch_mod.Fetch {
-    return .{ &fetch, &pictures.fetch, &script_fetch };
+/// Every fetch the browser has: the page's, which brings its stylesheets
+/// too, the one that brings the page's own scripts, the one that answers
+/// what those scripts ask for, and its pictures'.
+fn fetches() [3 + pictures_mod.AT_ONCE]*fetch_mod.Fetch {
+    var each: [3 + pictures_mod.AT_ONCE]*fetch_mod.Fetch = undefined;
+    each[0] = &fetch;
+    each[1] = &script_fetch;
+    each[2] = &ask_fetch;
+    for (pictures.fetches(), each[3..]) |one, *into| into.* = one;
+    return each;
 }
 
 /// The shade pages are drawn in: the one the settings name, or where they
@@ -622,9 +630,9 @@ fn stop() void {
     }
     // The page's own scripts still to come are left uncome: what has run
     // has run.
-    if (script_job == .own) {
+    if (script_coming) {
         script_fetch.cancel(gpa);
-        script_job = .idle;
+        script_coming = false;
     }
     queued.deinit(gpa);
     if (history.current()) |entry| address.setFromStart(entry.address.slice());
@@ -700,14 +708,9 @@ fn step() bool {
         again = true;
     }
     if (stepScripts()) again = true;
-    switch (pictures.advance(gpa, &shown, view.pictureFrom())) {
-        .wait => again = true,
-        .settled => {
-            view.relayout();
-            again = true;
-        },
-        .idle => {},
-    }
+    const drawing = pictures.advance(gpa, &shown, view.pictureFrom());
+    if (drawing.settled) view.relayout();
+    if (drawing.working or drawing.settled) again = true;
     return again;
 }
 
@@ -735,11 +738,11 @@ fn plan() void {
         .idle, .done, .failed => {},
     };
     if (reading != null and !fetch.busy()) soon = true;
-    if (pictures.fetching == null and pictures.busy()) soon = true;
+    if (pictures.wouldAsk()) soon = true;
     if (repaint_wanted) soon = true;
     var timer: ?usize = null;
     if (scripts) |doc| {
-        if (!script_fetch.busy() and dom.asking(doc)) soon = true;
+        if (asked == null and dom.asking(doc)) soon = true;
         if (dom.waits(doc)) |ms| timer = @as(usize, ms) * std.time.us_per_ms;
     }
     period_us = if (soon) SOON_US else quiet orelse IDLE_US;
@@ -986,27 +989,40 @@ fn loadMore(it: *dom.Document) void {
         switch (dom.loadNext(it, source.scripts.items)) {
             .done => break,
             .waiting => {
-                const link = queued.next() orelse {
-                    // One the page names that was not kept, past what a
-                    // page may name: the rest run with what is here.
-                    dom.load(it, source.scripts.items);
-                    break;
-                };
-                if (readLink(link, fetch_mod.SCRIPT_MAX)) |text| {
-                    queued.took(text.len);
-                    source.keepScript(gpa, link.address, text);
-                    continue;
-                }
-                queued_own = link;
-                script_job = .own;
-                script_fetch.asking.wanted = .script;
-                script_fetch.asking.sent = null;
-                script_fetch.begin(gpa, link.address);
+                // The one the page waits for is on its way. Where none is,
+                // it is one the page named past what a page may name: the
+                // rest run with what is here.
+                if (!script_coming) bringScript();
+                if (!script_coming) dom.load(it, source.scripts.items);
                 break;
             },
         }
     }
     _ = afterScripts(it);
+}
+
+/// Bring the next of the page's own scripts, where one is still to come.
+/// One kept on this machine is read here and now, having nobody to wait
+/// for.
+fn bringScript() void {
+    if (script_coming) return;
+    while (queued.next()) |link| {
+        if (readLink(link, fetch_mod.SCRIPT_MAX)) |text| {
+            queued.took(text.len);
+            source.keepScript(gpa, link.address, text);
+            continue;
+        }
+        queued_own = link;
+        script_coming = true;
+        script_fetch.asking.wanted = .script;
+        script_fetch.asking.sent = null;
+        script_fetch.begin(gpa, link.address);
+        // Asked for here and now rather than on the next pass: the script
+        // before it holds the engine for as long as it takes to run, and
+        // this one is to be on its way while it does.
+        _ = script_fetch.advance(gpa);
+        return;
+    }
 }
 
 /// The engine the page's scripts run in, started the first time a page wants
@@ -1047,7 +1063,9 @@ fn forget() void {
     if (document) |*tree| tree.close(gpa);
     document = null;
     script_fetch.cancel(gpa);
-    script_job = .idle;
+    script_coming = false;
+    ask_fetch.cancel(gpa);
+    asked = null;
     queued.deinit(gpa);
 }
 
@@ -1241,57 +1259,66 @@ fn windowOf(area: Rect) media.Screen {
 // ---------------------------------------------------------------------------
 
 /// Go on with what the page's scripts have on their way: the page's own
-/// script or the ask being brought, the next ask to bring, or what they set
-/// to run and is now due. True where something happened.
+/// script and the ask being brought, each on its own connection, the next
+/// ask to bring, and what they set to run and is now due. True where
+/// something happened.
 fn stepScripts() bool {
     const doc = scripts orelse return false;
-    if (script_fetch.busy()) {
-        if (script_fetch.advance(gpa) == .over) answered(doc);
-        return true;
+    var again = false;
+    if (script_coming) {
+        again = true;
+        if (script_fetch.advance(gpa) == .over) scriptArrived(doc);
     }
-    if (dom.nextAsk(doc)) |ask| {
-        script_job = .{ .ask = ask.id };
-        script_fetch.asking.wanted = if (ask.script) .script else .page;
-        script_fetch.asking.sent = ask.sent;
-        script_fetch.begin(gpa, ask.address);
-        return true;
+    if (asked != null) {
+        again = true;
+        if (ask_fetch.advance(gpa) == .over) askAnswered(doc);
+    } else if (dom.nextAsk(doc)) |ask| {
+        asked = ask.id;
+        ask_fetch.asking.wanted = if (ask.script) .script else .page;
+        ask_fetch.asking.sent = ask.sent;
+        ask_fetch.begin(gpa, ask.address);
+        // Asked for here and now, so that a script that goes on running has
+        // its answer on the way rather than waiting on the next pass.
+        _ = ask_fetch.advance(gpa);
+        again = true;
     }
+    if (again) return true;
     if ((dom.waits(doc) orelse return false) > 0) return false;
     _ = dom.loop(doc);
     _ = afterScripts(doc);
     return true;
 }
 
-/// What the scripts' fetch was bringing is here, or will not be: one of
-/// the page's own scripts is kept and the page's scripts go on, or the
-/// scripts are told what their ask came to.
-fn answered(doc: *dom.Document) void {
-    const job = script_job;
-    script_job = .idle;
-    switch (job) {
-        .idle => script_fetch.release(gpa),
-        .own => {
-            timed("script", queued_own.address, script_fetch.received(), &script_fetch);
-            const came = script_fetch.state == .done and script_fetch.response.status / 100 == 2;
-            // One that did not come is kept as nothing, so the page's
-            // scripts go on past it rather than wait for it.
-            const text: []u8 = if (came) script_fetch.body.bytes.toOwnedSlice(gpa) catch &.{} else &.{};
-            queued.took(text.len);
-            source.keepScript(gpa, queued_own.address, text);
-            script_fetch.release(gpa);
-            loadMore(doc);
-        },
-        .ask => |id| {
-            timed("ask", script_fetch.address(), script_fetch.received(), &script_fetch);
-            const got: dom.Answer = if (script_fetch.state == .done)
-                .{ .status = script_fetch.response.status, .body = script_fetch.body.bytes.items }
-            else
-                .{ .failed = true };
-            dom.answer(doc, id, got);
-            script_fetch.release(gpa);
-            _ = afterScripts(doc);
-        },
-    }
+/// One of the page's own scripts is here, or will not be. The next is asked
+/// for before this one runs, so that it is on its way while this one holds
+/// the engine.
+fn scriptArrived(doc: *dom.Document) void {
+    script_coming = false;
+    timed("script", queued_own.address, script_fetch.received(), &script_fetch);
+    const came = script_fetch.state == .done and script_fetch.response.status / 100 == 2;
+    // One that did not come is kept as nothing, so the page's scripts go on
+    // past it rather than wait for it.
+    const text: []u8 = if (came) script_fetch.body.bytes.toOwnedSlice(gpa) catch &.{} else &.{};
+    queued.took(text.len);
+    source.keepScript(gpa, queued_own.address, text);
+    script_fetch.release(gpa);
+    bringScript();
+    loadMore(doc);
+}
+
+/// What a script asked for is here, or will not be: the scripts are told
+/// what it came to.
+fn askAnswered(doc: *dom.Document) void {
+    const id = asked orelse return;
+    asked = null;
+    timed("ask", ask_fetch.address(), ask_fetch.received(), &ask_fetch);
+    const got: dom.Answer = if (ask_fetch.state == .done)
+        .{ .status = ask_fetch.response.status, .body = ask_fetch.body.bytes.items }
+    else
+        .{ .failed = true };
+    dom.answer(doc, id, got);
+    ask_fetch.release(gpa);
+    _ = afterScripts(doc);
 }
 
 /// What the scripts have done since they were last asked: sent the browser
@@ -1719,7 +1746,7 @@ fn status(area: Rect, body: Rect) void {
             } else right.text(" so far");
         },
         .connecting => {},
-        .idle, .done, .failed => if (pictures.fetching != null) {
+        .idle, .done, .failed => if (pictures.coming()) {
             const tally = pictures.tally();
             right.print("picture {d} of {d}", .{ tally.settled + 1, tally.total });
         } else arrivedText(&right, body),
@@ -1740,7 +1767,7 @@ fn scriptsText(buf: []u8) []const u8 {
     if (!choices.scripts) return "scripts off";
     const doc = scripts orelse return "";
     const report = dom.reportOf(doc);
-    if (script_job == .own) return std.fmt.bufPrint(buf, "scripts {d}, more coming", .{report.ran}) catch "scripts coming";
+    if (script_coming) return std.fmt.bufPrint(buf, "scripts {d}, more coming", .{report.ran}) catch "scripts coming";
     if (report.ran == 0) return "no scripts";
     var w: std.Io.Writer = .fixed(buf);
     w.print("scripts {d}", .{report.ran}) catch return "scripts";
@@ -1825,7 +1852,7 @@ fn printText(target: []const u8) noreturn {
         _ = step();
         plan();
         if (sys.clockMicros() -| started > SETTLE_US) break;
-        const coming = fetch.busy() or reading != null or script_fetch.busy() or
+        const coming = fetch.busy() or reading != null or script_fetch.busy() or ask_fetch.busy() or
             (if (scripts) |doc| dom.asking(doc) else false);
         if (!coming and (if (scripts) |doc| dom.waits(doc) == null else true)) break;
         if (period_us == IDLE_US) break;
