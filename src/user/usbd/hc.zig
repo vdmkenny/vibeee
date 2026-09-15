@@ -92,6 +92,17 @@ pub const HcOps = struct {
     watchLimit: *const fn () usize,
     /// Stop watching, because the device is gone.
     unwatch: *const fn (watch: u8) void,
+    /// Stop the schedules and leave the controller doing nothing, for a
+    /// machine about to take the power away from it.
+    ///
+    /// Everything the bus knew about the devices on it describes a
+    /// conversation that will not survive: nothing may be asked of the
+    /// controller again until `rebuild`.
+    quiesce: *const fn () void,
+    /// Build it again after it has lost its state: schedules running, and
+    /// its ports the caller's to walk afresh, as at the first open.
+    /// Answering false leaves the controller closed.
+    rebuild: *const fn () bool,
 };
 
 /// A control transfer that carries no data: a request goes out and only

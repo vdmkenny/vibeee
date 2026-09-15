@@ -20,6 +20,15 @@ pub const Tag = enum(u8) {
     /// One port's own state, by `index` across every controller's ports
     /// in turn: `body.port`, or `end` past the last.
     port,
+    /// Put the bus down and bring it back: every controller stopped, then
+    /// built again and walked afresh, and everything found on it offered
+    /// again. `body.count` answers with how many devices came back.
+    ///
+    /// What a machine waking from sleep asks for, since a controller that
+    /// lost its power has lost everything the bus knew about it. Also
+    /// what to ask for when something on the bus is wedged and the
+    /// alternative is a reboot.
+    rebuild,
 };
 
 pub const Status = enum(u8) {

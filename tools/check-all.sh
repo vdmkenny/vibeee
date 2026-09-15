@@ -23,6 +23,7 @@ rm -f "$BUILD"/check-boot*.png "$BUILD"/check-boot*.log "$BUILD"/check-boot*.log
 rm -f "$BUILD"/check-net-*.png "$BUILD"/check-net-*.log "$BUILD"/check-net-*.log.txt
 rm -f "$BUILD"/check-serial.png "$BUILD"/check-serial.log "$BUILD"/check-serial.log.txt "$BUILD"/check-serial.out
 rm -f "$BUILD"/check-console.png "$BUILD"/check-console.log "$BUILD"/check-console.log.txt "$BUILD"/check-console.out
+rm -f "$BUILD"/check-bus.png "$BUILD"/check-bus.log "$BUILD"/check-bus.log.txt "$BUILD"/check-stick.img
 
 fail() { printf 'check-all: %s\n' "$*" >&2; exit 1; }
 step() { printf '\n== %s\n' "$*"; }
@@ -174,6 +175,40 @@ grep -q "keeping time by the firmware counter" "$CON_WIRE" ||
 grep -q "the record is going out of ser0" "$CON_WIRE" ||
     fail "the record stopped at what was already there (see $CON_WIRE)"
 echo "the whole record reached the wire, and went on reaching it"
+
+step "a disk behind a hub, across the bus being put down and brought back"
+# What a machine waking from sleep will ask for. Behind a hub because
+# that is where the bus's own bookkeeping is hardest: a hub's ports are
+# the hub driver's to watch, and the addresses are handed out afresh, so
+# a volume followed by address rather than by where its disk sits would
+# come back mounted over the wrong one.
+STICK=$BUILD/check-stick.img
+dd if=/dev/zero of="$STICK" bs=1m count=16 >/dev/null 2>&1
+mformat -i "$STICK" -F :: || fail "cannot make a stick to test with"
+echo "the stick still reads" > "$BUILD/check-stick.txt"
+mcopy -i "$STICK" "$BUILD/check-stick.txt" ::/hello.txt || fail "cannot write to the test stick"
+
+LOGBUS=$BUILD/check-bus.log
+QEMU_CPU="$QEMU_CPU" tools/qemu-shot.sh "$BUILD/check-bus.png" -w 30 -p 4 -s 4 \
+    -t "cat /media/usb0/hello.txt
+usb rebuild
+cat /media/usb0/hello.txt" \
+    -- -drive if=ide,format=raw,file="$DEV_IMAGE" \
+    -device piix3-usb-uhci,id=uh -device usb-hub,bus=uh.0,port=1 \
+    -drive if=none,id=st,format=raw,file="$STICK" \
+    -device usb-storage,bus=uh.0,port=1.2,drive=st,id=stick >/dev/null \
+    || fail "the emulator did not run (see $LOGBUS)"
+plain "$LOGBUS" > "$LOGBUS.txt"
+! grep -qi "panic" "$LOGBUS.txt" || fail "the kernel panicked rebuilding the bus (see $LOGBUS)"
+# A disk plugged into a hub is offered to the kernel at all, which is what
+# the walk after the class drivers is for.
+grep -q "the bus is back with 2 devices" "$LOGBUS.txt" ||
+    fail "the bus did not come back with the hub and the disk (see $LOGBUS)"
+# Twice: once before the bus went down and once after, from a mount that
+# was never dropped and still reaches the disk it was made for.
+[ "$(grep -c "the stick still reads" "$LOGBUS.txt")" -ge 2 ] ||
+    fail "the mount did not survive the bus being rebuilt (see $LOGBUS)"
+echo "the bus went down and came back, and the disk behind the hub kept its mount"
 
 step "the card through a USB reader: its volumes arrive"
 cp "$IMAGE" "$SD_COPY"

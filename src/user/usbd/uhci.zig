@@ -591,6 +591,30 @@ fn stopped(self: *Unit, status: Status) void {
     log.fail(name, "closed; its ports are lost until the next usbd start");
 }
 
+/// Stop everything, for a machine about to take the power away.
+///
+/// The one clean rebuild a fatal error earns is spent and given back
+/// here: a controller put down deliberately and brought back is not one
+/// that went wrong, and holding the mark against it would close it for
+/// good the first time it did.
+fn quiesce(self: *Unit) void {
+    if (!self.controller.opened) return;
+    _ = reset(self);
+    self.controller.rebuilt = false;
+}
+
+/// And build it again, as at the first open.
+fn rebuildController(self: *Unit) bool {
+    if (!self.controller.opened) return false;
+    takeFromFirmware(self.controller.location);
+    if (!reset(self)) {
+        self.controller.opened = false;
+        return false;
+    }
+    startSchedule(self);
+    return true;
+}
+
 fn serviceIrq(self: *Unit) hc.Service {
     if (!self.controller.opened) return .quiet;
 
@@ -1020,6 +1044,12 @@ pub fn unitOps(comptime unit: u8) hc.HcOps {
         fn unwatch_(index: u8) void {
             unwatch(self, index);
         }
+        fn quiesce_() void {
+            quiesce(self);
+        }
+        fn rebuild_() bool {
+            return rebuildController(self);
+        }
     };
     return .{
         .open = bound.open_,
@@ -1034,6 +1064,8 @@ pub fn unitOps(comptime unit: u8) hc.HcOps {
         .collect = bound.collect_,
         .watchLimit = watchLimit,
         .unwatch = bound.unwatch_,
+        .quiesce = bound.quiesce_,
+        .rebuild = bound.rebuild_,
     };
 }
 

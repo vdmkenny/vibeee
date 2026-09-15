@@ -25,8 +25,9 @@ const DRIVER = 7;
 pub fn run(args: []const []const u8) void {
     if (args.len > 0 and std.mem.eql(u8, args[0], "controllers")) return controllers();
     if (args.len > 0 and std.mem.eql(u8, args[0], "ports")) return ports();
+    if (args.len > 0 and std.mem.eql(u8, args[0], "rebuild")) return rebuild();
     if (args.len > 0) {
-        out.text("usage: usb [ports | controllers]\n");
+        out.text("usage: usb [ports | controllers | rebuild]\n");
         out.flush();
         return;
     }
@@ -266,5 +267,29 @@ fn controllers() void {
     text.number(@intCast(reply.body.count));
     out.text(text.done());
     out.text(if (reply.body.count == 1) " host controller\n" else " host controllers\n");
+    out.flush();
+}
+
+/// Put the bus down and bring it back.
+///
+/// Everything on it is given up and found again, so a device that is
+/// wedged past asking gets the one thing short of a reboot that can
+/// clear it. A machine waking from sleep will want the same, for the
+/// same reason: a controller that lost its power lost everything the bus
+/// knew about it.
+fn rebuild() void {
+    var reply = proto.Rep{};
+    proto.call(.{ .tag = .rebuild }, &reply) catch {
+        out.text("usb: the bus service is not answering\n");
+        out.flush();
+        return;
+    };
+
+    var buf: [16]u8 = @splat(0);
+    var text = str.Builder{ .buf = &buf };
+    text.number(reply.body.count);
+    out.text("the bus is back with ");
+    out.text(text.done());
+    out.text(if (reply.body.count == 1) " device\n" else " devices\n");
     out.flush();
 }

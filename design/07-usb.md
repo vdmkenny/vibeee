@@ -203,6 +203,27 @@ pub const Ops = struct {
 
 Two drivers: `acm` for the abstract control model, matched by class and subclass with the protocol left to the driver, and `ftdi` for the parts one maker numbers 0403:6001 and 0403:6015. Which interface carries the bytes on a CDC device is the awkward part, and every reference driver carries the same three fallbacks for it; they are in `lib/usb.zig` under `cdc.portIn`, host-tested against the shapes real devices write rather than against the specification. The FTDI part's own numbers are in `usbd/ftdi/regs.zig` beside its driver rather than in the shared library: what a serial line is stays generic in `lib/serial.zig`, and one maker's encoding of it does not.
 
+### 4.4b The bus going down and coming back
+
+A controller that loses its power loses every conversation the bus was holding, so
+waking from sleep is not a matter of carrying on: everything is given up and found
+again. That is one call on the controller seam each way, `quiesce` and `rebuild`,
+and one verb on the service, which `usb rebuild` asks for by hand. S3 does not exist
+yet; when it does, this is what it calls.
+
+**A volume follows its disk by where the disk sits, not by its address.** The walk
+hands out addresses in the order it finds things, so a disk that never moved comes
+back with a different address when something in front of it was taken away. Matching
+on the address would mount one disk's volume over another's, which is the single
+mistake here that loses somebody's files. What identifies a disk is its controller,
+its hub and port, its interface and unit, and how many blocks it holds.
+
+**What the class drivers find is settled after their pass, not only after a root
+port changes.** A hub's ports are the hub driver's to watch, and what it finds
+arrives two calls away from the walk. Before this, a disk plugged into a hub was
+enumerated and driven and never offered to the kernel, and one unplugged from a hub
+left its volume mounted over nothing.
+
 ### 4.5 Internal HCD seam (test boundary, not IPC)
 
 ```zig

@@ -41,10 +41,36 @@ const GET_MAX_UNIT: u8 = 0xFE;
 /// reader with four slots, and something in a socket.
 pub const MAX_DISKS = 4;
 
+/// Where a disk sits and how big it is, which is what says it is the same
+/// disk after the bus has been put down and brought back.
+///
+/// The address is deliberately not part of it. An address is handed out by
+/// the walk, in the order the walk finds things, so a disk that came back
+/// after one in front of it was taken away comes back with a different
+/// one. Where it is plugged in does not move, and a disk of another size
+/// in the same socket is a different disk whatever else is true of it.
+pub const Place = struct {
+    controller: u8 = 0,
+    hub: u7 = 0,
+    port: u8 = 0,
+    interface: u8 = 0,
+    unit: u8 = 0,
+    blocks: u64 = 0,
+
+    pub fn same(self: Place, other: Place) bool {
+        return self.controller == other.controller and self.hub == other.hub and
+            self.port == other.port and self.interface == other.interface and
+            self.unit == other.unit and self.blocks == other.blocks;
+    }
+};
+
 pub const Disk = struct {
     live: bool = false,
     address: u7 = 0,
     controller: u8 = 0,
+    /// Which hub carries it, zero for a root port. Part of where it sits,
+    /// so two hubs' first ports are told apart.
+    hub: u7 = 0,
     port: u8 = 0,
     interface: u8 = 0,
     unit: u8 = 0,
@@ -58,6 +84,18 @@ pub const Disk = struct {
     tag: u32 = 1,
     /// What the device last complained about, kept for the listing.
     sense: scsi.SenseData = .{},
+
+    /// Where this disk sits and how big it is.
+    pub fn place(self: *const Disk) Place {
+        return .{
+            .controller = self.controller,
+            .hub = self.hub,
+            .port = self.port,
+            .interface = self.interface,
+            .unit = self.unit,
+            .blocks = self.capacity.blocks,
+        };
+    }
 
     /// The device's control endpoint, which the class's own requests and
     /// every halt cleared here go to.
@@ -116,6 +154,7 @@ fn attach(target: class.Target) bool {
         .live = true,
         .address = target.address,
         .controller = target.controller,
+        .hub = target.route.hub,
         .port = target.port,
         .interface = view.interface.number,
         .reading = target.pipe(reading),

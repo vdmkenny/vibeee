@@ -822,6 +822,8 @@ pub const ops = hc.HcOps{
     .collect = collect,
     .watchLimit = watchLimit,
     .unwatch = unwatch,
+    .quiesce = quiesce,
+    .rebuild = rebuildController,
 };
 
 /// The interrupt handle is given after the controller opens, because the
@@ -1202,6 +1204,30 @@ fn hostError() void {
     log.warn(name, "rebuilding the controller");
     takeFromFirmware(caps);
     if (reset()) startSchedule() else surrender();
+}
+
+/// Stop everything, for a machine about to take the power away.
+///
+/// The one clean rebuild a fatal error earns is spent and given back here:
+/// a controller put down deliberately and brought back is not one that
+/// went wrong, and holding the mark against it would close it for good the
+/// first time it did.
+fn quiesce() void {
+    if (!controller.opened) return;
+    _ = reset();
+    controller.rebuilt = false;
+}
+
+/// And build it again, as at the first open.
+fn rebuildController() bool {
+    if (!controller.opened) return false;
+    takeFromFirmware(@bitCast(capRead(.capabilities)));
+    if (!reset()) {
+        controller.opened = false;
+        return false;
+    }
+    startSchedule();
+    return true;
 }
 
 /// Close the controller and route every port to the companions, which can

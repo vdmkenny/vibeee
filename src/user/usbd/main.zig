@@ -97,6 +97,7 @@ fn usbdMain() noreturn {
     // The first look at the ports: the machine's own devices are already
     // plugged in and will never announce themselves.
     scanAll();
+    _ = core.stirred();
     settle();
 
     // The name goes up once the bus has been walked, because that is what
@@ -248,7 +249,6 @@ fn serve() noreturn {
                 .quiet => {},
                 .ports_changed => {
                     if (core.scan(@intCast(which), controller.ops) > 0) scanAll();
-                    settle();
                 },
                 .reborn => {
                     // The reborn controller's book is swept, and every
@@ -258,7 +258,6 @@ fn serve() noreturn {
                     // devices back up.
                     core.forgetController(@intCast(which));
                     scanAll();
-                    settle();
                 },
             }
             // A transfer finished, and one of the class drivers is
@@ -266,6 +265,14 @@ fn serve() noreturn {
             for (CLASSES) |driver| {
                 if (driver.ops.woke) |look| look();
             }
+
+            // After the drivers, not only after a root port changed. A
+            // hub's ports are the hub driver's to watch, and what it
+            // finds arrives here two calls away from the walk: a disk
+            // plugged into a hub was enumerated and driven and never
+            // offered to the kernel, and one unplugged from a hub left
+            // its volume mounted over nothing.
+            if (core.stirred()) settle();
             sys.irqAck(controller.irq, outcome != .quiet);
             out.flush();
             continue;
@@ -317,21 +324,38 @@ const SERIAL_SOURCES = 2;
 
 /// Match the offered volumes to the disks that are actually there. Called
 /// after a scan, which is the only thing that changes either list.
+/// Match the offered volumes to the disks that are actually there, by
+/// where each disk sits rather than by the address it was given.
+///
+/// An address is the walk's to hand out, and a bus put down and brought
+/// back hands them out afresh: a disk that never moved can come back with
+/// another address because one in front of it was taken away meanwhile.
+/// Matching on the address would then mount one disk's volume over
+/// another's, which is the one mistake here that loses somebody's files.
 fn settle() void {
-    for (volume.all()) |offered| {
-        if (offered.live and umass.forAddress(offered.address) == null) {
-            volume.withdraw(offered.address);
+    // Every disk that is there keeps or takes a volume, and its offer
+    // follows it to whatever address it came back with.
+    for (umass.all(), 0..) |disk, i| {
+        if (!disk.live) continue;
+        const where = disk.place();
+        if (volume.forPlace(where)) |already| {
+            volume.readdress(already, disk.address);
+        } else {
+            _ = volume.offer(umass.at(i).?);
         }
     }
-    for (umass.all(), 0..) |disk, i| {
-        if (!disk.live or offered_for(disk.address)) continue;
-        _ = volume.offer(umass.at(i).?);
+
+    // And every offer with no disk under it any more goes, after the
+    // matching rather than before it: a disk that came back at another
+    // address must have claimed its own offer first.
+    for (volume.all()) |offered| {
+        if (offered.live and !diskAt(offered.where)) volume.withdraw(offered.address);
     }
 }
 
-fn offered_for(address: u7) bool {
-    for (volume.all()) |offered| {
-        if (offered.live and offered.address == address) return true;
+fn diskAt(where: umass.Place) bool {
+    for (umass.all()) |disk| {
+        if (disk.live and disk.place().same(where)) return true;
     }
     return false;
 }
@@ -360,7 +384,46 @@ fn handle(message: *const sys.Message, token: u32) void {
         .controllers => replyBody(token, .{ .count = @intCast(controller_count) }),
         .port => port(req.index, token),
         .name => called(req.index, token),
+        .rebuild => replyBody(token, .{ .count = rebuild() }),
     }
+}
+
+/// Put the bus down and bring it back, and say how many devices are on it
+/// afterwards.
+///
+/// Everything the bus knew is given up first, and deliberately: a
+/// controller that has been stopped has lost the conversations it was
+/// holding, and a device the bus still believed in would be one it asked
+/// questions of that nothing is answering. Whatever is really there is
+/// found again by the walk, so a stick that never moved comes back as a
+/// volume and a mount, and one taken away while the bus was down is
+/// simply not there.
+fn rebuild() u32 {
+    for (controllers[0..controller_count]) |controller| controller.ops.quiesce();
+    for (0..controller_count) |which| core.forgetController(@intCast(which));
+
+    var carried: usize = 0;
+    for (controllers[0..controller_count]) |controller| {
+        if (controller.ops.rebuild()) carried += 1;
+    }
+    if (carried == 0) {
+        log.fail("usbd", "no controller came back");
+    } else {
+        log.begin("usbd", .key);
+        out.decimal(carried);
+        out.text(if (carried == 1) " controller rebuilt" else " controllers rebuilt");
+        log.end();
+    }
+
+    scanAll();
+    _ = core.stirred();
+    settle();
+
+    var live: u32 = 0;
+    for (core.all()) |entry| {
+        if (entry.live) live += 1;
+    }
+    return live;
 }
 
 /// Ports numbered across every controller in turn, so one walk covers a

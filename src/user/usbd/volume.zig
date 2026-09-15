@@ -23,8 +23,12 @@ const umass = @import("umass.zig");
 pub const Offer = struct {
     live: bool = false,
     volume: usize = 0,
-    /// The disk this serves, by the address the bus gave it.
+    /// The disk this serves, by the address the bus gave it. Followed
+    /// rather than fixed: a bus put down and brought back hands out its
+    /// addresses afresh, and the same disk can come back with another.
     address: u7 = 0,
+    /// Which disk it is, which does not change when the address does.
+    where: umass.Place = .{},
     doorbell: u32 = 0,
     area: [*]u8 = undefined,
     area_len: usize = 0,
@@ -71,6 +75,7 @@ pub fn offer(disk: *umass.Disk) bool {
         .live = true,
         .volume = volume,
         .address = disk.address,
+        .where = disk.place(),
         .doorbell = @intCast(info.doorbell),
         .area = area,
         .area_len = info.slots * info.slot_bytes,
@@ -106,6 +111,24 @@ pub fn doorbells(into: []u32) usize {
         count += 1;
     }
     return count;
+}
+
+/// The offer for a disk that is where this one is, whatever address it
+/// has come back with.
+pub fn forPlace(where: umass.Place) ?*Offer {
+    for (&offers) |*slot| {
+        if (slot.live and slot.where.same(where)) return slot;
+    }
+    return null;
+}
+
+/// The same disk, at the address the walk has just given it.
+///
+/// A volume is the kernel's and does not move: what changes is which
+/// address the requests go to, and following it is what lets a disk that
+/// never left keep its mount across the bus being rebuilt.
+pub fn readdress(slot: *Offer, address: u7) void {
+    slot.address = address;
 }
 
 /// The offer a woken doorbell belongs to.

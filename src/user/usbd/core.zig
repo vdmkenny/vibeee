@@ -207,6 +207,7 @@ fn forget(controller: u8, route: usb.Route, port: u8) void {
     for (&devices) |*entry| {
         if (!entry.live or entry.controller != controller or
             entry.route.hub != route.hub or entry.port != port) continue;
+        table_stirred = true;
 
         // Everything behind it goes too: a hub unplugged takes its whole
         // branch, and none of it can be asked about any more.
@@ -224,6 +225,24 @@ fn forget(controller: u8, route: usb.Route, port: u8) void {
         log.end();
         entry.* = .{};
     }
+}
+
+/// Whether the set of devices changed since anybody last asked.
+///
+/// What a device turns out to be decides things above the bus: a disk is
+/// offered to the kernel as a volume, a serial port is named. Those are
+/// settled after a pass rather than inside one, because a device arrives
+/// in the middle of an enumeration and the settling wants the finished
+/// table. One flag rather than a return value on every path that could
+/// move it: a hub's port changes are acted on by the hub driver, two
+/// calls away from the loop that settles.
+var table_stirred = false;
+
+/// Whether anything came or went, taking the fact with it.
+pub fn stirred() bool {
+    const answer = table_stirred;
+    table_stirred = false;
+    return answer;
 }
 
 /// Everything the bus knew on one controller, root ports and what hung
@@ -400,6 +419,7 @@ fn hand(entry: *Device, ops: hc.HcOps) void {
         if (!std.mem.eql(u8, candidate.name, wanted)) continue;
         // The driver says whether it took the device; a refusal has
         // already said why in its own words.
+        table_stirred = true;
         entry.attached = candidate.ops.attach(.{
             .address = entry.address,
             .speed = entry.speed,

@@ -3,6 +3,7 @@ usb - what is plugged in
   usb                    the devices on the bus, as a tree
   usb ports              every root port, whether or not anything came of it
   usb controllers        how many host controllers are driven
+  usb rebuild            put the bus down and bring it back
 
 The bus is drawn the way `tree` draws a directory, because it is the
 same kind of thing: a device on a hub is shown under that hub. Where it
@@ -49,3 +50,17 @@ which controller found it.
 Devices appear and disappear on their own. Nothing polls: a controller
 interrupts when a port changes, the bus walks only that controller, and
 a device sitting still costs nothing at all.
+
+`usb rebuild` stops every controller, builds it again and walks it afresh.
+Everything the bus knew is given up first and deliberately: a controller
+that has been stopped has lost the conversations it was holding, and a
+device the bus still believed in would be one it asked questions of that
+nothing is answering. Whatever is really there is found again, so a stick
+that never moved comes back as a volume and is mounted again, and one
+taken away while the bus was down is simply not there.
+
+It is the one thing short of a reboot for a device that has stopped
+answering, and it is what a machine waking from sleep will ask for, since
+a controller that lost its power lost everything the bus knew about it.
+Anything being read or written across it fails while it is down, so a
+copy in progress is a copy that stops.
