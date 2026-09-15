@@ -101,17 +101,24 @@ const Page = page_mod.Page;
 const Source = source_mod.Source;
 const Tree = source_mod.Tree;
 
-/// How soon after a pass the step of a fetch that blocks runs: straight
-/// away, but after the pass that says what is about to happen has been
-/// drawn.
-const SOON_US: usize = 1;
-/// How often a page arriving is checked on for a site gone quiet.
+/// How soon after a pass the next step runs where there is one to take:
+/// straight away, but after the pass that says what is about to happen has
+/// been drawn. No waiting at all, since a wait for no time costs a call and
+/// a scheduling round to be told what is already known.
+const SOON_US: usize = 0;
+/// The longest a window sleeps while a page is on its way. A site's news
+/// wakes it, and so does the moment a quiet site counts as gone; this is
+/// what is left, so that a wait set the browser forgot to add still leaves
+/// it looking once a second rather than never.
 const WATCH_US: usize = 1_000_000;
 /// Nothing to check: the window sleeps until something happens.
 const IDLE_US: usize = std.math.maxInt(usize);
 /// How long the shell gives a page's scripts after the page is here, for
-/// what they set to run soon and what they asked for.
-const SETTLE_US: u64 = 3 * std.time.us_per_s;
+/// what they set to run soon and what they asked for. A page that draws
+/// itself with scripts needs a few seconds of them on this machine, and one
+/// still asking after this is one that asks for ever: what it has made of
+/// the page by then is what is printed.
+const SETTLE_US: u64 = 30 * std.time.us_per_s;
 
 // ---------------------------------------------------------------------------
 // State
@@ -701,12 +708,18 @@ fn plan() void {
     wakes.clear();
     if (settings_changed) |event| wakes.append(event) catch unreachable;
     var soon = false;
-    var watching = false;
+    // How long the window may sleep before a site that has gone quiet counts
+    // as gone: the answer itself wakes it, so this is what it sleeps for when
+    // nothing arrives at all.
+    var quiet: ?usize = null;
     for (fetches()) |one| switch (one.state) {
         .connecting => soon = true,
         .receiving => {
             if (one.handle()) |handle| wakes.append(handle) catch {};
-            watching = true;
+            if (one.quietIn()) |left| {
+                const us: usize = @intCast(@max(left, 1));
+                quiet = if (quiet) |had| @min(had, us) else us;
+            }
         },
         .idle, .done, .failed => {},
     };
@@ -718,7 +731,7 @@ fn plan() void {
         if (!script_fetch.busy() and dom.asking(doc)) soon = true;
         if (dom.waits(doc)) |ms| timer = @as(usize, ms) * std.time.us_per_ms;
     }
-    period_us = if (soon) SOON_US else if (watching) WATCH_US else IDLE_US;
+    period_us = if (soon) SOON_US else quiet orelse IDLE_US;
     if (timer) |us| period_us = @min(period_us, @max(us, 1));
     proto.app.wakeOn(wakes.slice());
     proto.app.retick(period_us);
