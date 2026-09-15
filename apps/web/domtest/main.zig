@@ -925,6 +925,10 @@ test "a frame holds an empty document of its own, which a script may measure in"
     // it writes a page into the frame and measures in it.
     try testing.expectEqualStrings("B here", try it.run("var w = f.contentWindow.document; w.write('<b>here</b>'); w.close(); [w.body.lastChild.nodeName, w.body.lastChild.textContent].join(' ')"));
     try testing.expectEqualStrings("null null", try it.run("var p = document.createElement('p'); [String(p.contentDocument), String(p.contentWindow)].join(' ')"));
+    // A document a script makes to work in, which is what a stylesheet
+    // rewriter does to resolve the addresses a sheet names.
+    try testing.expectEqualStrings("9 HEAD BODY 1", try it.run("var m = document.implementation.createHTMLDocument('Away'); var b = m.createElement('base'); m.head.appendChild(b); [m.nodeType, m.head.nodeName, m.body.nodeName, m.head.childNodes.length - 1].join(' ')"));
+    try testing.expectEqualStrings("Away", try it.run("m.querySelector('title').textContent"));
 }
 
 test "a page is loading while its scripts run, and complete once it is told it is loaded" {

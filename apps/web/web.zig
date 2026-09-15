@@ -124,7 +124,7 @@ const NAMED_MAX: usize = 110;
 /// itself with scripts needs a few seconds of them on this machine, and one
 /// still asking after this is one that asks for ever: what it has made of
 /// the page by then is what is printed.
-const SETTLE_US: u64 = 30 * std.time.us_per_s;
+const SETTLE_US: u64 = 180 * std.time.us_per_s;
 
 // ---------------------------------------------------------------------------
 // State

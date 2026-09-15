@@ -839,6 +839,33 @@ fn frameDocument(it: *Document, frame: Value) Value {
     return made;
 }
 
+/// `document.implementation.createHTMLDocument`: an empty document of the
+/// page's own making, with a head, a title and a body. A script works on
+/// markup in one where it must not touch the page, which is what a
+/// stylesheet rewriter does to resolve the addresses a sheet names.
+fn jsCreateHtmlDocument(ctx: *Context, _: Value, argc: c_int, argv: [*]const Value) callconv(.c) Value {
+    const it = documentOf(ctx) orelse return qjs.nullValue();
+    var buf: [TITLE_MAX * 6 + 96]u8 = undefined;
+    var w: std.Io.Writer = .fixed(&buf);
+    w.writeAll("<!DOCTYPE html><html><head><title>") catch {};
+    if (argument(ctx, argc, argv, 0)) |title| {
+        defer qjs.freeText(ctx, title.ptr);
+        for (title[0..@min(title.len, TITLE_MAX)]) |c| {
+            switch (c) {
+                '<' => w.writeAll("&lt;") catch {},
+                '>' => w.writeAll("&gt;") catch {},
+                '&' => w.writeAll("&amp;") catch {},
+                else => w.writeByte(c) catch {},
+            }
+        }
+    }
+    w.writeAll("</title></head><body></body></html>") catch {};
+    return parsedDocument(it, w.buffered());
+}
+
+/// The most of a title a document made this way keeps.
+const TITLE_MAX = 256;
+
 /// `contentDocument`: the document a frame holds.
 fn jsContentDocument(ctx: *Context, this: Value) callconv(.c) Value {
     const it = documentOf(ctx) orelse return qjs.nullValue();
@@ -3964,6 +3991,7 @@ fn furnish(it: *Document) void {
     _ = qjs.addList(ctx, document, &document_gets, document_gets.len);
     const implementation = qjs.newObject(ctx);
     give(ctx, implementation, "hasFeature", 2, &jsYes);
+    give(ctx, implementation, "createHTMLDocument", 1, &jsCreateHtmlDocument);
     _ = qjs.setStr(ctx, document, "implementation", implementation);
     // The document is a node of its own kind, which a library that keeps
     // a document of its own tells by these before it uses it.
