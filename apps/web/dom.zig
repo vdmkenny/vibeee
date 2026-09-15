@@ -138,8 +138,37 @@ const COOKIES_MAX = 8 * 1024;
 /// comes to.
 const NAME_MAX = 64;
 
+/// How far a page has come, which is what `document.readyState` says and
+/// what a framework waits for before it looks at the tree.
+const Ready = enum {
+    /// The page's scripts are still being run.
+    loading,
+    /// They have all run and the page is being told so.
+    interactive,
+    /// The page is told it is loaded, and everything in it is here.
+    complete,
+
+    fn word(self: Ready) []const u8 {
+        return @tagName(self);
+    }
+};
+
 /// A listener a script has put on an element.
 const Watch = struct { node: *Node, kind: []const u8, handler: Value };
+
+/// A message posted with `postMessage`: to the window where `to` is nothing,
+/// or to the port of a channel, with what it carries.
+const Posted = struct { to: ?Value, data: Value };
+
+/// The most documents a page may have parsed with `DOMParser` at once. Past
+/// it the oldest is let go, and whatever a script kept of it reads as
+/// nothing from then on.
+const PARSED_MAX = 64;
+
+/// The most posted messages delivered in one loop. A page that posts from
+/// every message it gets, as a scheduler does to give itself the next turn,
+/// gets that many turns before the browser has its own.
+const POSTED_MAX = 64;
 
 /// What a script has asked to be called later.
 const Timer = struct {
@@ -191,8 +220,12 @@ pub const Document = struct {
     /// What every `Headers` a script makes inherits: the methods a page's
     /// scripts read off the class before they use it.
     headers_proto: Value,
+    ready: Ready = .loading,
     watches: std.ArrayList(Watch) = .empty,
     timers: std.ArrayList(Timer) = .empty,
+    posted: std.ArrayList(Posted) = .empty,
+    /// The documents a script parsed with `DOMParser`, oldest first.
+    parsed: std.ArrayList(*lexbor.Document) = .empty,
     next_timer: u32 = 0,
     asks: std.ArrayList(Pending) = .empty,
     next_ask: u32 = 0,
@@ -351,9 +384,13 @@ pub fn close(it: *Document) void {
     it.watches.deinit(it.gpa);
     for (it.timers.items) |timer| qjs.free(ctx, timer.handler);
     it.timers.deinit(it.gpa);
+    for (it.posted.items) |posted| dropPosted(it, posted);
+    it.posted.deinit(it.gpa);
     for (it.asks.items) |*pending| dropPending(it, pending);
     it.asks.deinit(it.gpa);
     if (it.going) |going| freeGoing(it, going);
+    for (it.parsed.items) |parsed| _ = lexbor.lxb_html_document_destroy(parsed);
+    it.parsed.deinit(it.gpa);
     var wrappers = it.wrappers.valueIterator();
     while (wrappers.next()) |value| qjs.free(ctx, value.*);
     it.wrappers.deinit(it.gpa);
@@ -576,10 +613,11 @@ pub fn submitted(it: *Document, form: *Node) bool {
     return tell(it, form, "submit", true);
 }
 
-/// Run what the scripts left waiting: the promises they made, and the timers
-/// that are due. True where anything ran.
+/// Run what the scripts left waiting: the promises they made, the messages
+/// they posted, and the timers that are due. True where anything ran.
 pub fn loop(it: *Document) bool {
     var ran = it.machine.runJobs();
+    if (deliverPosted(it)) ran = true;
     const at = now(it);
     // What is due now, by id: a timer may clear itself or another, or set
     // one, while it runs, so the list is not walked while they do.
@@ -631,6 +669,230 @@ pub fn waits(it: *Document) ?u32 {
     }
     return soonest;
 }
+
+/// Deliver what was posted: each message as a `message` event to the window
+/// or to the port it was posted to, in the order posted, with what is posted
+/// while they are delivered after them. Bounded by `POSTED_MAX`. True where
+/// any was delivered.
+fn deliverPosted(it: *Document) bool {
+    const ctx = it.ctx;
+    var delivered: usize = 0;
+    while (delivered < POSTED_MAX and it.posted.items.len > 0) : (delivered += 1) {
+        const posted = it.posted.orderedRemove(0);
+        const event = eventOf(ctx, "message");
+        _ = qjs.setStr(ctx, event, "data", posted.data);
+        _ = qjs.setStr(ctx, event, "origin", str(ctx, if (url.parse(it.address)) |where| originOf(where) else ""));
+        _ = qjs.setStr(ctx, event, "lastEventId", str(ctx, ""));
+        _ = qjs.setStr(ctx, event, "ports", qjs.newArray(ctx));
+        it.machine.enter();
+        if (posted.to) |port| {
+            defer qjs.free(ctx, port);
+            defer qjs.free(ctx, event);
+            _ = qjs.setStr(ctx, event, "source", qjs.nullValue());
+            _ = qjs.setStr(ctx, event, "target", qjs.dup(ctx, port));
+            _ = qjs.setStr(ctx, event, "currentTarget", qjs.dup(ctx, port));
+            callHandler(it, port, "onmessage", event);
+            callListeners(it, port, event);
+        } else {
+            const global = qjs.globalOf(ctx);
+            defer qjs.free(ctx, global);
+            _ = qjs.setStr(ctx, event, "source", qjs.dup(ctx, global));
+            const root = lexbor.lxb_dom_document_root(it.tree) orelse {
+                qjs.free(ctx, event);
+                continue;
+            };
+            _ = dispatch(it, root, qjs.dup(ctx, event), "message", false);
+            callHandler(it, global, "onmessage", event);
+            qjs.free(ctx, event);
+        }
+        _ = it.machine.runJobs();
+    }
+    return delivered > 0;
+}
+
+fn dropPosted(it: *Document, posted: Posted) void {
+    if (posted.to) |port| qjs.free(it.ctx, port);
+    qjs.free(it.ctx, posted.data);
+}
+
+/// `window.postMessage`: the message is delivered to the window's listeners
+/// on a later loop, as a page's schedulers count on, the window being the
+/// one target it can reach here.
+fn jsPostMessage(ctx: *Context, _: Value, argc: c_int, argv: [*]const Value) callconv(.c) Value {
+    const it = documentOf(ctx) orelse return qjs.undefinedValue();
+    const data = if (argc > 0) qjs.dup(ctx, argv[0]) else qjs.undefinedValue();
+    it.posted.append(it.gpa, .{ .to = null, .data = data }) catch qjs.free(ctx, data);
+    return qjs.undefinedValue();
+}
+
+/// `MessageChannel`: two ports, each posting to the other. A message posted
+/// on one is delivered to the other's `onmessage` and listeners on a later
+/// loop, which is how a page's scheduler gives itself the next turn.
+fn jsNewMessageChannel(ctx: *Context, _: Value, _: c_int, _: [*]const Value) callconv(.c) Value {
+    const channel = qjs.newObject(ctx);
+    const port1 = qjs.newObject(ctx);
+    const port2 = qjs.newObject(ctx);
+    for ([_]Value{ port1, port2 }) |port| {
+        _ = qjs.addList(ctx, port, &port_methods, port_methods.len);
+        _ = qjs.setStr(ctx, port, "onmessage", qjs.nullValue());
+        _ = qjs.setStr(ctx, port, "__on", qjs.newArray(ctx));
+    }
+    _ = qjs.setStr(ctx, port1, "__other", qjs.dup(ctx, port2));
+    _ = qjs.setStr(ctx, port2, "__other", qjs.dup(ctx, port1));
+    _ = qjs.setStr(ctx, channel, "port1", port1);
+    _ = qjs.setStr(ctx, channel, "port2", port2);
+    return channel;
+}
+
+fn jsPortPost(ctx: *Context, this: Value, argc: c_int, argv: [*]const Value) callconv(.c) Value {
+    const it = documentOf(ctx) orelse return qjs.undefinedValue();
+    const other = qjs.getStr(ctx, this, "__other");
+    if (!qjs.isObject(other)) {
+        qjs.free(ctx, other);
+        return qjs.undefinedValue();
+    }
+    const data = if (argc > 0) qjs.dup(ctx, argv[0]) else qjs.undefinedValue();
+    it.posted.append(it.gpa, .{ .to = other, .data = data }) catch {
+        qjs.free(ctx, other);
+        qjs.free(ctx, data);
+    };
+    return qjs.undefinedValue();
+}
+
+/// `DOMParser`: markup parsed as a document of its own, which a page reads
+/// as it reads its own for the text behind entities, or to take a snippet
+/// apart before it shows it.
+fn jsNewParser(ctx: *Context, _: Value, _: c_int, _: [*]const Value) callconv(.c) Value {
+    const parser = qjs.newObject(ctx);
+    give(ctx, parser, "parseFromString", 2, &jsParseFromString);
+    return parser;
+}
+
+/// `parseFromString`: the markup as a new document, parsed as HTML whatever
+/// type it was named, there being no other parser here. The document is a
+/// node like any other, with its element, body and head, and what a script
+/// keeps of it stays until the page closes or the document is the oldest of
+/// more than `PARSED_MAX`.
+fn jsParseFromString(ctx: *Context, _: Value, argc: c_int, argv: [*]const Value) callconv(.c) Value {
+    const it = documentOf(ctx) orelse return qjs.nullValue();
+    const markup = argument(ctx, argc, argv, 0) orelse return qjs.nullValue();
+    defer qjs.freeText(ctx, markup.ptr);
+    const parsed = lexbor.lxb_html_document_create() orelse return qjs.nullValue();
+    if (lexbor.lxb_html_document_parse(parsed, markup.ptr, markup.len) != .ok) {
+        _ = lexbor.lxb_html_document_destroy(parsed);
+        return qjs.nullValue();
+    }
+    if (it.parsed.items.len == PARSED_MAX) retire(it, it.parsed.orderedRemove(0));
+    it.parsed.append(it.gpa, parsed) catch {
+        _ = lexbor.lxb_html_document_destroy(parsed);
+        return qjs.nullValue();
+    };
+    return wrap(it, documentNode(parsed));
+}
+
+/// A document as the node it begins with.
+fn documentNode(document: *lexbor.Document) *Node {
+    return @ptrCast(@alignCast(document));
+}
+
+/// Let a parsed document go: the objects its nodes were given as point at
+/// nothing from here on, and answer as a node that is nothing does, and the
+/// document is freed.
+fn retire(it: *Document, parsed: *lexbor.Document) void {
+    var gone: std.ArrayList(*Node) = .empty;
+    defer gone.deinit(it.gpa);
+    const root = documentNode(parsed);
+    var keys = it.wrappers.keyIterator();
+    while (keys.next()) |node| {
+        if (node.* == root or @intFromPtr(node.*.owner_document) == @intFromPtr(parsed)) gone.append(it.gpa, node.*) catch break;
+    }
+    for (gone.items) |node| {
+        const kept = it.wrappers.get(node) orelse continue;
+        qjs.setNode(kept, null);
+        qjs.free(it.ctx, kept);
+        _ = it.wrappers.remove(node);
+    }
+    _ = lexbor.lxb_html_document_destroy(parsed);
+}
+
+/// `documentElement`, `body` and `head` of a node that is a document, each
+/// by the number the getter is told; nothing for any other node.
+fn jsDocumentPart(ctx: *Context, this: Value, magic: c_int) callconv(.c) Value {
+    const it = documentOf(ctx) orelse return qjs.undefinedValue();
+    const node = nodeOf(this) orelse return qjs.undefinedValue();
+    if (node.type != .document) return qjs.undefinedValue();
+    const document: *lexbor.Document = @ptrCast(@alignCast(node));
+    const found: ?*Node = switch (magic) {
+        0 => lexbor.lxb_dom_document_root(document),
+        1 => if (lexbor.lxb_html_document_body_element_noi(document)) |body| lexbor.nodeOf(body) else null,
+        else => if (lexbor.lxb_html_document_head_element_noi(document)) |head| lexbor.nodeOf(head) else null,
+    };
+    return wrapped(it, found);
+}
+
+/// A listener on a port, which is not a node: kept on the port itself.
+fn jsPortListen(ctx: *Context, this: Value, argc: c_int, argv: [*]const Value) callconv(.c) Value {
+    if (argc < 2 or qjs.isFunction(ctx, argv[1]) == 0) return qjs.undefinedValue();
+    const kind = argument(ctx, argc, argv, 0) orelse return qjs.undefinedValue();
+    defer qjs.freeText(ctx, kind.ptr);
+    if (!std.mem.eql(u8, kind, "message")) return qjs.undefinedValue();
+    const listeners = qjs.getStr(ctx, this, "__on");
+    defer qjs.free(ctx, listeners);
+    _ = qjs.setAt(ctx, listeners, lengthOf(ctx, listeners), qjs.dup(ctx, argv[1]));
+    return qjs.undefinedValue();
+}
+
+fn jsPortUnlisten(ctx: *Context, this: Value, argc: c_int, argv: [*]const Value) callconv(.c) Value {
+    if (argc < 2) return qjs.undefinedValue();
+    const listeners = qjs.getStr(ctx, this, "__on");
+    defer qjs.free(ctx, listeners);
+    const kept = qjs.newArray(ctx);
+    var count: u32 = 0;
+    var index: u32 = 0;
+    while (index < lengthOf(ctx, listeners)) : (index += 1) {
+        const one = qjs.getAt(ctx, listeners, index);
+        if (qjs.sameAs(ctx, one, argv[1]) != 0) {
+            qjs.free(ctx, one);
+            continue;
+        }
+        _ = qjs.setAt(ctx, kept, count, one);
+        count += 1;
+    }
+    _ = qjs.setStr(ctx, this, "__on", kept);
+    return qjs.undefinedValue();
+}
+
+/// Call each listener kept on `port` with `event`.
+fn callListeners(it: *Document, port: Value, event: Value) void {
+    const ctx = it.ctx;
+    const listeners = qjs.getStr(ctx, port, "__on");
+    defer qjs.free(ctx, listeners);
+    var index: u32 = 0;
+    while (index < lengthOf(ctx, listeners)) : (index += 1) {
+        const one = qjs.getAt(ctx, listeners, index);
+        defer qjs.free(ctx, one);
+        const called = qjs.call(ctx, one, port, 1, &[_]Value{event});
+        if (qjs.isException(called)) reportError(it);
+        qjs.free(ctx, called);
+    }
+}
+
+/// The `length` of an array a script can see.
+fn lengthOf(ctx: *Context, array: Value) u32 {
+    const length = qjs.getStr(ctx, array, "length");
+    defer qjs.free(ctx, length);
+    var count: i32 = 0;
+    _ = qjs.toInt(ctx, &count, length);
+    return @intCast(@max(count, 0));
+}
+
+const port_methods = [_]qjs.ListEntry{
+    .method("postMessage", 1, &jsPortPost),
+    .method("addEventListener", 2, &jsPortListen),
+    .method("removeEventListener", 2, &jsPortUnlisten),
+    .method("start", 0, &jsNothing),
+    .method("close", 0, &jsNothing),
+};
 
 /// Where a script asked the browser to go, if it did: taken once.
 pub fn takeGoing(it: *Document) ?Going {
@@ -3716,7 +3978,7 @@ const window_methods = [_]qjs.ListEntry{
     .method("scrollTo", 2, &jsNothing),
     .method("scrollBy", 2, &jsNothing),
     .method("scroll", 2, &jsNothing),
-    .method("postMessage", 2, &jsNothing),
+    .method("postMessage", 2, &jsPostMessage),
     .method("getSelection", 0, &jsNone),
     askedMethod("alert", 3),
     askedMethod("confirm", 4),
@@ -3733,6 +3995,8 @@ const window_constructors = [_]qjs.ListEntry{
     constructorEntry("Image", 2, &jsNewImage),
     constructorEntry("AbortController", 0, &jsNewAbortController),
     constructorEntry("FormData", 1, &jsEmpty),
+    constructorEntry("MessageChannel", 0, &jsNewMessageChannel),
+    constructorEntry("DOMParser", 0, &jsNewParser),
 };
 
 /// A constructor a page calls with `new`, as a row of a property list.
