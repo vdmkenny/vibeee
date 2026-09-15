@@ -317,6 +317,33 @@ pub const MAX_ENV = 16;
 /// a key the system told people to prefer.
 pub const MAX_PAYLOAD = 96;
 
+/// How a display's pixels are laid out.
+///
+/// Declared here rather than beside the contract for the same reason the
+/// capabilities are: the kernel says which it is and a compositor reads it,
+/// and a number passed between them would be the same fact written twice.
+pub const DisplayFormat = enum(u8) {
+    /// 32 bits per pixel, blue in the low byte, top byte ignored.
+    xrgb8888 = 0,
+    _,
+};
+
+/// What a display can do beyond holding one buffer and being drawn into.
+///
+/// Declared here rather than beside the contract, because both ends read it:
+/// the kernel fills it in from what the adapter turned out to carry, and a
+/// compositor decides from it whether to draw its own pointer.
+pub const DisplayCaps = packed struct(u32) {
+    /// Buffers can be swapped rather than drawn into directly.
+    page_flip: bool = false,
+    /// The display engine carries the pointer, so moving it is a call and
+    /// not a pass over the screen.
+    hw_cursor: bool = false,
+    /// The vblank signal is real rather than synthesised from a timer.
+    real_vblank: bool = false,
+    _reserved: u29 = 0,
+};
+
 /// What a display owner is told about the screen. Mirrors kernel/display.zig.
 pub const DisplayInfo = extern struct {
     width: u16 = 0,
@@ -324,9 +351,9 @@ pub const DisplayInfo = extern struct {
     /// Pixels per scanline, which is not the width: a framebuffer is padded to
     /// whatever the hardware finds convenient.
     stride_px: u16 = 0,
-    format: u8 = 0,
+    format: DisplayFormat = .xrgb8888,
     buffers: u8 = 1,
-    caps: u32 = 0,
+    caps: DisplayCaps = .{},
     bytes: u32 = 0,
 };
 
@@ -1883,6 +1910,40 @@ pub const table = [_]Syscall{
             "next mapping. The segment lives on for as long as anything else holds it: a " ++
             "handle, or another mapping. A device aperture from map_device is taken out the " ++
             "same way.",
+    },
+    .{
+        .number = 71,
+        .name = "cursor_image",
+        .summary = "Give the display's own pointer its picture.",
+        .args = &.{
+            .{ .name = "argb", .kind = .cptr, .desc = "Pixels, alpha in the top byte, row after row." },
+            .{ .name = "argb_len", .kind = .len, .desc = "How many bytes of them there are." },
+            .{ .name = "wide", .kind = .uint, .desc = "Pixels across; the rest is how many rows." },
+            .{ .name = "hot_x", .kind = .uint, .desc = "Where the point sits across the picture." },
+            .{ .name = "hot_y", .kind = .uint, .desc = "Where the point sits down it." },
+        },
+        .returns = "0",
+        .errors = &.{ E.fault, E.perm, E.inval, E.nodev },
+        .notes = "The display engine carries this over the screen, so moving the pointer costs " ++
+            "a register write rather than reading back what it covered and putting it again. " ++
+            "ENODEV means the adapter has no plane, which is the answer on most machines and " ++
+            "is why DisplayInfo says whether there is one: a caller that asks anyway draws " ++
+            "its own pointer. Only the display's owner may set it.",
+    },
+    .{
+        .number = 72,
+        .name = "cursor_move",
+        .summary = "Put the display's own pointer somewhere, or take it off the screen.",
+        .args = &.{
+            .{ .name = "x", .kind = .int, .desc = "Across, from the screen's corner." },
+            .{ .name = "y", .kind = .int, .desc = "Down from it." },
+            .{ .name = "shown", .kind = .uint, .desc = "Non-zero to show it, zero to take it off." },
+        },
+        .returns = "0",
+        .errors = &.{ E.perm, E.nodev },
+        .notes = "Signed, because a pointer whose point is near the left or the top edge has " ++
+            "its picture hanging off it. The whole cost of moving the pointer once a picture " ++
+            "has been given: nothing is drawn and nothing is read.",
     },
 };
 

@@ -17,6 +17,7 @@ test {
     // tables built by hand, rather than only on a machine that would stop.
     _ = @import("arch/x86/pagetable.zig");
     _ = @import("drv/video/modeset/modeset.zig");
+    _ = @import("drv/video/modeset/gen3cursor.zig");
     // Generic over its node type precisely so it can be tested here, off the
     // hardware: the run queues are where this system's worst bug lived.
     _ = @import("kernel/sched/queue.zig");

@@ -7,6 +7,7 @@
 //! fails the build on a name that does not exist.
 
 const lib = @import("lib");
+const Blended = lib.rgb.Blended;
 const abi = lib.syscalls;
 const arch = @import("arch/x86/syscall.zig");
 
@@ -812,6 +813,41 @@ pub fn displayAcquire(info: *DisplayInfo) DisplayError!isize {
         else => error.OutOfMemory,
     };
 }
+
+/// The display's own pointer, where the adapter carries one.
+///
+/// A plane the display engine composites as it reads the screen out, so
+/// moving it costs a call and no drawing at all. Whether there is one is in
+/// `DisplayInfo.caps`; a compositor without one draws its pointer itself.
+pub const Cursor = struct {
+    /// Give it its picture: `wide` pixels across, with the point it is placed
+    /// by at `hot_x`, `hot_y` within it.
+    pub fn image(picture: []const Blended, wide: u16, hot_x: u8, hot_y: u8) Refusal!void {
+        _ = try checked(syscall5(
+            abi.number("cursor_image"),
+            @intFromPtr(picture.ptr),
+            picture.len * @sizeOf(Blended),
+            wide,
+            hot_x,
+            hot_y,
+        ));
+    }
+
+    /// Put its point at `x`, `y` on the screen.
+    pub fn move(x: i32, y: i32) Refusal!void {
+        _ = try checked(syscall3(
+            abi.number("cursor_move"),
+            @bitCast(@as(isize, x)),
+            @bitCast(@as(isize, y)),
+            1,
+        ));
+    }
+
+    /// Take it off the screen.
+    pub fn off() Refusal!void {
+        _ = try checked(syscall3(abi.number("cursor_move"), 0, 0, 0));
+    }
+};
 
 /// Read raw key events, claiming the keyboard from the line discipline.
 ///

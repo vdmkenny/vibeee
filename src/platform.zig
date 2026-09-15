@@ -290,9 +290,9 @@ pub fn earlyDevices(bi: *const bootinfo.BootInfo) void {
             .height = @intCast(bi.fb_height),
             .stride_px = @intCast(bi.fb_pitch / 4),
             .buffers = 1,
-            // A VESA framebuffer offers no page flip, no hardware cursor and
-            // no vertical blank. The GMA900 driver will fill these in.
-            .caps = 0,
+            // A VESA framebuffer offers no page flip, no pointer plane and
+            // no vertical blank. A driver that binds one says so itself.
+            .caps = .{},
             .bytes = @intCast(@as(usize, bi.fb_pitch) * bi.fb_height),
         });
     }

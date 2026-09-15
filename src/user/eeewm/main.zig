@@ -16,6 +16,10 @@
 //! goes straight into the scanout buffer. Painting is damage-driven: a pass
 //! where nothing changed writes nothing, which is what keeps an idle desktop
 //! free on a machine where a full repaint is 1.5 MB.
+//!
+//! The same field says whether the adapter carries the pointer. Where it does,
+//! moving the pointer is one call and no drawing at all; where it does not,
+//! `cursor.zig` draws it and puts back what it covered.
 
 const std = @import("std");
 const eui = @import("eui").draw;
@@ -118,6 +122,10 @@ fn wmMain() noreturn {
     info = taken.info;
 
     screen = eui.Surface.init(@ptrCast(taken.pixels), info.width, info.height, info.stride_px);
+
+    // Whether the display carries the pointer or the manager draws it, decided
+    // from what taking the screen said the adapter has.
+    cursor.adopt(info);
 
     openClipboard();
 

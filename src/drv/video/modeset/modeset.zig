@@ -11,6 +11,8 @@
 //! by their part numbers, because that is how anyone will look one up.
 
 const gen3_backend = @import("gen3.zig");
+const gen3_pointer = @import("gen3cursor.zig");
+const display = @import("../../../kernel/display.zig");
 const probe = @import("../../../kernel/probe.zig");
 
 pub const Error = error{
@@ -42,6 +44,21 @@ pub const Framebuffer = struct {
     bpp: u8,
 };
 
+/// A pointer the display engine carries over the scanout, where an adapter
+/// has one.
+///
+/// A plane rather than pixels in the framebuffer. The engine composites it as
+/// it reads the screen out, so moving the pointer is a register write; drawn
+/// in the framebuffer it has to be lifted before anything under it is
+/// redrawn, and lifting it means reading back what it covered. The
+/// framebuffer is write-combining memory, quick to write and slow to read,
+/// and the pointer is the only thing that ever reads it.
+///
+/// The shape is the display contract's, so a backend hands one straight to
+/// the kernel rather than through a translation that could only ever be the
+/// identity.
+pub const Pointer = display.Pointer;
+
 pub const Backend = struct {
     /// Short name, as it appears in the boot log.
     name: []const u8,
@@ -62,6 +79,13 @@ pub const Backend = struct {
     /// hardware without public documentation it is what `set` gets written
     /// from.
     inspect: ?*const fn (dev: probe.Device, w: *std.Io.Writer) void = null,
+    /// Bind the adapter's pointer plane, told where the scanout buffer is so
+    /// it can put its picture somewhere the engine reaches.
+    ///
+    /// Optional in the same way `set` is. Left null, or answering null on a
+    /// machine where the plane cannot be bound, the compositor draws the
+    /// pointer itself, which is what every machine without a plane does.
+    pointer: ?*const fn (dev: probe.Device, fb: Framebuffer) ?Pointer = null,
 };
 
 /// Match any of a list of PCI device ids from one vendor.
@@ -108,6 +132,7 @@ pub const backends = [_]Backend{
         .fits = &anyOf(0x8086, &gen3_backend.devices),
         .set = &gen3_backend.set,
         .native = &gen3_backend.native,
+        .pointer = &gen3_pointer.bind,
         .inspect = &gen3_backend.inspect,
     },
     .{

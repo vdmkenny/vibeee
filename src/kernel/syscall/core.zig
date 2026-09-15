@@ -2,6 +2,7 @@
 //! which belong to a subsystem.
 
 const std = @import("std");
+const rgb = @import("lib").rgb;
 const abi = @import("lib").syscalls;
 const clock = @import("../clock.zig");
 const console = @import("../console.zig");
@@ -378,6 +379,65 @@ pub fn sys_set_mode(a: Args) Result {
         error.Failed => Errno.io.value(),
     };
     return 0;
+}
+
+/// Give the display's own pointer its picture.
+///
+/// The owner's to do and nobody else's: what is drawn over the screen belongs
+/// to whoever is drawing the screen. A machine whose adapter carries no plane
+/// answers ENODEV, which is the answer a caller should already expect from
+/// what `display_acquire` told it.
+pub fn sys_cursor_image(a: Args) Result {
+    if (ctx.require(.{ .display = true })) |denied| return denied;
+
+    const bytes = userRead(a, a.a0, a.a1) orelse return Errno.fault.value();
+    const picture = pixelsIn(bytes) orelse return Errno.inval.value();
+
+    const wide = std.math.cast(u16, a.a2) orelse return Errno.inval.value();
+    const hot = display.Pointer.Place{
+        .x = std.math.cast(i32, a.a3) orelse return Errno.inval.value(),
+        .y = std.math.cast(i32, a.a4) orelse return Errno.inval.value(),
+    };
+
+    display.pointerImage(picture, wide, hot) catch |err| return pointerRefusal(err);
+    return 0;
+}
+
+/// Put the display's own pointer somewhere, or take it off the screen.
+///
+/// The whole cost of moving it, once a picture has been given: no pixels are
+/// read and none are written.
+pub fn sys_cursor_move(a: Args) Result {
+    if (ctx.require(.{ .display = true })) |denied| return denied;
+
+    const where: display.Pointer.Where = if (a.a2 != 0) .{ .at = .{
+        .x = @bitCast(@as(u32, @truncate(a.a0))),
+        .y = @bitCast(@as(u32, @truncate(a.a1))),
+    } } else .off;
+
+    display.pointerMove(where) catch |err| return pointerRefusal(err);
+    return 0;
+}
+
+/// The caller's bytes as the pixels they are meant to be, or nothing where
+/// they are not a whole number of them or do not start where one may.
+///
+/// The one place the call's bytes become a type. Checked rather than assumed:
+/// a slice of pixels made from an address that is not a pixel's own would be
+/// read wrongly on every machine that cares, and this one does.
+fn pixelsIn(bytes: []const u8) ?[]const rgb.Blended {
+    const Pixel = rgb.Blended;
+    if (bytes.len == 0 or bytes.len % @sizeOf(Pixel) != 0) return null;
+    if (!std.mem.isAligned(@intFromPtr(bytes.ptr), @alignOf(Pixel))) return null;
+    return @alignCast(std.mem.bytesAsSlice(Pixel, bytes));
+}
+
+fn pointerRefusal(err: display.PointerError) Result {
+    return switch (err) {
+        error.Unsupported => Errno.nodev.value(),
+        error.NotOwner => Errno.perm.value(),
+        error.Refused => Errno.inval.value(),
+    };
 }
 
 pub fn sys_sysinfo(a: Args) Result {

@@ -351,4 +351,15 @@ fn requestMode(width: u16, height: u16, bpp: u8) display.ModeError!void {
         .bytes = fb.pitch * fb.height,
     });
     console.info("video", "{d}x{d} native, panel fitter off", .{ fb.width, fb.height });
+
+    // The pointer plane, where the adapter carries one and the backend can
+    // drive it. After the mode, because where the picture goes is decided
+    // from where the scanout buffer ended up.
+    const bindPointer = backend.pointer orelse return;
+    const plane = bindPointer(display_dev, fb) orelse {
+        console.info("video", "no pointer plane, the pointer is drawn in software", .{});
+        return;
+    };
+    display.setPointer(plane);
+    console.info("video", "pointer plane, {d} by {d}", .{ plane.side, plane.side });
 }

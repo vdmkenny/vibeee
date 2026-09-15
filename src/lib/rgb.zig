@@ -94,6 +94,39 @@ pub const Colour = packed struct(u32) {
     }
 };
 
+/// A colour that says how much of what is under it shows through.
+///
+/// The same word as `Colour` with the byte that one ignores put to use.
+/// Nothing the panel scans out has one, every pixel of a surface being
+/// opaque; this is for the planes a display engine blends as it reads the
+/// screen out, where a picture has to be able to stop being there.
+pub const Blended = packed struct(u32) {
+    b: u8 = 0,
+    g: u8 = 0,
+    r: u8 = 0,
+    /// How much of this colour there is: none at nought, all of it at the
+    /// most a byte holds.
+    a: u8 = 0,
+
+    /// Nothing at all, which is what a picture is where it does not cover.
+    pub const clear = Blended{};
+
+    /// `colour`, with none of what is under it showing through.
+    pub fn solid(colour: Colour) Blended {
+        return .{ .r = colour.r, .g = colour.g, .b = colour.b, .a = std.math.maxInt(u8) };
+    }
+
+    pub fn word(self: Blended) u32 {
+        return @bitCast(self);
+    }
+};
+
+test "a blended colour is the panel's word with the ignored byte put to use" {
+    const solid = Blended.solid(Colour.hex(0x123456));
+    try std.testing.expectEqual(@as(u32, 0xFF123456), solid.word());
+    try std.testing.expectEqual(@as(u32, 0), Blended.clear.word());
+}
+
 /// One channel of a mix, rounded to the nearest.
 fn mixed(own: u8, other: u8, share: u8) u8 {
     return @intCast((@as(u16, other) * share + @as(u16, own) * (255 - share) + 127) / 255);

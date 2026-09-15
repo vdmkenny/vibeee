@@ -429,6 +429,29 @@ fn panelPipe(w: Windows) ?Pipe {
 // Driving it
 // ---------------------------------------------------------------------------
 
+/// What the adapter is, for the parts of this generation that live in files
+/// of their own: where its registers are mapped, and which pipe drives the
+/// panel.
+///
+/// A seam rather than a shared global. The pointer plane is its own concern
+/// and its own file, and this is the whole of what it needs from here: the
+/// register window this opens on first use, and the one piece of state
+/// nothing else can work out.
+pub const Reach = struct {
+    mmio: usize,
+    /// Whether the panel hangs off pipe B, which decides which of the two
+    /// cursor blocks is the panel's.
+    pipe_b: bool,
+};
+
+pub fn reach(dev: probe.Device) ?Reach {
+    if (comptime !hal.available) return null;
+
+    const w = open(dev) orelse return null;
+    const pipe = panelPipe(w) orelse return null;
+    return .{ .mmio = w.mmio, .pipe_b = pipe.plane == .b };
+}
+
 /// The size the panel's timing already runs at.
 ///
 /// Read from the pipe rather than from a table of machines: a gen3 adapter in

@@ -1276,6 +1276,48 @@ Take a mapping out of the calling process.
 
 The pages stop naming the segment's frames and the addresses are free for the next mapping. The segment lives on for as long as anything else holds it: a handle, or another mapping. A device aperture from map_device is taken out the same way.
 
+## `cursor_image`  <sub>#71</sub>
+
+Give the display's own pointer its picture.
+
+| arg | type | meaning |
+|---|---|---|
+| `argb` | const ptr | Pixels, alpha in the top byte, row after row. |
+| `argb_len` | len | How many bytes of them there are. |
+| `wide` | uint | Pixels across; the rest is how many rows. |
+| `hot_x` | uint | Where the point sits across the picture. |
+| `hot_y` | uint | Where the point sits down it. |
+
+**Returns:** 0
+
+**Errors:**
+
+- `EFAULT`, a pointer argument is outside the caller's address space
+- `EPERM`, the operation is not allowed on that object
+- `EINVAL`, an argument is out of range
+- `ENODEV`, the volume behind the handle has been removed
+
+The display engine carries this over the screen, so moving the pointer costs a register write rather than reading back what it covered and putting it again. ENODEV means the adapter has no plane, which is the answer on most machines and is why DisplayInfo says whether there is one: a caller that asks anyway draws its own pointer. Only the display's owner may set it.
+
+## `cursor_move`  <sub>#72</sub>
+
+Put the display's own pointer somewhere, or take it off the screen.
+
+| arg | type | meaning |
+|---|---|---|
+| `x` | int | Across, from the screen's corner. |
+| `y` | int | Down from it. |
+| `shown` | uint | Non-zero to show it, zero to take it off. |
+
+**Returns:** 0
+
+**Errors:**
+
+- `EPERM`, the operation is not allowed on that object
+- `ENODEV`, the volume behind the handle has been removed
+
+Signed, because a pointer whose point is near the left or the top edge has its picture hanging off it. The whole cost of moving the pointer once a picture has been given: nothing is drawn and nothing is read.
+
 ---
 
-71 calls defined.
+73 calls defined.

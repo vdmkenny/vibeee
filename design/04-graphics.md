@@ -14,7 +14,7 @@ unless marked otherwise.
 In-kernel display driver stack with one narrow contract (`DisplayDev`) and three backends:
 
 - **gma900**, the real driver: native LVDS modeset of the 800×480 panel on pipe B, framebuffers
-  in stolen memory, WC via MTRR, vblank IRQ, optional VGA-out on pipe A, HW cursor, S3
+  in stolen memory, WC via MTRR, vblank IRQ, optional VGA-out on pipe A, HW cursor (done), S3
   save/restore, optional gen3 blitter module (M3).
 - **bochsfb**: QEMU test backend (Bochs dispi ports): 800×480×32 **with real flipping** so the GUI
   server's full code path (including flip) runs in QEMU, where GMA 900 cannot be emulated.
@@ -321,11 +321,23 @@ search result **n=3, m1=17, m2=7, p1=5 → m=104, VCO=1996.8 MHz, dot=39.936 MHz
 - VGA-only mode: choose from a small built-in table (640×480, 800×600, 1024×768) filtered by
   probed EDID; the GUI keeps rendering 800×480 letterboxed (v1 simplification).
 
-### 8.4 HW cursor: M2
+### 8.4 HW cursor: done
 915GM cursor base is a **physical** address (not GTT): CURBCNTR (0x700C0) =
-CURSOR_MODE_64_ARGB_AX | MCURSOR_PIPE_B(1<<28); CURBBASE (0x700C4) = BSM+0x4E0000;
-CURBPOS (0x700C8) = y<<16|x (sign bits for negative). Saves the compositor a damage rect per
-mouse move, significant at our bandwidth.
+CURSOR_MODE_64_ARGB_AX | MCURSOR_PIPE_B(1<<28); CURBBASE (0x700C4); CURBPOS (0x700C8) =
+y<<16|x (sign bits for negative). Saves the compositor a damage rect per mouse move, significant
+at our bandwidth.
+
+Built as [`drv/video/modeset/gen3cursor.zig`](../src/drv/video/modeset/gen3cursor.zig), with two
+departures from the plan above. The picture does **not** go at a fixed BSM+0x4E0000: it goes in
+the first whole page after the scanout buffer, and only where the memory map says that page is
+not the page allocator's, so the offset is derived rather than assumed and a machine whose
+firmware set aside less keeps its pointer in software. And the registers are packed structs with
+the mode an enum, so the bit layout is stated once and checked on the host rather than written
+out at each use.
+
+What it saves turned out to be larger than a damage rect. The software pointer saves what it
+covers before drawing, and saving means **reading** the framebuffer, which is write-combining:
+quick to write and slow to read. It was the only thing in the system that read it.
 
 ### 8.5 Gen3 blitter (M3, optional), the honest call
 Ring: 16 KB in stolen; PRB0_START (0x2038) = ring GTT offset; PRB0_HEAD/TAIL = 0;
