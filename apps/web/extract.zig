@@ -229,6 +229,10 @@ const Walker = struct {
     /// How wide the window is, which is what a picture with several sources
     /// is chosen for.
     width: u32 = 800,
+    /// Whether the page's scripts are running. A `noscript` element holds
+    /// what stands in for a page whose scripts do not, and is nothing to a
+    /// page whose scripts do.
+    scripted: bool = false,
 
     /// How many elements of each counted role the walk is inside.
     inside: std.EnumArray(Role, u16) = .initFill(0),
@@ -354,7 +358,11 @@ const Walker = struct {
             .element => {},
             else => return false,
         }
-        const role = roleOf(lexbor.tagOf(node) orelse return false);
+        const tag = lexbor.tagOf(node) orelse return false;
+        // What a `noscript` holds stands in for a page whose scripts do not
+        // run, and says nothing about one whose scripts do.
+        if (tag == .noscript and self.scripted) return false;
+        const role = roleOf(tag);
         if (unread(node)) return false;
         self.builder.node = @ptrCast(node);
         // An element's id names a place a link may go to.
@@ -908,11 +916,11 @@ pub fn versionFor(document: *lexbor.Document, base: url.Url, screen: ?media.Scre
 
 /// Walk `document` into `page`. Links are resolved against `base`, which is
 /// the address the page came from.
-pub fn extract(gpa: std.mem.Allocator, document: *lexbor.Document, base: url.Url, screen: ?media.Screen, page: *page_mod.Page) Builder.Error!void {
+pub fn extract(gpa: std.mem.Allocator, document: *lexbor.Document, base: url.Url, screen: ?media.Screen, scripted: bool, page: *page_mod.Page) Builder.Error!void {
     var builder = Builder{ .gpa = gpa, .page = page };
     if (lexbor.titleOf(document)) |title| try builder.title(title);
 
-    var walker = Walker{ .builder = &builder, .base = base };
+    var walker = Walker{ .builder = &builder, .base = base, .scripted = scripted };
     if (screen) |window| walker.width = @intFromFloat(window.width);
     defer walker.containers.deinit(gpa);
     const top = lexbor.nodeOf(document);

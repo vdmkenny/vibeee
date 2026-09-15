@@ -87,12 +87,18 @@ const Opened = struct {
         return if (out.data) |data| data[0..out.length] else "";
     }
 
-    /// The page as the browser reads it from the tree now.
+    /// The page as the browser reads it from the tree now, with its scripts
+    /// running.
     fn page(self: Opened) !page_mod.Page {
+        return self.pageWith(true);
+    }
+
+    /// The same, said to be read with the page's scripts running or not.
+    fn pageWith(self: Opened, scripted: bool) !page_mod.Page {
         const base = url.parse(ADDRESS) orelse return error.NoBase;
         var read: page_mod.Page = .{};
         errdefer read.deinit(heap);
-        try extract.extract(heap, self.tree, base, null, &read);
+        try extract.extract(heap, self.tree, base, null, scripted, &read);
         return read;
     }
 };
@@ -275,6 +281,28 @@ test "the page says where it is, and what the browser is called" {
     try says("", "navigator.userAgent", "vibeee");
     try says("", "String(innerWidth) + 'x' + innerHeight", "640x480");
     try says("", "String(matchMedia('(max-width: 700px)').matches)", "true");
+}
+
+/// A page's words, as the shell prints them.
+fn wordsOf(page: *const page_mod.Page) []const u8 {
+    var text: std.Io.Writer.Allocating = .init(heap);
+    page_mod.writeText(page, &text.writer) catch @panic("out of memory");
+    return text.written();
+}
+
+test "a noscript fallback is the page only where its scripts do not run" {
+    const it = try opened(
+        "<!DOCTYPE html><html><body><p>real</p><noscript><p>turn scripts on</p></noscript></body></html>",
+        false,
+    );
+    defer it.end();
+    var with_scripts = try it.pageWith(true);
+    defer with_scripts.deinit(heap);
+    try testing.expect(std.mem.indexOf(u8, wordsOf(&with_scripts), "turn scripts on") == null);
+    try testing.expect(std.mem.indexOf(u8, wordsOf(&with_scripts), "real") != null);
+    var without = try it.pageWith(false);
+    defer without.deinit(heap);
+    try testing.expect(std.mem.indexOf(u8, wordsOf(&without), "turn scripts on") != null);
 }
 
 test "the page can ask which declarations the browser reads" {

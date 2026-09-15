@@ -855,11 +855,12 @@ pub const Sheets = links.Queue(SHEETS_MAX, SHEETS_BYTES_MAX);
 /// link names: every `<link rel="stylesheet">` that is not an alternate or
 /// turned off, and whose media could be a window of some size. Whether they
 /// are for the window a page is drawn in is asked when it is read.
-pub fn sheetsOf(gpa: Allocator, document: *lexbor.Document, base: url.Url, into: *Sheets) Allocator.Error!void {
+pub fn sheetsOf(gpa: Allocator, document: *lexbor.Document, base: url.Url, scripted: bool, into: *Sheets) Allocator.Error!void {
     const root = lexbor.nodeOf(document);
     var at = lexbor.following(root, root);
     while (at) |node| : (at = lexbor.following(node, root)) {
         if (lexbor.tagOf(node) != .link) continue;
+        if (scripted and lexbor.within(node, .noscript)) continue;
         if (!lexbor.attributeHas(node, "rel", "stylesheet") or lexbor.attributeHas(node, "rel", "alternate")) continue;
         if (lexbor.hasAttribute(node, "disabled")) continue;
         const asked = std.mem.trim(u8, lexbor.attribute(node, "media") orelse "", &std.ascii.whitespace);

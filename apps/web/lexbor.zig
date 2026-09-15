@@ -392,6 +392,15 @@ pub fn tagOf(node: *const Node) ?Tag {
     return @enumFromInt(node.local_name);
 }
 
+/// Whether `node` stands inside an element of `tag`, however deep.
+pub fn within(node: *const Node, tag: Tag) bool {
+    var at = node.parent;
+    while (at) |each| : (at = each.parent) {
+        if (tagOf(each) == tag) return true;
+    }
+    return false;
+}
+
 /// An element's tag as a selector writes it: lower case, whatever the page
 /// wrote. Nothing for a node that is not an element.
 pub fn tagName(node: *const Node) ?[]const u8 {

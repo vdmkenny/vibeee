@@ -40,6 +40,9 @@ pub const Source = struct {
     declared: ?charset.Charset = null,
     /// Whether it is read with its cascade.
     styled: bool = false,
+    /// Whether the page is read with its scripts running, which is what
+    /// decides whether its `noscript` fallbacks are part of it.
+    scripted: bool = false,
     /// Its stylesheets as they came, in the order the page names them.
     sheets: std.ArrayList(Sheet) = .empty,
     /// The scripts it names by address, as they came.
@@ -109,6 +112,7 @@ pub const Source = struct {
 pub const Tree = struct {
     document: *lexbor.Document,
     styled: bool,
+    scripted: bool,
     /// The encoding the markup turned out to be in, which is the one its
     /// forms answer in.
     encoding: charset.Charset,
@@ -125,7 +129,7 @@ pub const Tree = struct {
         const utf8 = text.bytes();
 
         const document = lexbor.lxb_html_document_create() orelse return error.OutOfMemory;
-        var tree = Tree{ .document = document, .styled = false, .encoding = encoding };
+        var tree = Tree{ .document = document, .styled = false, .scripted = source.scripted, .encoding = encoding };
         errdefer tree.close(gpa);
         if (source.styled) {
             try check(lexbor.lxb_style_init(document));
@@ -143,7 +147,7 @@ pub const Tree = struct {
 
     /// The stylesheets it links to that could be for a window, to fetch.
     pub fn sheets(self: *const Tree, gpa: Allocator, base: url.Url, into: *css.Sheets) Allocator.Error!void {
-        if (self.styled) try css.sheetsOf(gpa, self.document, base, into);
+        if (self.styled) try css.sheetsOf(gpa, self.document, base, self.scripted, into);
     }
 
     /// The scripts it names by address, to fetch.
@@ -171,7 +175,7 @@ pub const Tree = struct {
     pub fn read(self: *Tree, gpa: Allocator, source: *const Source, screen: ?media.Screen, page: *Page) Error!void {
         const base = url.parse(source.base.slice()) orelse return error.Unparsable;
         page.encoding = self.encoding;
-        try extract.extract(gpa, self.document, base, screen, page);
+        try extract.extract(gpa, self.document, base, screen, self.scripted, page);
     }
 };
 

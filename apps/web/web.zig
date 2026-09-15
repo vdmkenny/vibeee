@@ -1085,7 +1085,7 @@ fn isStyle(response: *const http.Response) bool {
 
 /// A page's markup as it came, taking `bytes`.
 fn sourceOf(bytes: std.ArrayList(u8), base: url.Url, declared: ?charset.Charset) Source {
-    var from = Source{ .bytes = bytes, .declared = declared, .styled = choices.styles };
+    var from = Source{ .bytes = bytes, .declared = declared, .styled = choices.styles, .scripted = choices.scripts };
     var buf: [url.ADDRESS_MAX]u8 = undefined;
     _ = from.base.set(std.fmt.bufPrint(&buf, "{f}", .{base}) catch "");
     return from;
