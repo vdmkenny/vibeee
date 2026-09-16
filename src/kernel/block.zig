@@ -153,6 +153,19 @@ const Table = struct {
         return &self.rows[row];
     }
 
+    /// Change how long a row's device is.
+    ///
+    /// The row is what the rest of the system holds a pointer to, so a
+    /// partition that has grown has to grow here rather than in a copy.
+    fn resize(self: *Table, dev: *const Device, sectors: u64) void {
+        for (self.rows[0..self.count]) |*d| {
+            if (d == dev) {
+                d.sectors = sectors;
+                return;
+            }
+        }
+    }
+
     /// Retire every row sharing a context.
     fn retire(self: *Table, ctx: *anyopaque) void {
         for (self.rows[0..self.count], 0..) |*d, i| {
@@ -228,6 +241,10 @@ pub fn register(dev: Device) void {
 ///
 /// The caller unmounts first. Retiring a device something still reads
 /// would leave that reader holding a row that answers nothing.
+fn resizeRow(dev: *const Device, sectors: u64) void {
+    table.resize(dev, sectors);
+}
+
 pub fn retire(ctx: *anyopaque) void {
     table.retire(ctx);
 }
@@ -411,6 +428,81 @@ pub fn scanPartitions(disk: *const Device) usize {
     return found;
 }
 
+/// Room after a partition, to the end of its disk.
+pub const Room = struct {
+    /// What the partition covers now, and what it could.
+    sectors: u32,
+    could_be: u32,
+
+    pub fn spare(self: Room) u32 {
+        return self.could_be - self.sectors;
+    }
+};
+
+/// How far a partition could be extended.
+///
+/// Only the last one on a disk can grow, and only into space no other
+/// partition claims. An entry is moved rather than rewritten elsewhere, so
+/// nothing before it shifts and nothing else has to be touched.
+pub fn roomAfter(part: *const Device) Error!Room {
+    const place = partitionOf(part) orelse return error.NotSupported;
+
+    var sector: [SECTOR_SIZE]u8 = undefined;
+    try place.disk.read(0, &sector);
+    if (std.mem.readInt(u16, sector[510..512], .little) != MBR_SIGNATURE) return error.NotSupported;
+
+    const mine: *align(1) const RawEntry = entryAt(&sector, place.number - 1);
+    if (mine.type == 0 or mine.sectors == 0) return error.NotSupported;
+
+    const my_end = @as(u64, mine.lba_first) + mine.sectors;
+
+    // The disk's end, or the start of whatever comes next on it.
+    var limit = place.disk.sectors;
+    for (0..4) |i| {
+        if (i == place.number - 1) continue;
+        const other: *align(1) const RawEntry = entryAt(&sector, i);
+        if (other.type == 0 or other.sectors == 0) continue;
+        if (other.lba_first >= my_end and other.lba_first < limit) limit = other.lba_first;
+    }
+
+    const could = limit - mine.lba_first;
+    return .{
+        .sectors = mine.sectors,
+        .could_be = std.math.cast(u32, could) orelse std.math.maxInt(u32),
+    };
+}
+
+/// Extend a partition over the room after it, and say what it now covers.
+///
+/// Only the entry's length changes. Where the partition starts, what type it
+/// is and what is written inside it are left exactly as they were, so this is
+/// undone by writing the old length back.
+pub fn extendPartition(part: *const Device) Error!u32 {
+    const place = partitionOf(part) orelse return error.NotSupported;
+    if (place.disk.read_only) return error.NotSupported;
+
+    const room = try roomAfter(part);
+    if (room.spare() == 0) return room.sectors;
+
+    var sector: [SECTOR_SIZE]u8 = undefined;
+    try place.disk.read(0, &sector);
+    const at = PARTITION_TABLE_OFFSET + (@as(usize, place.number) - 1) * 16;
+    const mine: *align(1) RawEntry = @ptrCast(&sector[at]);
+    mine.sectors = room.could_be;
+
+    try place.disk.write(0, &sector);
+    place.disk.flush() catch {};
+
+    // The row the rest of the system holds is what says how long the
+    // partition is, and it has just changed.
+    resizeRow(part, room.could_be);
+    return room.could_be;
+}
+
+fn entryAt(sector: *const [SECTOR_SIZE]u8, index: usize) *align(1) const RawEntry {
+    return @ptrCast(&sector[PARTITION_TABLE_OFFSET + index * 16]);
+}
+
 pub fn markWholeDiskUsable(disk: *const Device) void {
     table.markWholeDiskUsable(disk);
 }
@@ -470,6 +562,40 @@ const counting_ops = Ops{
             flushes.* += 1;
         }
     }.flush,
+};
+
+/// A device backed by memory.
+///
+/// Test-only: the filesystem's own tests need a medium they can look inside
+/// and damage. Nothing outside a test block names it, so none of it reaches
+/// the image.
+pub const Memory = struct {
+    bytes: []u8,
+
+    pub fn device(self: *Memory, name: []const u8) Device {
+        return .{
+            .name = name,
+            .ctx = self,
+            .ops = &ops,
+            .sectors = self.bytes.len / SECTOR_SIZE,
+        };
+    }
+
+    fn readAt(ctx: *anyopaque, lba: u64, buf: []u8) Error!void {
+        const self: *Memory = @ptrCast(@alignCast(ctx));
+        const at = lba * SECTOR_SIZE;
+        if (at + buf.len > self.bytes.len) return error.OutOfRange;
+        @memcpy(buf, self.bytes[at..][0..buf.len]);
+    }
+
+    fn writeAt(ctx: *anyopaque, lba: u64, buf: []const u8) Error!void {
+        const self: *Memory = @ptrCast(@alignCast(ctx));
+        const at = lba * SECTOR_SIZE;
+        if (at + buf.len > self.bytes.len) return error.OutOfRange;
+        @memcpy(self.bytes[at..][0..buf.len], buf);
+    }
+
+    const ops = Ops{ .read = &readAt, .write = &writeAt };
 };
 
 test "a drive is asked to flush once for what was written, and not otherwise" {

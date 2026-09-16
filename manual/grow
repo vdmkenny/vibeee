@@ -1,0 +1,19 @@
+grow - extend a filesystem over the whole of its volume
+
+  grow hd0p3
+
+A card written from the system image carries a 16 MiB /home whatever the
+card's size. This makes the filesystem cover the rest of its partition.
+
+A larger volume needs a larger allocation table, and the table sits in
+front of the data, so the data moves forward by as much as the table
+grows. Cluster numbers do not change, so no file is rewritten.
+
+Losing power during the move leaves the volume unreadable. FAT has no
+journal and there is no way around that. Copy anything that matters off
+the volume first.
+
+Refused while the volume is mounted, when the filesystem already fills
+its volume, and when the larger volume would need a wider FAT than it
+has: growing does not change the width, because that would renumber every
+cluster.

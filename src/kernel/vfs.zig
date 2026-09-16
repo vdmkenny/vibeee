@@ -433,6 +433,63 @@ pub fn checkVolume(path: []const u8, report_only: bool) (Error || std.mem.Alloca
     return found;
 }
 
+/// Whether anything is mounted from `dev`.
+///
+/// Formatting and growing both rewrite where a volume's data is, so neither
+/// may run under a mount: a handle open on it would be reading the old
+/// layout through a table that no longer describes it.
+fn mountedFrom(dev: *const block.Device) bool {
+    for (&mounts) |*m| {
+        if (m.in_use and m.device == dev) return true;
+    }
+    return false;
+}
+
+/// Make a new filesystem on `dev`, covering the whole of it.
+pub fn formatDevice(dev: *const block.Device, wanted: fat.format.Wanted) Error!fat.Geometry {
+    try table_lock.hold();
+    defer table_lock.release();
+    if (mountedFrom(dev)) return error.Busy;
+
+    return fat.format.create(dev, wanted);
+}
+
+/// Extend the filesystem on `dev` over the whole of it.
+///
+/// A partition is extended over the free space after it first, since a
+/// filesystem cannot grow past the partition it sits in and a card written
+/// from an image has partitions the size of the image. The partition table is
+/// written before the filesystem is touched: it says only how long the
+/// partition is, and a partition longer than its filesystem is an ordinary
+/// thing that nothing minds.
+///
+/// Returns what was done, which says whether the data had to move. A
+/// filesystem already filling its partition is refused rather than rewritten.
+pub fn growDevice(dev: *const block.Device) (Error || std.mem.Allocator.Error)!fat.grow.Plan {
+    try table_lock.hold();
+    defer table_lock.release();
+    if (mountedFrom(dev)) return error.Busy;
+
+    // Only if it is a partition with room after it. A whole disk, or one
+    // with something behind it, is left as it is and the filesystem grows to
+    // whatever the device already covers.
+    if (block.roomAfter(dev)) |room| {
+        if (room.spare() != 0) {
+            const now = block.extendPartition(dev) catch |err| {
+                console.warn("vfs: {s} partition was not extended: {s}", .{ dev.name, @errorName(err) });
+                return error.Io;
+            };
+            console.info("grow", "{s} covers {d} sectors, was {d}", .{ dev.name, now, room.sectors });
+        }
+    } else |_| {}
+
+    var volume = try fat.mount(dev);
+    const sectors = std.math.cast(u32, dev.sectors) orelse std.math.maxInt(u32);
+    const want = try fat.grow.plan(&volume, sectors);
+    try fat.grow.apply(&volume, want);
+    return want;
+}
+
 pub const Resolved = struct {
     lease: Lease,
     /// Path relative to the mount point, with no leading slash.

@@ -161,6 +161,50 @@ pub fn sys_check_volume(a: Args) Result {
     return 0;
 }
 
+pub fn sys_format_volume(a: Args) Result {
+    if (ctx.require(.{ .mount = true })) |denied| return denied;
+
+    const name = userRead(a, a.a0, a.a1) orelse return Errno.fault.value();
+    const device = block.find(name) orelse return Errno.noent.value();
+    const flags: abi.FormatFlags = @bitCast(@as(u32, @truncate(a.a2)));
+
+    _ = vfs.formatDevice(device, .{ .kind = widthOf(flags.kind) }) catch |err| {
+        return errnoFor(err);
+    };
+    return 0;
+}
+
+/// The width a caller named, or null to choose one from the volume's size.
+fn widthOf(kind: abi.FatKind) ?fat.Kind {
+    return switch (kind) {
+        .any => null,
+        .fat12 => .fat12,
+        .fat16 => .fat16,
+        .fat32 => .fat32,
+    };
+}
+
+pub fn sys_grow_volume(a: Args) Result {
+    if (ctx.require(.{ .mount = true })) |denied| return denied;
+
+    const name = userRead(a, a.a0, a.a1) orelse return Errno.fault.value();
+    const device = block.find(name) orelse return Errno.noent.value();
+
+    // Checked before the volume is touched, so a caller that cannot be given
+    // the report is refused rather than left without an account of a move.
+    const out = userWrite(a, a.a2, @sizeOf(abi.GrowReport)) orelse return Errno.fault.value();
+
+    const done = vfs.growDevice(device) catch |err| return errnoFor(err);
+    const report = abi.GrowReport{
+        .was = done.from.cluster_count,
+        .now = done.to.cluster_count,
+        .shifted_sectors = done.shift,
+        .moved = done.moving,
+    };
+    @memcpy(out, std.mem.asBytes(&report));
+    return 0;
+}
+
 pub fn sys_rename(a: Args) Result {
     var from_buf: [path_mod.MAX]u8 = undefined;
     const from = userPath(a, a.a0, a.a1, &from_buf) orelse return Errno.fault.value();

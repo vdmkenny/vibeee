@@ -20,15 +20,23 @@ const block = @import("block.zig");
 const civil = @import("lib").civil;
 const str = @import("lib").str;
 const table = @import("fat/alloc.zig");
+const layout = @import("fat/layout.zig");
+
+/// The boot sector's own fields, and the geometry they describe. See
+/// `fat/layout.zig`.
+pub const Bpb = layout.Bpb;
+pub const Geometry = layout.Geometry;
 
 /// Whether a volume was put down properly. See `fat/clean.zig`.
 pub const clean = @import("fat/clean.zig");
 /// Checking a volume against itself, and repairing it. See `fat/check.zig`.
 pub const check = @import("fat/check.zig");
+/// Making a new filesystem. See `fat/format.zig`.
+pub const format = @import("fat/format.zig");
+/// Extending one over the rest of its medium. See `fat/grow.zig`.
+pub const grow = @import("fat/grow.zig");
 
 pub const Error = error{
-    NotFat,
-    Unsupported,
     NotFound,
     IsDirectory,
     NotDirectory,
@@ -39,42 +47,13 @@ pub const Error = error{
     /// character outside the basic plane, which the long-name records here
     /// do not carry.
     BadName,
-} || table.Error;
+} || table.Error || layout.Error;
 
 pub const Kind = table.Kind;
 
 /// The largest file a directory record can describe: its size field is 32
 /// bits, and this filesystem does not pretend otherwise.
 pub const MAX_FILE_BYTES: u64 = 0xFFFF_FFFF;
-
-/// BIOS Parameter Block. Field order is fixed by the on-disk format.
-///
-/// Public so a volume can be laid out by naming fields rather than counting
-/// bytes into a sector. The tests build one in memory, and this is the only
-/// description of the layout.
-pub const Bpb = extern struct {
-    jump: [3]u8,
-    oem: [8]u8,
-    bytes_per_sector: u16 align(1),
-    sectors_per_cluster: u8,
-    reserved_sectors: u16 align(1),
-    fat_count: u8,
-    root_entries: u16 align(1),
-    total_sectors_16: u16 align(1),
-    media: u8,
-    sectors_per_fat_16: u16 align(1),
-    sectors_per_track: u16 align(1),
-    heads: u16 align(1),
-    hidden_sectors: u32 align(1),
-    total_sectors_32: u32 align(1),
-    // FAT32 extension; meaningless on FAT12/16.
-    sectors_per_fat_32: u32 align(1),
-    ext_flags: u16 align(1),
-    version: u16 align(1),
-    root_cluster: u32 align(1),
-    fs_info: u16 align(1),
-    backup_boot: u16 align(1),
-};
 
 /// The attribute byte, as the format lays it out.
 const Attributes = packed struct(u8) {
@@ -349,94 +328,39 @@ pub fn mount(dev: *const block.Device) Error!Volume {
     var sector: [block.SECTOR_SIZE]u8 = undefined;
     dev.read(0, &sector) catch return error.Io;
 
+    if (std.mem.readInt(u16, sector[layout.SIGNATURE_AT..][0..2], .little) != layout.BOOT_SIGNATURE) {
+        return error.NotFat;
+    }
+
     const bpb: *align(1) const Bpb = @ptrCast(&sector);
+    return fromGeometry(dev, try layout.Geometry.read(bpb, dev.sectors));
+}
 
-    if (std.mem.readInt(u16, sector[510..512], .little) != 0xAA55) return error.NotFat;
-    if (bpb.bytes_per_sector != block.SECTOR_SIZE) return error.Unsupported;
-    if (bpb.sectors_per_cluster == 0 or bpb.fat_count == 0) return error.NotFat;
-    // Must be a power of two, or cluster arithmetic below is wrong.
-    if (bpb.sectors_per_cluster & (bpb.sectors_per_cluster - 1) != 0) return error.Unsupported;
-
-    const sectors_per_fat: u32 = if (bpb.sectors_per_fat_16 != 0)
-        bpb.sectors_per_fat_16
-    else
-        bpb.sectors_per_fat_32;
-    if (sectors_per_fat == 0) return error.NotFat;
-
-    const total_sectors: u32 = if (bpb.total_sectors_16 != 0)
-        bpb.total_sectors_16
-    else
-        bpb.total_sectors_32;
-    if (total_sectors == 0) return error.NotFat;
-    // And no larger than what it is written on. Nothing below reads past the
-    // medium, since the block layer refuses that, but everything above sizes
-    // itself from the cluster count: a card claiming four billion sectors is
-    // a card asking for a working set the machine does not have.
-    if (total_sectors > dev.sectors) return error.NotFat;
-
-    const root_dir_sectors = (@as(u32, bpb.root_entries) * 32 + bpb.bytes_per_sector - 1) /
-        bpb.bytes_per_sector;
-
-    // Where the tables end, in sixty-four bits and then checked against the
-    // volume. A boot sector is bytes off a medium anybody can write, and a
-    // table count and size whose product does not fit in thirty-two bits
-    // would otherwise wrap to a data area starting inside the tables. The
-    // check against `total_sectors` is what makes the narrowing safe: it is
-    // itself thirty-two bits, so anything that did not fit fails here.
-    const tables_end = @as(u64, bpb.reserved_sectors) +
-        @as(u64, bpb.fat_count) * sectors_per_fat;
-    const data_start = tables_end + root_dir_sectors;
-    if (data_start >= total_sectors) return error.NotFat;
-
-    const first_fat_sector = bpb.reserved_sectors;
-    const root_dir_sector: u32 = @intCast(tables_end);
-    const first_data_sector: u32 = @intCast(data_start);
-
-    const cluster_count = (total_sectors - first_data_sector) / bpb.sectors_per_cluster;
-
-    // FAT32 is identified structurally, not by cluster count.
-    //
-    // The specification says the count decides the width, and that describes
-    // what a correct formatter produces, but formatters will happily create a
-    // small FAT32 volume whose count falls in the FAT16 range, and reading its
-    // 32-bit FAT entries as 16-bit ones yields a chain that ends early. The
-    // reliable signal is that `sectors_per_fat_16` and `root_entries` are zero
-    // on FAT32 and never zero otherwise, because FAT32 relocated both fields.
-    //
-    // Only once FAT32 is ruled out does the count distinguish 12 from 16.
-    const kind: Kind = if (bpb.sectors_per_fat_16 == 0 and bpb.root_entries == 0)
-        .fat32
-    else if (cluster_count < 4085)
-        .fat12
-    else
-        .fat16;
-
-    // A root cluster is a cluster: two or more, and on the volume. A boot
-    // sector that says otherwise is refused here rather than left to the
-    // cluster arithmetic below, which subtracts two.
-    if (kind == .fat32 and (bpb.root_cluster < 2 or bpb.root_cluster >= cluster_count + 2)) return error.NotFat;
-
+/// A volume over a device, given its geometry. What `mount` returns once the
+/// boot sector has been believed, and what a freshly written filesystem is
+/// opened as without reading one back.
+pub fn fromGeometry(dev: *const block.Device, geometry: Geometry) Volume {
     return .{
         .dev = dev,
-        .kind = kind,
-        .bytes_per_sector = bpb.bytes_per_sector,
-        .sectors_per_cluster = bpb.sectors_per_cluster,
-        .first_fat_sector = first_fat_sector,
-        .sectors_per_fat = sectors_per_fat,
-        .fat_count = bpb.fat_count,
-        .root_dir_sector = root_dir_sector,
-        .root_dir_sectors = root_dir_sectors,
-        .root_cluster = if (kind == .fat32) bpb.root_cluster else 0,
-        .first_data_sector = first_data_sector,
-        .cluster_count = cluster_count,
+        .kind = geometry.kind,
+        .bytes_per_sector = geometry.bytes_per_sector,
+        .sectors_per_cluster = geometry.sectors_per_cluster,
+        .first_fat_sector = geometry.first_fat_sector,
+        .sectors_per_fat = geometry.sectors_per_fat,
+        .fat_count = geometry.fat_count,
+        .root_dir_sector = geometry.root_dir_sector,
+        .root_dir_sectors = geometry.root_dir_sectors,
+        .root_cluster = geometry.root_cluster,
+        .first_data_sector = geometry.first_data_sector,
+        .cluster_count = geometry.cluster_count,
         .fat = .{
             .dev = dev,
-            .kind = kind,
-            .bytes_per_sector = bpb.bytes_per_sector,
-            .first_fat_sector = first_fat_sector,
-            .sectors_per_fat = sectors_per_fat,
-            .fat_count = bpb.fat_count,
-            .cluster_count = cluster_count,
+            .kind = geometry.kind,
+            .bytes_per_sector = geometry.bytes_per_sector,
+            .first_fat_sector = geometry.first_fat_sector,
+            .sectors_per_fat = geometry.sectors_per_fat,
+            .fat_count = geometry.fat_count,
+            .cluster_count = geometry.cluster_count,
         },
     };
 }
@@ -958,8 +882,8 @@ pub fn readAt(vol: *Volume, entry: *Entry, offset: u64, buf: []u8) Error!usize {
     while (remaining > 0) {
         const first = vol.firstSectorOfCluster(cluster);
 
-        var s: u32 = within / block.SECTOR_SIZE;
-        var in_sector: u32 = within % block.SECTOR_SIZE;
+        var s: u32 = @intCast(within / block.SECTOR_SIZE);
+        var in_sector: u32 = @intCast(within % block.SECTOR_SIZE);
 
         while (s < vol.sectors_per_cluster and remaining > 0) {
             // Whole sectors go into the pending run, which reaches across
@@ -1081,8 +1005,8 @@ pub fn writeAt(vol: *Volume, entry: *Entry, offset: u64, data: []const u8) Error
     while (remaining > 0) {
         const first = vol.firstSectorOfCluster(cluster);
 
-        var s: u32 = within / block.SECTOR_SIZE;
-        var in_sector: u32 = within % block.SECTOR_SIZE;
+        var s: u32 = @intCast(within / block.SECTOR_SIZE);
+        var in_sector: u32 = @intCast(within % block.SECTOR_SIZE);
 
         while (s < vol.sectors_per_cluster and remaining > 0) {
             // As with reading: one request for the run. It also decides how

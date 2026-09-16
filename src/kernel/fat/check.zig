@@ -390,6 +390,7 @@ const Image = struct {
     gpa: std.mem.Allocator,
     bytes: []u8,
     fat_count: u8,
+    medium: block.Memory = undefined,
     dev: block.Device = undefined,
 
     const RESERVED = 1;
@@ -400,22 +401,6 @@ const Image = struct {
     const MEDIA_ENTRY: u32 = 0x0FFF_FFF8;
     const BOOT_SIGNATURE: u16 = 0xAA55;
 
-    fn readSectors(ctx: *anyopaque, lba: u64, buf: []u8) block.Error!void {
-        const self: *Image = @ptrCast(@alignCast(ctx));
-        const at = lba * block.SECTOR_SIZE;
-        if (at + buf.len > self.bytes.len) return error.OutOfRange;
-        @memcpy(buf, self.bytes[at..][0..buf.len]);
-    }
-
-    fn writeSectors(ctx: *anyopaque, lba: u64, buf: []const u8) block.Error!void {
-        const self: *Image = @ptrCast(@alignCast(ctx));
-        const at = lba * block.SECTOR_SIZE;
-        if (at + buf.len > self.bytes.len) return error.OutOfRange;
-        @memcpy(self.bytes[at..][0..buf.len], buf);
-    }
-
-    const ops = block.Ops{ .read = &readSectors, .write = &writeSectors };
-
     fn init(gpa: std.mem.Allocator, fat_count: u8) !*Image {
         const total = RESERVED + @as(u32, fat_count) * FAT_SECTORS + CLUSTERS;
         const self = try gpa.create(Image);
@@ -425,7 +410,8 @@ const Image = struct {
             .fat_count = fat_count,
         };
         @memset(self.bytes, 0);
-        self.dev = .{ .name = "mem", .ctx = self, .ops = &ops, .sectors = total };
+        self.medium = .{ .bytes = self.bytes };
+        self.dev = self.medium.device("memory");
 
         const bpb: *align(1) fat.Bpb = @ptrCast(&self.bytes[0]);
         bpb.* = .{
@@ -791,8 +777,9 @@ test "a volume claiming more than its medium holds is refused" {
     const bytes = try gpa.alloc(u8, 4 * block.SECTOR_SIZE);
     defer gpa.free(bytes);
 
+    var medium = block.Memory{ .bytes = bytes };
     var fake = Image{ .gpa = gpa, .bytes = bytes, .fat_count = 1 };
-    fake.dev = .{ .name = "crafted", .ctx = &fake, .ops = &Image.ops, .sectors = 4 };
+    fake.dev = medium.device("crafted");
 
     var bpb = plausible();
     bpb.total_sectors_32 = std.math.maxInt(u32);
@@ -808,8 +795,9 @@ test "a boot sector no formatter would write is refused, not trapped on" {
     const bytes = try gpa.alloc(u8, 4 * block.SECTOR_SIZE);
     defer gpa.free(bytes);
 
+    var medium = block.Memory{ .bytes = bytes };
     var fake = Image{ .gpa = gpa, .bytes = bytes, .fat_count = 1 };
-    fake.dev = .{ .name = "crafted", .ctx = &fake, .ops = &Image.ops, .sectors = 4 };
+    fake.dev = medium.device("crafted");
 
     const cases = [_]struct { what: []const u8, bpb: fat.Bpb }{
         .{ .what = "tables whose total size does not fit in thirty-two bits", .bpb = blk: {

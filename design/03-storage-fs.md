@@ -4,7 +4,7 @@
 >
 > Built and working: the block layer with partition parsing ([`block.zig`](../src/kernel/block.zig)), the block cache ([`bcache.zig`](../src/kernel/bcache.zig)), FAT12/16/32 with VFAT long names ([`fat.zig`](../src/kernel/fat.zig)), the mount table and longest-prefix path resolution ([`vfs.zig`](../src/kernel/vfs.zig)), reads and writes through ATA PIO ([`drv/block/ata.zig`](../src/drv/block/ata.zig)), removable media through usbd, and the boot ramdisk.
 >
-> Also built: the clean-unmount flag and the volume check it gates ([`fat/clean.zig`](../src/kernel/fat/clean.zig), [`fat/check.zig`](../src/kernel/fat/check.zig)). A volume not unmounted cleanly is checked at mount; `check` runs the same on demand.
+> Also built: the clean-unmount flag and the volume check it gates ([`fat/clean.zig`](../src/kernel/fat/clean.zig), [`fat/check.zig`](../src/kernel/fat/check.zig)). A volume not unmounted cleanly is checked at mount; `check` runs the same on demand. And §12's `mkfs.fat`, as [`fat/format.zig`](../src/kernel/fat/format.zig) behind the `format` command, with [`fat/grow.zig`](../src/kernel/fat/grow.zig) behind `grow` to extend a partition and its filesystem over a card larger than the image written to it. The installer of §12 itself is not built.
 >
 > Not yet: bus-master DMA (§3, designed and not built), the page cache, and the request queue of §4. There is no swap and there will not be one.
 >

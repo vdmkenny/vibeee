@@ -114,7 +114,11 @@ fn wideEntry(kind: Kind, bytes: []const u8, at: usize) u32 {
     };
 }
 
-fn byteOffset(kind: Kind, cluster: u32) u32 {
+/// Where an entry for `cluster` starts, in bytes from the front of a table.
+///
+/// Also how much of a table `cluster` entries occupy, which is what sizing a
+/// table needs: the two are the same number and are written down once.
+pub fn byteOffset(kind: Kind, cluster: u32) u32 {
     return switch (kind) {
         .fat12 => cluster + (cluster / 2),
         .fat16 => cluster * 2,

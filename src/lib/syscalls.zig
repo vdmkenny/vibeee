@@ -924,6 +924,31 @@ pub const CheckReport = extern struct {
     }
 };
 
+/// What a new filesystem should be.
+pub const FormatFlags = packed struct(u32) {
+    /// Which width, or `.any` to choose from the volume's size.
+    kind: FatKind = .any,
+    _reserved: u30 = 0,
+};
+
+pub const FatKind = enum(u2) {
+    any = 0,
+    fat12 = 1,
+    fat16 = 2,
+    fat32 = 3,
+};
+
+/// What growing a volume came to. Sizes are in clusters.
+pub const GrowReport = extern struct {
+    /// Clusters before and after.
+    was: u32 = 0,
+    now: u32 = 0,
+    /// How far the data area moved. Zero means nothing was moved.
+    shifted_sectors: u32 = 0,
+    /// Clusters whose data was moved.
+    moved: u32 = 0,
+};
+
 pub const TtyMode = enum(u32) {
     /// A line at a time, echoed and editable with backspace. What a program
     /// that only wants an answer to a question needs.
@@ -2084,6 +2109,36 @@ pub const table = [_]Syscall{
             "refused on a read-only volume, which reports and changes nothing. A volume " ++
             "holding clusters claimed by two chains is reported and not repaired, because " ++
             "nothing on the medium says which chain has the better claim.",
+    },
+    .{
+        .number = 78,
+        .name = "format_volume",
+        .summary = "Make a new filesystem on a volume, destroying what is on it.",
+        .args = &.{
+            .{ .name = "device", .kind = .cptr, .desc = "Volume name, as `disk` lists it." },
+            .{ .name = "device_len", .kind = .len, .desc = "Length of the name." },
+            .{ .name = "flags", .kind = .flags, .desc = "FormatFlags: bits 0-1 the FAT width, 0 to choose." },
+        },
+        .errors = &.{ E.fault, E.noent, E.busy, E.inval, E.perm, E.io },
+        .notes = "Requires Caps.mount. Refused while the volume is mounted. Everything on " ++
+            "the volume becomes unreachable: the tables and the root are written afresh, " ++
+            "and nothing reads the data area again.",
+    },
+    .{
+        .number = 79,
+        .name = "grow_volume",
+        .summary = "Extend the filesystem on a volume over the whole of it.",
+        .args = &.{
+            .{ .name = "device", .kind = .cptr, .desc = "Volume name, as `disk` lists it." },
+            .{ .name = "device_len", .kind = .len, .desc = "Length of the name." },
+            .{ .name = "report", .kind = .ptr, .desc = "Where to write the GrowReport." },
+        },
+        .errors = &.{ E.fault, E.noent, E.busy, E.inval, E.nomem, E.perm, E.io },
+        .notes = "Requires Caps.mount. Refused while the volume is mounted, and refused " ++
+            "when the filesystem already fills it or when the larger volume would need a " ++
+            "wider FAT than it has. A bigger volume needs a bigger table, and the table " ++
+            "sits in front of the data, so the data moves: losing power part way through " ++
+            "that leaves the volume unreadable, since FAT has no journal.",
     },
 };
 

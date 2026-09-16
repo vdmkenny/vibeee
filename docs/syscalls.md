@@ -1398,6 +1398,53 @@ Check a mounted volume against itself, repairing what can be repaired.
 
 Requires Caps.mount. Runs at mount time by itself on a volume that was not unmounted cleanly; this is the same check asked for by hand. Repairs are refused on a read-only volume, which reports and changes nothing. A volume holding clusters claimed by two chains is reported and not repaired, because nothing on the medium says which chain has the better claim.
 
+## `format_volume`  <sub>#78</sub>
+
+Make a new filesystem on a volume, destroying what is on it.
+
+| arg | type | meaning |
+|---|---|---|
+| `device` | const ptr | Volume name, as `disk` lists it. |
+| `device_len` | len | Length of the name. |
+| `flags` | flags | FormatFlags: bits 0-1 the FAT width, 0 to choose. |
+
+**Returns:** 0
+
+**Errors:**
+
+- `EFAULT`, a pointer argument is outside the caller's address space
+- `ENOENT`, no such file or directory
+- `EBUSY`, another process already owns it
+- `EINVAL`, an argument is out of range
+- `EPERM`, the operation is not allowed on that object
+- `EIO`, the underlying device failed
+
+Requires Caps.mount. Refused while the volume is mounted. Everything on the volume becomes unreachable: the tables and the root are written afresh, and nothing reads the data area again.
+
+## `grow_volume`  <sub>#79</sub>
+
+Extend the filesystem on a volume over the whole of it.
+
+| arg | type | meaning |
+|---|---|---|
+| `device` | const ptr | Volume name, as `disk` lists it. |
+| `device_len` | len | Length of the name. |
+| `report` | ptr | Where to write the GrowReport. |
+
+**Returns:** 0
+
+**Errors:**
+
+- `EFAULT`, a pointer argument is outside the caller's address space
+- `ENOENT`, no such file or directory
+- `EBUSY`, another process already owns it
+- `EINVAL`, an argument is out of range
+- `ENOMEM`, no handle slots free, or the buffer is too small
+- `EPERM`, the operation is not allowed on that object
+- `EIO`, the underlying device failed
+
+Requires Caps.mount. Refused while the volume is mounted, and refused when the filesystem already fills it or when the larger volume would need a wider FAT than it has. A bigger volume needs a bigger table, and the table sits in front of the data, so the data moves: losing power part way through that leaves the volume unreadable, since FAT has no journal.
+
 ---
 
-78 calls defined.
+80 calls defined.

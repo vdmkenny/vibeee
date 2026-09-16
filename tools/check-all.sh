@@ -25,6 +25,7 @@ rm -f "$BUILD"/check-serial.png "$BUILD"/check-serial.log "$BUILD"/check-serial.
 rm -f "$BUILD"/check-console.png "$BUILD"/check-console.log "$BUILD"/check-console.log.txt "$BUILD"/check-console.out
 rm -f "$BUILD"/check-bus.png "$BUILD"/check-bus.log "$BUILD"/check-bus.log.txt "$BUILD"/check-stick.img
 rm -f "$BUILD"/check-cut*.png "$BUILD"/check-cut*.log "$BUILD"/check-cut*.log.txt
+rm -f "$BUILD"/check-grow*.png "$BUILD"/check-grow*.log "$BUILD"/check-grow*.log.txt "$BUILD"/check-grow.img
 
 fail() { printf 'check-all: %s\n' "$*" >&2; exit 1; }
 step() { printf '\n== %s\n' "$*"; }
@@ -131,6 +132,47 @@ plain "$LOGCUT3" > "$LOGCUT3.txt"
 ! grep -q "/home was not unmounted" "$LOGCUT3.txt" ||
     fail "a volume checked on the last boot was checked again on this one (see $LOGCUT3)"
 echo "a volume cut off mid-write says so, is checked, keeps what was written, and settles"
+
+step "a card larger than the image written to it: format, and grow into the rest"
+# What a person does with the image: write it to whatever card they have,
+# which is never the size of the image. The partition covers what the image
+# gave it and the filesystem covers the partition, so both have to grow.
+GROWIMG=$BUILD/check-grow.img
+cp "$DEV_IMAGE" "$GROWIMG"
+dd if=/dev/zero bs=1m count=0 seek=256 of="$GROWIMG" >/dev/null 2>&1
+
+LOGGROW=$BUILD/check-grow.log
+QEMU_CPU="$QEMU_CPU" tools/qemu-shot.sh "$BUILD/check-grow.png" -w 30 -p 4 -s 6 \
+    -t "echo written-before-the-grow > /home/keep.txt
+unmount /home
+grow hd0p3
+hd0p3
+mount hd0p3 /home
+cat /home/keep.txt
+check /home
+unmount /media/hd0p1
+format hd0p1
+hd0p1
+mount hd0p1 /media/hd0p1
+check /media/hd0p1" \
+    -- -drive if=ide,format=raw,file="$GROWIMG" >/dev/null ||
+    fail "the emulator did not run (see $LOGGROW)"
+plain "$LOGGROW" > "$LOGGROW.txt"
+! grep -qi "panic\|STOPPED" "$LOGGROW.txt" || fail "the kernel stopped growing or formatting (see $LOGGROW)"
+
+# The partition covers the card, and the filesystem covers the partition.
+grep -q "covers 425984 sectors, was 32768" "$LOGGROW.txt" ||
+    fail "the partition was not extended over the rest of the card (see $LOGGROW)"
+grep -Eq "clusters became [0-9]{6,}" "$LOGGROW.txt" ||
+    fail "the filesystem did not grow with its partition (see $LOGGROW)"
+grep -q "written-before-the-grow" "$LOGGROW.txt" ||
+    fail "what was on the volume did not survive the grow (see $LOGGROW)"
+# Twice: once for the grown volume and once for the freshly formatted one.
+[ "$(grep -c "nothing to put right" "$LOGGROW.txt")" -ge 2 ] ||
+    fail "a grown or freshly formatted volume was not sound (see $LOGGROW)"
+grep -q "a new filesystem, empty" "$LOGGROW.txt" ||
+    fail "the volume was not formatted (see $LOGGROW)"
+echo "a card larger than its image grows into itself, and a volume can be made afresh"
 
 step "the wire: a leased address and an echo answered, on every adapter QEMU has"
 # The two drivers the emulator can stand in for. The Attansic and the Atheros

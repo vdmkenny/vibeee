@@ -693,6 +693,28 @@ pub fn checkVolume(path: []const u8, flags: abi.CheckFlags) Refusal!abi.CheckRep
     return report;
 }
 
+/// Make a new filesystem on a volume, destroying what is on it.
+pub fn formatVolume(device: []const u8, flags: abi.FormatFlags) Refusal!void {
+    _ = try checked(syscall3(
+        abi.number("format_volume"),
+        @intFromPtr(device.ptr),
+        device.len,
+        @as(u32, @bitCast(flags)),
+    ));
+}
+
+/// Extend the filesystem on a volume over the whole of it.
+pub fn growVolume(device: []const u8) Refusal!abi.GrowReport {
+    var report: abi.GrowReport = .{};
+    _ = try checked(syscall3(
+        abi.number("grow_volume"),
+        @intFromPtr(device.ptr),
+        device.len,
+        @intFromPtr(&report),
+    ));
+    return report;
+}
+
 /// Choose which keyboard layout the keys mean.
 pub fn setKeymap(layout: keymaps.Name) Refusal!void {
     _ = try checked(syscall1(abi.number("set_keymap"), @intFromEnum(layout)));

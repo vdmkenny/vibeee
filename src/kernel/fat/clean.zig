@@ -166,35 +166,8 @@ pub fn mark(t: *Table, is_clean: bool) Error!void {
 
 const testing = std.testing;
 
-/// A volume in memory, with enough of one for the flags to be read and
-/// written.
-const Fake = struct {
-    bytes: []u8,
-
-    fn read(ctx: *anyopaque, lba: u64, buf: []u8) block.Error!void {
-        const self: *Fake = @ptrCast(@alignCast(ctx));
-        const at = lba * block.SECTOR_SIZE;
-        if (at + buf.len > self.bytes.len) return error.OutOfRange;
-        @memcpy(buf, self.bytes[at..][0..buf.len]);
-    }
-
-    fn write(ctx: *anyopaque, lba: u64, buf: []const u8) block.Error!void {
-        const self: *Fake = @ptrCast(@alignCast(ctx));
-        const at = lba * block.SECTOR_SIZE;
-        if (at + buf.len > self.bytes.len) return error.OutOfRange;
-        @memcpy(self.bytes[at..][0..buf.len], buf);
-    }
-
-    const ops = block.Ops{ .read = &read, .write = &write };
-};
-
-fn fakeTable(kind: Kind, fake: *Fake, dev: *block.Device) Table {
-    dev.* = .{
-        .name = "fake",
-        .ctx = fake,
-        .ops = &Fake.ops,
-        .sectors = fake.bytes.len / block.SECTOR_SIZE,
-    };
+fn fakeTable(kind: Kind, medium: *block.Memory, dev: *block.Device) Table {
+    dev.* = medium.device("memory");
     return .{
         .dev = dev,
         .kind = kind,
@@ -209,9 +182,9 @@ fn fakeTable(kind: Kind, fake: *Fake, dev: *block.Device) Table {
 test "a volume marked clean reads back clean, and dirty reads back dirty" {
     for ([_]Kind{ .fat16, .fat32 }) |kind| {
         var bytes: [4 * block.SECTOR_SIZE]u8 = @splat(0);
-        var fake = Fake{ .bytes = &bytes };
+        var medium = block.Memory{ .bytes = &bytes };
         var dev: block.Device = undefined;
-        var t = fakeTable(kind, &fake, &dev);
+        var t = fakeTable(kind, &medium, &dev);
 
         // A table whose flag is clear reads as dirty, which is what an
         // unfinished write leaves.
@@ -230,9 +203,9 @@ test "either flag alone is enough to call a volume dirty" {
     // lost before the other. Either way the volume is not clean.
     for ([_]Kind{ .fat16, .fat32 }) |kind| {
         var bytes: [4 * block.SECTOR_SIZE]u8 = @splat(0);
-        var fake = Fake{ .bytes = &bytes };
+        var medium = block.Memory{ .bytes = &bytes };
         var dev: block.Device = undefined;
-        var t = fakeTable(kind, &fake, &dev);
+        var t = fakeTable(kind, &medium, &dev);
 
         try mark(&t, true);
         try testing.expectEqual(State.clean, try state(&t));
@@ -255,9 +228,9 @@ test "marking a volume leaves what a chain would use alone" {
     // those would write a value the format reserves, which other
     // implementations read.
     var bytes: [4 * block.SECTOR_SIZE]u8 = @splat(0);
-    var fake = Fake{ .bytes = &bytes };
+    var medium = block.Memory{ .bytes = &bytes };
     var dev: block.Device = undefined;
-    var t = fakeTable(.fat32, &fake, &dev);
+    var t = fakeTable(.fat32, &medium, &dev);
 
     const before = try readFlags(&t);
     try mark(&t, true);
@@ -273,9 +246,9 @@ test "marking a volume does not disturb the free count" {
     // would move the free count on every mount and unmount, and that count
     // is what tells a caller the volume is full.
     var bytes: [4 * block.SECTOR_SIZE]u8 = @splat(0);
-    var fake = Fake{ .bytes = &bytes };
+    var medium = block.Memory{ .bytes = &bytes };
     var dev: block.Device = undefined;
-    var t = fakeTable(.fat32, &fake, &dev);
+    var t = fakeTable(.fat32, &medium, &dev);
 
     t.free_known = 9;
     try mark(&t, true);
@@ -285,9 +258,9 @@ test "marking a volume does not disturb the free count" {
 
 test "a FAT12 volume records nothing and is not written to" {
     var bytes: [4 * block.SECTOR_SIZE]u8 = @splat(0);
-    var fake = Fake{ .bytes = &bytes };
+    var medium = block.Memory{ .bytes = &bytes };
     var dev: block.Device = undefined;
-    var t = fakeTable(.fat12, &fake, &dev);
+    var t = fakeTable(.fat12, &medium, &dev);
 
     try testing.expectEqual(State.unrecorded, try state(&t));
 

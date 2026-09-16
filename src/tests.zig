@@ -80,6 +80,12 @@ test {
     // needs no volume at all: every way a record and its chain can disagree
     // is a case there rather than a medium damaged to reach it.
     _ = @import("kernel/fat/verdict.zig");
+    // The geometry a boot sector describes, which mounting reads and
+    // formatting writes. Its round trip is what keeps the two agreeing.
+    _ = @import("kernel/fat/layout.zig");
+    _ = @import("kernel/fat/format.zig");
+    _ = @import("kernel/fat/grow.zig");
+    _ = @import("kernel/fat/bulk.zig");
     _ = @import("kernel/ublk.zig");
     // The device table's row and name discipline: rows are reused as media
     // come and go, and a name has to stay with the row it names.
