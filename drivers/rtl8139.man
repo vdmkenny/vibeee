@@ -6,4 +6,4 @@
 # register interface.
 name    = rtl8139
 service = net
-match   = pci:10ec:8139, pci:10ec:8138
+match   = pci:10ec:8139|8138

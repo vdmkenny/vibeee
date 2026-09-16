@@ -44,7 +44,7 @@ Internal layering (all in one binary):
 +------------------------------------------------------------------+
 | netif glue: one struct netif per NicDev, pbuf in/out             |
 +------------------------------------------------------------------+
-| NicDriver iface: atl2 | atl1e | e1000 | rtl8139 | ath5k (later)  |
+| NicDriver iface: atl2 | atl1e | e1000 | rtl8139 | e100 | ar5212  |
 +------------------------------------------------------------------+
 | user-driver API: map_device, dma_alloc, irq_attach, pci_*        |
 +------------------------------------------------------------------+
@@ -62,7 +62,7 @@ trusted, supervised system service. This trust boundary is documented, not mitig
   inputs under the deferred-completion model; the controller is never touched at
   runtime. Neither driver uses MSI (atl2 MSI is known-flaky in Linux).
 - Atheros AR2425 at 01:00.0, 168c:001c, b/g only: §5, later milestone.
-- QEMU emulates neither atl2 nor AR2425; the e1000 and rtl8139 drivers exist so every
+- QEMU emulates neither atl2 nor AR2425; the e1000, rtl8139 and e100 drivers exist so every
   layer above the driver interface is exercised in emulation (§11).
 - Memory budget math assumes the pessimistic ~350 MB/s practical memcpy.
 
@@ -344,7 +344,7 @@ much as could be pushed there: the shared half's arithmetic, every register and
 descriptor word pinned at compile time against the documented value, and the page walk
 itself, which is on its own in `netd/rxpage.zig` over a plain slice and host-tested
 against pages built a frame at a time. Everything above a driver is exercised in the
-emulator through `e1000` and `rtl8139`, which is what those two are for.
+emulator through `e1000`, `rtl8139` and `e100`, which is what those are for.
 
 ## 5. WiFi: the radio, and the vocabulary above it
 
@@ -748,8 +748,8 @@ the port it was asked on, can set the clock.
 
 1. **QEMU is the stack's CI**: slirp answers DHCP, `ping 10.0.2.2` exercises ICMP
    both ways, `nc` against a hostfwd port proves TCP and the bridge, and the
-   `make shot` transcript asserts the lease line and the ping RTT line. The e1000
-   and rtl8139 drivers make all of it driver-plural.
+   `make shot` transcript asserts the lease line and the ping RTT line. The e1000,
+   rtl8139 and e100 drivers make all of it driver-plural.
 2. **Host-native**: lwIP arrives with upstream's own test heritage; our pure code
    (`lib/eth.zig`, ring arithmetic, config parsing) keeps its host tests. The netif
    glue is deliberately too thin to need a harness.

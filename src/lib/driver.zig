@@ -123,6 +123,28 @@ pub const Match = union(enum) {
     }
 };
 
+/// How a driver's whole list is written in its manifest. Parts of one
+/// vendor that stand together share a spec, `pci:8086:1229|1209`, which is
+/// what keeps a driver answering for a family of forty parts to a line the
+/// device manager has room to keep.
+pub fn writeAll(matches: []const Match, gpa: std.mem.Allocator, w: *std.ArrayList(u8)) std.mem.Allocator.Error!void {
+    for (matches, 0..) |match, i| {
+        if (i > 0) {
+            if (sameVendor(matches[i - 1], match)) {
+                try w.print(gpa, "|{x:0>4}", .{match.part.device});
+                continue;
+            }
+            try w.appendSlice(gpa, ", ");
+        }
+        try match.write(gpa, w);
+    }
+}
+
+fn sameVendor(previous: Match, next: Match) bool {
+    if (previous != .part or next != .part) return false;
+    return previous.part.vendor == next.part.vendor;
+}
+
 /// What a bus says a device is, which is all a match ever looks at.
 pub const Signature = struct {
     vendor: u16,
@@ -237,6 +259,55 @@ pub const answers = [_]Answers{
         },
     },
     .{
+        .name = "e100",
+        .service = "net",
+        .says = "Intel PRO/100: the 82557, 82558, 82559, 82550 and 82551, and the\nLAN controller inside ICH2 to ICH7 and NM10. One register interface.",
+        .matches = &.{
+            .{ .part = .{ .vendor = 0x8086, .device = 0x1029 } }, // 82559
+            .{ .part = .{ .vendor = 0x8086, .device = 0x1030 } }, // 82559 InBusiness
+            .{ .part = .{ .vendor = 0x8086, .device = 0x1031 } }, // ICH3 VE
+            .{ .part = .{ .vendor = 0x8086, .device = 0x1032 } }, // ICH3 VE
+            .{ .part = .{ .vendor = 0x8086, .device = 0x1033 } }, // ICH3 VM
+            .{ .part = .{ .vendor = 0x8086, .device = 0x1034 } }, // ICH3 VM
+            .{ .part = .{ .vendor = 0x8086, .device = 0x1038 } }, // ICH3 VM
+            .{ .part = .{ .vendor = 0x8086, .device = 0x1039 } }, // ICH4 VE
+            .{ .part = .{ .vendor = 0x8086, .device = 0x103A } }, // ICH4 VE
+            .{ .part = .{ .vendor = 0x8086, .device = 0x103B } }, // ICH4 VM
+            .{ .part = .{ .vendor = 0x8086, .device = 0x103C } }, // ICH4 VM
+            .{ .part = .{ .vendor = 0x8086, .device = 0x103D } }, // ICH4 VE
+            .{ .part = .{ .vendor = 0x8086, .device = 0x103E } }, // ICH4 VM
+            .{ .part = .{ .vendor = 0x8086, .device = 0x1050 } }, // ICH5 82562EZ
+            .{ .part = .{ .vendor = 0x8086, .device = 0x1051 } }, // ICH5
+            .{ .part = .{ .vendor = 0x8086, .device = 0x1052 } }, // ICH5 VM
+            .{ .part = .{ .vendor = 0x8086, .device = 0x1053 } }, // ICH5 VM
+            .{ .part = .{ .vendor = 0x8086, .device = 0x1054 } }, // ICH5 VE
+            .{ .part = .{ .vendor = 0x8086, .device = 0x1055 } }, // ICH5 VM
+            .{ .part = .{ .vendor = 0x8086, .device = 0x1056 } }, // ICH5 VE
+            .{ .part = .{ .vendor = 0x8086, .device = 0x1057 } }, // ICH5
+            .{ .part = .{ .vendor = 0x8086, .device = 0x1059 } }, // 82551QM
+            .{ .part = .{ .vendor = 0x8086, .device = 0x1064 } }, // ICH6 VE
+            .{ .part = .{ .vendor = 0x8086, .device = 0x1065 } }, // ICH6 VE
+            .{ .part = .{ .vendor = 0x8086, .device = 0x1066 } }, // ICH6 VM
+            .{ .part = .{ .vendor = 0x8086, .device = 0x1067 } }, // ICH6 VM
+            .{ .part = .{ .vendor = 0x8086, .device = 0x1068 } }, // ICH6 VE
+            .{ .part = .{ .vendor = 0x8086, .device = 0x1069 } }, // ICH6 VM
+            .{ .part = .{ .vendor = 0x8086, .device = 0x106A } }, // ICH6 82562G
+            .{ .part = .{ .vendor = 0x8086, .device = 0x106B } }, // ICH6 82562G
+            .{ .part = .{ .vendor = 0x8086, .device = 0x1091 } }, // ICH7 VE
+            .{ .part = .{ .vendor = 0x8086, .device = 0x1092 } }, // ICH7 VE
+            .{ .part = .{ .vendor = 0x8086, .device = 0x1093 } }, // ICH7 VM
+            .{ .part = .{ .vendor = 0x8086, .device = 0x1094 } }, // ICH7 946GZ
+            .{ .part = .{ .vendor = 0x8086, .device = 0x1095 } }, // ICH7 VE
+            .{ .part = .{ .vendor = 0x8086, .device = 0x10FE } }, // 82552
+            .{ .part = .{ .vendor = 0x8086, .device = 0x1209 } }, // 8255xER, 82551IT
+            .{ .part = .{ .vendor = 0x8086, .device = 0x1229 } }, // 82557, 82558, 82559, 82550, 82551
+            .{ .part = .{ .vendor = 0x8086, .device = 0x2449 } }, // ICH2
+            .{ .part = .{ .vendor = 0x8086, .device = 0x2459 } }, // C-ICH
+            .{ .part = .{ .vendor = 0x8086, .device = 0x245D } }, // C-ICH
+            .{ .part = .{ .vendor = 0x8086, .device = 0x27DC } }, // ICH7, NM10
+        },
+    },
+    .{
         .name = "rtl8139",
         .service = "net",
         .says = "The RealTek 8139 line: the emulator's other adapter, and the fast\nethernet of a great many machines of the era. Both parts answer one\nregister interface.",
@@ -284,6 +355,107 @@ test "an interface tells the USB controller generations apart" {
     // Nothing here drives an OHCI controller, and neither claims one.
     try testing.expectEqual(Confidence.no, bestOf(ehci, open));
     try testing.expectEqual(Confidence.no, bestOf(uhci, open));
+}
+
+test "a manifest line names exactly the devices its driver answers for" {
+    const pci = @import("pci.zig");
+    const gpa = testing.allocator;
+
+    for (answers) |one| {
+        var line: std.ArrayList(u8) = .empty;
+        defer line.deinit(gpa);
+        try writeAll(one.matches, gpa, &line);
+
+        for (one.matches) |match| {
+            // Each device named, and the numbers either side of it.
+            for ([_]u16{ 0xFFFF, 0, 1 }) |step| {
+                const dev: Signature = switch (match) {
+                    .part => |p| .{ .vendor = p.vendor, .device = p.device +% step, .class = 0xFF, .subclass = 0xFF, .interface = 0xFF },
+                    .family => |f| .{ .vendor = 0xFFFF, .device = 0xFFFF, .class = f.class, .subclass = f.subclass +% @as(u8, @truncate(step)), .interface = f.interface orelse 0x5A },
+                    .platform => continue,
+                };
+                const bus = pci.Signature{ .vendor = dev.vendor, .device = dev.device, .class = dev.class, .subclass = dev.subclass, .interface = dev.interface };
+                const said = bus.matchesPart(line.items) or bus.matchesClass(line.items);
+                try testing.expectEqual(bestOf(one.matches, dev) != .no, said);
+            }
+        }
+    }
+}
+
+const fuzzing = @import("fuzzing.zig");
+const Choices = fuzzing.Choices;
+
+/// A driver's list, written as its manifest and read back the way the device
+/// manager reads it, names the devices the kernel's table would bind: no
+/// more and no fewer. And a line that is not a manifest's at all is read
+/// without harm.
+fn writeOneManifest(from: Choices) anyerror!void {
+    const pci = @import("pci.zig");
+    const vendors = [_]u16{ 0x8086, 0x10EC, 0x1274 };
+
+    var matches: [8]Match = undefined;
+    const count = from.upTo(matches.len);
+    for (matches[0..count]) |*match| {
+        match.* = if (from.odds(4)) .{ .family = .{
+            .class = @intCast(from.below(3)),
+            .subclass = @intCast(from.below(3)),
+            .interface = if (from.odds(2)) null else @intCast(from.below(3)),
+        } } else .{ .part = .{
+            .vendor = vendors[from.below(vendors.len)],
+            .device = @intCast(from.below(8)),
+        } };
+    }
+
+    var line: std.ArrayList(u8) = .empty;
+    defer line.deinit(testing.allocator);
+    try writeAll(matches[0..count], testing.allocator, &line);
+
+    for (0..16) |_| {
+        const dev = Signature{
+            .vendor = vendors[from.below(vendors.len)],
+            .device = @intCast(from.below(8)),
+            .class = @intCast(from.below(3)),
+            .subclass = @intCast(from.below(3)),
+            .interface = @intCast(from.below(3)),
+        };
+        const bus = pci.Signature{ .vendor = dev.vendor, .device = dev.device, .class = dev.class, .subclass = dev.subclass, .interface = dev.interface };
+        const read = if (bus.matchesPart(line.items)) Confidence.exact else if (bus.matchesClass(line.items)) Confidence.strong else Confidence.no;
+        try testing.expectEqual(bestOf(matches[0..count], dev), read);
+    }
+
+    const alphabet = "pci-class:0123456789abcdef|, \x00";
+    var noise: [48]u8 = undefined;
+    for (&noise) |*byte| byte.* = alphabet[from.below(alphabet.len)];
+    const bus = pci.Signature{ .vendor = from.int(u16), .device = from.int(u16) };
+    _ = bus.matchesPart(noise[0..from.below(noise.len + 1)]);
+    _ = bus.matchesClass(noise[0..from.below(noise.len + 1)]);
+}
+
+test "fuzz: a manifest line is read back as exactly the devices it was written for" {
+    const Target = struct {
+        fn one(_: void, smith: *std.testing.Smith) anyerror!void {
+            return writeOneManifest(.{ .fuzzer = smith });
+        }
+    };
+    try std.testing.fuzz({}, Target.one, .{});
+}
+
+test "manifest lines written from random lists" {
+    try fuzzing.seeded(writeOneManifest, 0x0D21_7E25, 2000);
+}
+
+test "parts of one vendor share a spec, and anything else starts a new one" {
+    const gpa = testing.allocator;
+    var line: std.ArrayList(u8) = .empty;
+    defer line.deinit(gpa);
+    try writeAll(&.{
+        .{ .part = .{ .vendor = 0x8086, .device = 0x1229 } },
+        .{ .part = .{ .vendor = 0x8086, .device = 0x1209 } },
+        .{ .family = .{ .class = 0x02, .subclass = 0x00 } },
+        .{ .part = .{ .vendor = 0x10EC, .device = 0x8139 } },
+        .{ .part = .{ .vendor = 0x8086, .device = 0x2449 } },
+    }, gpa, &line);
+    try testing.expectEqualStrings("pci:8086:1229|1209, pci-class:02:00, pci:10ec:8139, pci:8086:2449", line.items);
 }
 
 test "a match writes the line a manifest is read from" {

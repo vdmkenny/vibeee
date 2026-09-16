@@ -232,6 +232,12 @@ pub const table = [_]probe.Driver{
         .probe = &answering("e1000"),
     },
     .{
+        .name = "e100",
+        .kind = .net,
+        .match = answersFor("e100"),
+        .probe = &answering("e100"),
+    },
+    .{
         // The Realtek 8139: QEMU's other emulated NIC, and a card a wide
         // slice of the era's hardware carried. Lives in netd.
         .name = "rtl8139",

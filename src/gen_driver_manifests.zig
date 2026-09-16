@@ -53,9 +53,6 @@ fn manifest(
     try w.print(gpa, "name    = {s}\n", .{one.name});
     try w.print(gpa, "service = {s}\n", .{service});
     try w.appendSlice(gpa, "match   = ");
-    for (one.matches, 0..) |match, i| {
-        if (i > 0) try w.appendSlice(gpa, ", ");
-        try match.write(gpa, w);
-    }
+    try driver.writeAll(one.matches, gpa, w);
     try w.append(gpa, '\n');
 }

@@ -6,4 +6,4 @@
 # across the parts named.
 name    = e1000
 service = net
-match   = pci:8086:1004, pci:8086:1008, pci:8086:100e, pci:8086:100f, pci:8086:1010, pci:8086:1026, pci:8086:1027, pci:8086:1028
+match   = pci:8086:1004|1008|100e|100f|1010|1026|1027|1028

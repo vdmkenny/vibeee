@@ -47,6 +47,10 @@ test {
     _ = @import("user/usbd/ftdi/regs.zig");
     _ = @import("user/netd/attansic.zig");
     _ = @import("user/netd/cursor.zig");
+    // The PRO/100's shapes, its configure block and its EEPROM's protocol,
+    // and both its rings against a model of the part.
+    _ = @import("user/netd/e100/regs.zig");
+    _ = @import("user/netd/e100/rings.zig");
     _ = @import("user/netd/mii.zig");
     // The page an L1E receives into, which is the only part of that
     // driver that can be run anywhere but on the machine that has one.

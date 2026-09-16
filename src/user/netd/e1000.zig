@@ -549,11 +549,9 @@ fn readRar() ?[6]u8 {
 }
 
 fn readEepromMac() ?[6]u8 {
-    var mac: [6]u8 = @splat(0);
-    for (0..3) |i| {
-        const word = readEeprom(@intCast(i)) orelse return null;
-        std.mem.writeInt(u16, mac[i * 2 ..][0..2], word, .little);
-    }
+    var words: [3]u16 = undefined;
+    for (&words, 0..) |*word, i| word.* = readEeprom(@intCast(i)) orelse return null;
+    const mac = lib.mac.fromWords(words);
     return if (dev_mod.validMac(mac)) mac else null;
 }
 

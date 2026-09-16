@@ -1,0 +1,8 @@
+# Generated from src/lib/driver.zig by `zig build driver-manifests`.
+# Do not edit: change what the driver answers for instead.
+#
+# Intel PRO/100: the 82557, 82558, 82559, 82550 and 82551, and the
+# LAN controller inside ICH2 to ICH7 and NM10. One register interface.
+name    = e100
+service = net
+match   = pci:8086:1029|1030|1031|1032|1033|1034|1038|1039|103a|103b|103c|103d|103e|1050|1051|1052|1053|1054|1055|1056|1057|1059|1064|1065|1066|1067|1068|1069|106a|106b|1091|1092|1093|1094|1095|10fe|1209|1229|2449|2459|245d|27dc

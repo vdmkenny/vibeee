@@ -237,7 +237,12 @@ driven. Modesetting belongs to the kernel; `firmware-set` keeps the firmware's m
 ### Network
 
 - Drivers in a compile-time registry, each declaring its interface class: `e1000`,
-  `rtl8139`, `atl2` (701 wired), `atl1e` (1000 wired), `ar5212` (701 radio).
+  `rtl8139`, `e100`, `atl2` (701 wired), `atl1e` (1000 wired), `ar5212` (701 radio).
+- `e100`: Intel PRO/100 (82557 to 82551) and the LAN controller in ICH2 to ICH7 and
+  NM10. Receives into a descriptor ring behind a moving fence; configuration and frames
+  share one command block ring. The PHY is read one register per management cycle, each
+  ending in an interrupt. Both rings are in [`e100/rings.zig`](../src/user/netd/e100/rings.zig),
+  fuzzed against a model of the part that runs as the hardware and as QEMU do.
 - Attansic parts share block reset, MDIO, station address, gaps, half-duplex rules,
   MAC control low half and vendor PHY registers in
   [`attansic.zig`](../src/user/netd/attansic.zig), bit positions checked at build.
@@ -378,7 +383,7 @@ every build. Code used by one driver only stays with that driver, for example
   x86-64 Linux as well as the build machine.
 - Pure logic is kept in files with no I/O so it can be tested directly: page-table
   walk, program-image plan, FAT long-name assembly, volume check decisions, volume
-  geometry, receive-page walk.
+  geometry, receive-page walk, PRO/100 rings.
 - A new test file runs only if `src/tests.zig`, `src/quirks/tests.zig` or the test
   block in `lib.zig` names it; a re-export is not enough. Confirm by making one of its
   tests fail.
@@ -402,6 +407,15 @@ every build. Code used by one driver only stays with that driver, for example
     stops; frames lie inside the page.
   - Management frame, [`lib/mlme.zig`](../src/lib/mlme.zig): parsers are total and
     deterministic.
+  - Manifest line, [`lib/driver.zig`](../src/lib/driver.zig): read back as exactly the
+    devices it was written for.
+  - Link reading, [`netd/mii.zig`](../src/user/netd/mii.zig): ends within the registers
+    it may ask, whatever the PHY answers.
+  - PRO/100 rings, [`netd/e100/rings.zig`](../src/user/netd/e100/rings.zig): against a
+    model of the part stepping at every barrier, each frame is taken and each block run
+    once and in order.
+  - PRO/100 EEPROM, [`netd/e100/regs.zig`](../src/user/netd/e100/regs.zig): read exactly
+    at either size; a glitching line still ends every read.
   - Page table, [`arch/x86/pagetable.zig`](../src/arch/x86/pagetable.zig): agrees with a
     walk without shortcuts.
 - `make check-all` is the gate. It runs `zig fmt` check, `zig build check`,
@@ -497,7 +511,7 @@ syscalls, Ring 3, IPC, ramfs, VESA console, i8042 keyboard, `vsh`. Exercised eve
 |---|---|
 | Persistent settings and home | The boot medium carries the system, `/cfg` and `/home`. Settings read from `/etc` then `/cfg`. The loader records the medium's partition signature so the right disk is used. On the 701, `/cfg` and `/home` mount when `usbd` brings up the card reader. Verified in the emulator across shutdowns and reboots. |
 | Volume check, format, grow | Clean-unmount flag, check at mount, `check`, `format`, `grow`. Verified in the emulator by the gate. |
-| Fuzz targets | Six targets with seeded counterparts in `make test`. See [Testing](#testing). |
+| Fuzz targets | Ten targets with seeded counterparts in `make test`. See [Testing](#testing). |
 | Bus rebuild | A disk behind a hub keeps its mount across `usb rebuild`. Verified in the emulator. |
 | Serial console | The log reaches a USB serial port. Verified in the emulator; not tried on the machine. |
 | Serial adapters | FTDI verified in the emulator: enumeration, `ser`, typed data both ways, settings, unplug. `acm` not run against a device. |

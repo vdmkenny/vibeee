@@ -42,6 +42,19 @@ pub fn text(mac: Address) [17]u8 {
     return spelled;
 }
 
+/// An address kept as three words, each with its low byte first: how the
+/// EEPROM of an Intel adapter holds one.
+pub fn fromWords(words: [3]u16) Address {
+    var address: Address = undefined;
+    for (words, 0..) |word, i| std.mem.writeInt(u16, address[i * 2 ..][0..2], word, .little);
+    return address;
+}
+
+test "three words are an address, low byte first" {
+    const address = fromWords(.{ 0x5452, 0x1200, 0x5634 });
+    try std.testing.expectEqualSlices(u8, &.{ 0x52, 0x54, 0x00, 0x12, 0x34, 0x56 }, &address);
+}
+
 test "a mac spells like a mac" {
     const spelled = text(.{ 0x52, 0x54, 0x00, 0x12, 0x34, 0x56 });
     try std.testing.expectEqualStrings("52:54:00:12:34:56", &spelled);

@@ -8,4 +8,4 @@
 # gives a machine.
 name    = ac97
 service = audio
-match   = pci:8086:2415, pci:8086:2425, pci:8086:2445, pci:8086:2485, pci:8086:24c5, pci:8086:24d5, pci:8086:266e, pci:8086:27de, pci:8086:7195
+match   = pci:8086:2415|2425|2445|2485|24c5|24d5|266e|27de|7195

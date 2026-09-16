@@ -5,4 +5,4 @@
 # AR2417.
 name    = ar5212
 service = net
-match   = pci:168c:001c, pci:168c:001d
+match   = pci:168c:001c|001d

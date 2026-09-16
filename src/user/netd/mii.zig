@@ -157,6 +157,87 @@ pub fn resolved(status: Status, speed: Speed, duplex: Duplex) ?Outcome {
     return .{ .up = true, .speed = speed, .duplex = duplex };
 }
 
+/// What an auto-negotiated link came to: the best mode both ends offered,
+/// in the standard's order of priority (802.3 annex 28B.3).
+pub fn negotiated(ours: Advertisement, theirs: Advertisement) Outcome {
+    if (ours.hundred_full and theirs.hundred_full) return .{ .up = true, .speed = .m100, .duplex = .full };
+    if (ours.hundred_t4 and theirs.hundred_t4) return .{ .up = true, .speed = .m100, .duplex = .half };
+    if (ours.hundred_half and theirs.hundred_half) return .{ .up = true, .speed = .m100, .duplex = .half };
+    if (ours.ten_full and theirs.ten_full) return .{ .up = true, .speed = .m10, .duplex = .full };
+    return .{ .up = true, .speed = .m10, .duplex = .half };
+}
+
+/// What a link set by hand came to, as the control word sets it.
+pub fn forced(control: Control) Outcome {
+    return .{
+        .up = true,
+        .speed = if (control.speed_100) .m100 else .m10,
+        .duplex = if (control.full_duplex) .full else .half,
+    };
+}
+
+/// A link read one register at a time, for a MAC that announces the end
+/// of each management cycle instead of being waited on.
+///
+/// The status word is read twice when it has to be: the first read shows a
+/// drop since the last reading. A link that has not dropped is the link it
+/// was, and a link that is down needs nothing more, so most readings end
+/// after one cycle.
+pub const Reading = struct {
+    asked: Register = .status,
+    /// The first status read, which carries a drop since the last reading.
+    latched: bool = true,
+    /// What the last reading came to.
+    was: ?Outcome = null,
+    advertisement: Advertisement = .{},
+
+    pub const Next = union(enum) {
+        /// Read this register next.
+        ask: Register,
+        /// The reading is complete.
+        done: Outcome,
+        /// Nothing answers at this address: the lines float to all ones,
+        /// or read all zeros.
+        absent,
+    };
+
+    /// Take the word the register asked for answered with.
+    pub fn took(self: *Reading, word: u16) Next {
+        switch (self.asked) {
+            .status => {
+                if (word == 0xFFFF or word == 0x0000) return .absent;
+                const status: Status = @bitCast(word);
+                if (self.latched) {
+                    self.latched = false;
+                    if (!status.link_status) return self.ask(.status);
+                    if (self.was) |was| {
+                        if (was.up) return .{ .done = was };
+                    }
+                    return self.ask(.control);
+                }
+                if (!status.link_status) return .{ .done = DOWN };
+                return self.ask(.control);
+            },
+            .control => {
+                const control: Control = @bitCast(word);
+                if (!control.autoneg_enable) return .{ .done = forced(control) };
+                return self.ask(.auto_negotiation_advertisement);
+            },
+            .auto_negotiation_advertisement => {
+                self.advertisement = @bitCast(word);
+                return self.ask(.auto_negotiation_partner);
+            },
+            .auto_negotiation_partner => return .{ .done = negotiated(self.advertisement, @bitCast(word)) },
+            else => return .{ .done = DOWN },
+        }
+    }
+
+    fn ask(self: *Reading, register: Register) Next {
+        self.asked = register;
+        return .{ .ask = register };
+    }
+};
+
 test "a wire with nothing on it is not a link" {
     try testing.expectEqual(@as(?Outcome, null), outcome(.{ .link_status = false }));
     try testing.expectEqual(@as(?Outcome, null), resolved(.{ .link_status = false }, .m100, .full));
@@ -200,6 +281,109 @@ test "the control and advertisement words are the standard's" {
 
     try testing.expectEqual(@as(u16, 0x0100), word(Gigabit{ .thousand_half = true }));
     try testing.expectEqual(@as(u16, 0x0200), word(Gigabit{ .thousand_full = true }));
+}
+
+test "negotiation takes the best mode both ends offer" {
+    const Case = struct { ours: Advertisement, theirs: Advertisement, speed: Speed, duplex: Duplex };
+    const cases = [_]Case{
+        .{ .ours = ADVERTISE_FAST, .theirs = ADVERTISE_FAST, .speed = .m100, .duplex = .full },
+        .{ .ours = ADVERTISE_FAST, .theirs = .{ .hundred_half = true, .ten_full = true }, .speed = .m100, .duplex = .half },
+        .{ .ours = .{ .hundred_half = true, .hundred_t4 = true }, .theirs = .{ .hundred_t4 = true }, .speed = .m100, .duplex = .half },
+        .{ .ours = ADVERTISE_FAST, .theirs = .{ .ten_full = true, .ten_half = true }, .speed = .m10, .duplex = .full },
+        .{ .ours = .{ .ten_half = true, .hundred_full = true }, .theirs = .{ .ten_full = true }, .speed = .m10, .duplex = .half },
+    };
+    for (cases) |case| {
+        const link = negotiated(case.ours, case.theirs);
+        try testing.expect(link.up);
+        try testing.expectEqual(case.speed, link.speed);
+        try testing.expectEqual(case.duplex, link.duplex);
+    }
+}
+
+test "a reading asks only what the answer so far leaves open" {
+    const up: u16 = @bitCast(Status{ .link_status = true, .auto_negotiation_complete = true });
+    const down: u16 = @bitCast(Status{ .auto_negotiation_ability = true });
+    const autoneg: u16 = @bitCast(Control{ .autoneg_enable = true });
+
+    // First reading of a live link: status, control, both advertisements.
+    var first = Reading{};
+    try testing.expectEqual(Reading.Next{ .ask = .control }, first.took(up));
+    try testing.expectEqual(Reading.Next{ .ask = .auto_negotiation_advertisement }, first.took(autoneg));
+    try testing.expectEqual(Reading.Next{ .ask = .auto_negotiation_partner }, first.took(@bitCast(ADVERTISE_FAST)));
+    const settled = first.took(@bitCast(Advertisement{ .hundred_half = true }));
+    try testing.expectEqual(Reading.Next{ .done = .{ .up = true, .speed = .m100, .duplex = .half } }, settled);
+
+    // The same link, still up since: one read.
+    var again = Reading{ .was = settled.done };
+    try testing.expectEqual(settled, again.took(up));
+
+    // A drop since the last reading: the latched word says down, and the
+    // second read says what the wire is now.
+    var dropped = Reading{ .was = settled.done };
+    try testing.expectEqual(Reading.Next{ .ask = .status }, dropped.took(down));
+    try testing.expectEqual(Reading.Next{ .done = DOWN }, dropped.took(down));
+
+    var back = Reading{ .was = settled.done };
+    try testing.expectEqual(Reading.Next{ .ask = .status }, back.took(down));
+    try testing.expectEqual(Reading.Next{ .ask = .control }, back.took(up));
+    const hand: u16 = @bitCast(Control{ .speed_100 = true, .full_duplex = true });
+    try testing.expectEqual(Reading.Next{ .done = .{ .up = true, .speed = .m100, .duplex = .full } }, back.took(hand));
+
+    // Nobody at the address.
+    var nobody = Reading{};
+    try testing.expectEqual(Reading.Next.absent, nobody.took(0xFFFF));
+    var silent = Reading{};
+    try testing.expectEqual(Reading.Next.absent, silent.took(0x0000));
+}
+
+const fuzzing = @import("lib").fuzzing;
+const Choices = fuzzing.Choices;
+
+/// A reading fed whatever a PHY, a floating bus or a failing part might
+/// answer: it ends within the registers it can ask, asks only those, and a
+/// link it calls down is down.
+fn readOneLink(from: Choices) anyerror!void {
+    var reading = Reading{ .was = switch (from.one(enum { none, up, down })) {
+        .none => null,
+        .up => .{ .up = true, .speed = .m100, .duplex = .full },
+        .down => DOWN,
+    } };
+    var last_status: ?Status = null;
+    for (0..5) |_| {
+        const word: u16 = switch (from.one(enum { any, all_ones, zero, carrier, silence })) {
+            .any => from.int(u16),
+            .all_ones => 0xFFFF,
+            .zero => 0x0000,
+            .carrier => @bitCast(Status{ .link_status = true, .auto_negotiation_complete = true }),
+            .silence => @bitCast(Status{ .auto_negotiation_ability = true }),
+        };
+        if (reading.asked == .status) last_status = @bitCast(word);
+        switch (reading.took(word)) {
+            .ask => |register| switch (register) {
+                .status, .control, .auto_negotiation_advertisement, .auto_negotiation_partner => {},
+                else => return error.TestUnexpectedResult,
+            },
+            .done => |link| {
+                if (!link.up) try testing.expect(!last_status.?.link_status);
+                return;
+            },
+            .absent => return,
+        }
+    }
+    return error.TestUnexpectedResult;
+}
+
+test "fuzz: a link reading ends, and asks only what it may, whatever the PHY answers" {
+    const Target = struct {
+        fn one(_: void, smith: *std.testing.Smith) anyerror!void {
+            return readOneLink(.{ .fuzzer = smith });
+        }
+    };
+    try std.testing.fuzz({}, Target.one, .{});
+}
+
+test "a link reading fed words at random" {
+    try fuzzing.seeded(readOneLink, 0x3A11_0802, 3000);
 }
 
 test "a thousand megabits is a speed like the others" {

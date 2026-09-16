@@ -1542,7 +1542,7 @@ pub fn service(causes: u32, nic: *NicDev) void {
 /// hop resets the whole of it: this is a pass without a receiver rather
 /// than the end of one, and retiring the interface here would make one
 /// crowded moment on one channel the last thing it ever heard.
-pub fn maintain(nic: *NicDev) void {
+pub fn maintain(nic: *NicDev, _: u64) void {
     if (!device.started or device.gone) return;
     if (!device.rx_rearm) return;
     device.rx_rearm = false;

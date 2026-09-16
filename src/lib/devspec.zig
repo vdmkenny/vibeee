@@ -2,9 +2,11 @@
 //!
 //! A driver says which devices it serves as a comma-separated list of
 //! specs, and each spec is a prefix and the numbers that follow it:
-//! `pci:8086:265c`, `usb-class:08:06:50`. Which numbers those are is the
-//! bus's business. The shape of the line is not, and it is the same
-//! wherever a bus writes one, so it is here rather than in each of them.
+//! `pci:8086:265c`, `usb-class:08:06:50`. A field may name several numbers
+//! separated by `|`: `pci:8086:1229|1209` is two parts of one maker. Which
+//! numbers those are is the bus's business. The shape of the line is not,
+//! and it is the same wherever a bus writes one, so it is here rather than
+//! in each of them.
 
 const std = @import("std");
 const str = @import("str.zig");
@@ -22,11 +24,11 @@ pub const Spec = struct {
         return .{ .fields = fields };
     }
 
-    /// Whether the next field is this number. A spec that stops early
-    /// names less than it was asked about, and names nothing here.
+    /// Whether the next field is this number, or lists it. A spec that
+    /// stops early names less than it was asked about, and names nothing
+    /// here.
     pub fn is(self: *Spec, value: u32) bool {
-        const field = str.trim(self.fields.next() orelse return false);
-        return str.hex(field) == value;
+        return lists(self.fields.next() orelse return false, value);
     }
 
     /// Whether the next field is this number, or is not there at all: the
@@ -36,9 +38,18 @@ pub const Spec = struct {
     pub fn isOrAbsent(self: *Spec, value: u32) bool {
         const field = str.trim(self.fields.next() orelse return true);
         if (field.len == 0) return true;
-        return str.hex(field) == value;
+        return lists(field, value);
     }
 };
+
+/// Whether a field names `value` among the numbers it separates with `|`.
+fn lists(field: []const u8, value: u32) bool {
+    var numbers = str.split(field, '|');
+    while (numbers.next()) |number| {
+        if (str.hex(str.trim(number)) == value) return true;
+    }
+    return false;
+}
 
 /// Whether any spec in `match` fits, as `fits` decides. Specs are
 /// separated by commas: one driver and one program can serve several
@@ -85,6 +96,25 @@ test "a field that is not there names nothing, unless it may be left off" {
     try testing.expect(other.is(0x0C));
     try testing.expect(other.is(0x03));
     try testing.expect(!other.isOrAbsent(0x20));
+}
+
+test "a field lists several numbers, and fits any of them" {
+    var parts = Spec.under("pci:8086:1229|1209 | 2449", "pci").?;
+    try testing.expect(parts.is(0x8086));
+    try testing.expect(parts.is(0x2449));
+
+    var other = Spec.under("pci:8086:1229|1209", "pci").?;
+    try testing.expect(other.is(0x8086));
+    try testing.expect(!other.is(0x1029));
+
+    var empty = Spec.under("pci:8086:|", "pci").?;
+    try testing.expect(empty.is(0x8086));
+    try testing.expect(!empty.is(0));
+
+    var interfaces = Spec.under("pci-class:0c:03:10|00", "pci-class").?;
+    try testing.expect(interfaces.is(0x0C));
+    try testing.expect(interfaces.is(0x03));
+    try testing.expect(interfaces.isOrAbsent(0x00));
 }
 
 test "one line names several devices, and an empty one names none" {

@@ -10,6 +10,7 @@
 const ifmatch = @import("lib").ifmatch;
 const lib = @import("lib");
 const log = @import("ulib").log;
+const mii = @import("mii.zig");
 const out = @import("ulib").out;
 const proto = @import("proto").net;
 const settings = @import("proto").settings;
@@ -92,8 +93,9 @@ pub const NicOps = struct {
     /// Work a driver owes that must not happen on an interrupt: a reset, a
     /// re-tune, anything that waits on the part. Called from the loop
     /// between passes rather than from `irq`, where a slow or wedged
-    /// adapter would hold the line and everything behind it.
-    service: ?*const fn (dev: *NicDev) void = null,
+    /// adapter would hold the line and everything behind it. `now` is the
+    /// pass's clock, read once for every adapter.
+    service: ?*const fn (dev: *NicDev, now: u64) void = null,
     /// Put one frame on the wire. The bytes are the service's until this
     /// returns, copied into the ring before it does.
     transmit: *const fn (dev: *NicDev, frame: []const u8) bool,
@@ -247,6 +249,19 @@ pub var radio_up: ?*const fn (dev: *NicDev) void = null;
 /// A radio has stopped: powered down, or taken away. Everything above it was
 /// about that radio and none of it means anything now.
 pub var radio_down: ?*const fn (dev: *NicDev) void = null;
+
+/// A link, from what a PHY made of the wire.
+pub fn linkFrom(outcome: mii.Outcome) Link {
+    if (!outcome.up) return .{};
+    return .{
+        .up = true,
+        .mbps = outcome.speed.mbps(),
+        .duplex = switch (outcome.duplex) {
+            .full => .full,
+            .half => .half,
+        },
+    };
+}
 
 /// Whether an address is one a wire can carry: not a group address, not
 /// all zeroes, not all ones.
@@ -485,7 +500,7 @@ pub fn serviceAdapters(interfaces: []NicDev) void {
     for (interfaces) |*iface| {
         if (!iface.driving) continue;
 
-        if (iface.ops.service) |work| work(iface);
+        if (iface.ops.service) |work| work(iface, now);
 
         const poll = iface.ops.poll orelse continue;
         const quiet = iface.irq == 0 or now -% iface.serviced_at >= QUIET_US;

@@ -51,6 +51,15 @@ pub fn Arena(comptime Body: type) type {
         phys: lib.Phys = .none,
         handle: u32 = 0,
 
+        /// A refusal in the words a driver's failure line uses.
+        pub fn said(why: Error) []const u8 {
+            return switch (why) {
+                error.NoMemory => "no device memory left for the rings",
+                error.Misaligned => "device memory is not aligned for the adapter",
+                error.Unmappable => "cannot map the rings into this process",
+            };
+        }
+
         /// Take a run of device memory and zero it: a descriptor left
         /// holding last boot's address is a device that fetches from
         /// wherever it points.

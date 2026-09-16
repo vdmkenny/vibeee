@@ -415,14 +415,7 @@ pub fn open(loc: pci.Location, dev: *NicDev) bool {
     }
 
     device.arena = dma.Arena(Rings).acquire() catch |why| {
-        // The arena's own three answers, said in this driver's words: a
-        // refusal carries no errno to name, and "cannot allocate" loses
-        // the one thing worth knowing, which is why not.
-        log.fail("rtl8139", switch (why) {
-            error.NoMemory => "no device memory left for the rings",
-            error.Misaligned => "device memory is not aligned for the adapter",
-            error.Unmappable => "cannot map the rings into this process",
-        });
+        log.fail("rtl8139", dma.Arena(Rings).said(why));
         return false;
     };
     // DMA memory is page-granular, which is every alignment this chip asks

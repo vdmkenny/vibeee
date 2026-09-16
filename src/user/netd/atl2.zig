@@ -920,7 +920,7 @@ pub fn poll(nic: *NicDev) bool {
 /// Work owed between passes rather than on the line: a pending reseat, and
 /// nothing else yet. Asked by the loop, where waiting on the part costs
 /// nobody their interrupt.
-pub fn upkeep(nic: *NicDev) void {
+pub fn upkeep(nic: *NicDev, _: u64) void {
     if (!device.opened) return;
     reseat(nic);
 }
@@ -1122,11 +1122,7 @@ pub fn link(_: *NicDev) dev_mod.Link {
     // advertisement is how a driver decides a wire is something it is not.
     const outcome = mii.resolved(status, speed, if (settled.full_duplex) .full else .half) orelse
         return .{};
-    return .{
-        .up = outcome.up,
-        .mbps = outcome.speed.mbps(),
-        .duplex = if (outcome.duplex == .full) .full else .half,
-    };
+    return dev_mod.linkFrom(outcome);
 }
 
 /// Re-read the link and write it into the MAC's own control register. The

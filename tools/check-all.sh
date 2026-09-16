@@ -172,10 +172,13 @@ grep -q "hd0p1: formatted" "$LOGGROW.txt" ||
 echo "a card larger than its image grows into itself, and a volume can be made afresh"
 
 step "the wire: a leased address and an echo answered, on every adapter QEMU has"
-# The two drivers the emulator can stand in for. The Attansic and the Atheros
-# have no model, so they are only ever proven on the machine that has them --
-# which is exactly why these two are exercised here on every change.
-for model in e1000 rtl8139; do
+# The drivers the emulator can stand in for, each as QEMU's model and the
+# driver that takes it: the PRO/100 as its oldest part and as the one inside
+# the ICH. The Attansic and the Atheros have no model, so they are only ever
+# proven on the machine that has them.
+for adapter in e1000:e1000 rtl8139:rtl8139 i82557b:e100 i82801:e100; do
+    model=${adapter%%:*}
+    driver=${adapter#*:}
     LOGNET=$BUILD/check-net-$model.log
     bootnet "$BUILD/check-net-$model.png" "$model" -w 30 -d 12 -p 3 -s 10 \
         -t "net
@@ -183,14 +186,14 @@ ping 10.0.2.2"
     plain "$LOGNET" > "$LOGNET.txt"
     grep -q "boot reported done" "$LOGNET.txt" || fail "the boot never reported done (see $LOGNET)"
     ! grep -qi "panic" "$LOGNET.txt" || fail "$model: the kernel panicked (see $LOGNET)"
-    grep -Eq "^$model +up " "$LOGNET.txt" || fail "$model: the adapter did not come up (see $LOGNET)"
+    grep -Eq "^$driver +up " "$LOGNET.txt" || fail "$model: the adapter did not come up (see $LOGNET)"
     grep -Eq "addr +10\.0\.2\.[0-9]+" "$LOGNET.txt" || fail "$model: no address was leased (see $LOGNET)"
     grep -q "answering for" "$LOGNET.txt" || fail "$model: nothing answered its ARP (see $LOGNET)"
     grep -Eq "[0-9]+ of [0-9]+ answered" "$LOGNET.txt" || fail "$model: no echo came back (see $LOGNET)"
     ! grep -q "0 of" "$LOGNET.txt" || fail "$model: every echo was lost (see $LOGNET)"
     echo "$model: up, leased, answering"
 done
-echo "both modelled adapters carry traffic end to end"
+echo "every modelled adapter carries traffic end to end"
 
 # A serial adapter on a controller the default machine does not have. The
 # emulator's cable is the vendor part, so this proves that driver; the class

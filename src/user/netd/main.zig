@@ -20,6 +20,7 @@ const atl1e = @import("atl1e.zig");
 const atl2 = @import("atl2.zig");
 const rtl8139 = @import("rtl8139.zig");
 const dev = @import("dev.zig");
+const e100 = @import("e100.zig");
 const e1000 = @import("e1000.zig");
 
 // The routines lwIP's C calls by name, emitted into this binary from the
@@ -67,6 +68,7 @@ const DRIVERS = [_]Driver{
     .{ .name = atl2.name, .ops = atl2.ops },
     .{ .name = atl1e.name, .ops = atl1e.ops },
     .{ .name = rtl8139.name, .ops = rtl8139.ops },
+    .{ .name = e100.name, .ops = e100.ops },
     .{ .name = ar5212.name, .ops = ar5212.ops, .class = ar5212.class },
 };
 
