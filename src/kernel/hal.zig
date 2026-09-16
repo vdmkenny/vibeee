@@ -215,6 +215,28 @@ else
         fn quiet(_: bool) void {}
     }.quiet;
 
+/// Bytes from the processor's random number generator, where the
+/// architecture has one and the processor answers.
+pub const processorRandom = if (@hasDecl(impl, "processorRandom"))
+    impl.processorRandom
+else
+    struct {
+        fn none(_: []u8) bool {
+            return false;
+        }
+    }.none;
+
+/// The first instruction-set extension user programs were compiled to use
+/// that this processor lacks, where the architecture has optional ones.
+pub const missingCpuFeature = if (@hasDecl(impl, "missingCpuFeature"))
+    impl.missingCpuFeature
+else
+    struct {
+        fn none() ?[]const u8 {
+            return null;
+        }
+    }.none;
+
 /// Stop the machine with its memory alive, and put the processor back
 /// together when it wakes. `enter` is the write that stops it, the chipset
 /// being somebody else's concern; the answer is whether the machine slept.

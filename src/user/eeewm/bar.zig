@@ -20,6 +20,7 @@ const notes = @import("ulib").notes;
 const anchors = @import("proto").anchors;
 const info = @import("ulib").info;
 const dir = @import("ulib").dir;
+const file = @import("ulib").file;
 const time = @import("ulib").time;
 const lib = @import("lib");
 const opening = @import("proto").opening;
@@ -368,7 +369,7 @@ fn refreshFound(desktop: *const layout.Desktop) void {
     var seq: usize = 0;
 
     for (items, 0..) |item, index| {
-        if (item.action == .separator) continue;
+        if (item.action == .separator or !entry_present[index]) continue;
         found_sources += 1;
         seq += 1;
         const hit = lib.find.match(item.label, typed) orelse continue;
@@ -387,6 +388,7 @@ fn refreshFound(desktop: *const layout.Desktop) void {
     // Somebody looking for the wallpaper is looking for a thing with a name,
     // not for the program that happens to contain it.
     for (anchors.all, 0..) |program, program_index| {
+        if (!anchor_present[program_index]) continue;
         for (program.anchors, 0..) |anchor, anchor_index| {
             found_sources += 1;
             seq += 1;
@@ -479,9 +481,8 @@ var launcher_rail: ui.Menu = .{ .ground = .sunken };
 /// reading rather than just worth clicking.
 fn countIn(which: Category) usize {
     var n: usize = 0;
-    for (items) |item| {
-        if (item.category == which) n += 1;
-    }
+    var offered: Offered = .{ .category = which };
+    while (offered.next()) |_| n += 1;
     return n;
 }
 
@@ -631,16 +632,38 @@ fn walk(where: []const u8, depth: u8) void {
     }
 }
 
-/// Icons carried by the programs the entries run, read when the bar begins.
-/// `/bin` is part of the root image and does not change while it runs.
+/// Which entries' programs this image has, and the icons they carry, read
+/// when the bar begins. `/bin` is part of the root image and does not change
+/// while it runs; an image configured without a program leaves its entry out.
+var entry_present: [items.len]bool = @splat(true);
 var entry_icons: [items.len]?[eui_icon.BYTES]u8 = @splat(null);
+var anchor_present: [anchors.all.len]bool = @splat(true);
 
-fn readEntryIcons() void {
-    for (items, &entry_icons) |item, *icon| icon.* = switch (item.action) {
-        .run => |program| if (item.mark == null) notes.read(eui_icon.Note, program.path) else null,
-        else => null,
+fn readEntries() void {
+    for (items, &entry_present, &entry_icons) |item, *present, *icon| switch (item.action) {
+        .run => |program| {
+            present.* = file.factsOf(program.path) != null;
+            if (present.* and item.mark == null) icon.* = notes.read(eui_icon.Note, program.path);
+        },
+        else => {},
     };
+    for (anchors.all, &anchor_present) |program, *present| present.* = file.factsOf(program.path) != null;
 }
+
+/// The indexes of the entries offered in a category.
+const Offered = struct {
+    category: Category,
+    at: usize = 0,
+
+    fn next(self: *Offered) ?usize {
+        while (self.at < items.len) {
+            const index = self.at;
+            self.at += 1;
+            if (items[index].category == self.category and entry_present[index]) return index;
+        }
+        return null;
+    }
+};
 
 fn entryMark(index: usize) eui_icon.Mark {
     const item = items[index];
@@ -668,10 +691,10 @@ fn menuItems(out: []ui.MenuItem) []ui.MenuItem {
     var n: usize = 0;
 
     if (launcher_query.len == 0) {
-        for (items, 0..) |item, index| {
+        var offered: Offered = .{ .category = launcher_category };
+        while (offered.next()) |index| {
             if (n == out.len) break;
-            if (item.category != launcher_category) continue;
-            out[n] = .{ .label = item.label, .mark = entryMark(index) };
+            out[n] = .{ .label = items[index].label, .mark = entryMark(index) };
             n += 1;
         }
         return out[0..n];
@@ -709,10 +732,9 @@ fn launcherChoice(row: usize) ?Found.What {
     }
 
     var n: usize = 0;
-    for (items, 0..) |item, index| {
-        if (item.category != launcher_category) continue;
+    var offered: Offered = .{ .category = launcher_category };
+    while (offered.next()) |index| : (n += 1) {
         if (n == row) return .{ .entry = index };
-        n += 1;
     }
     return null;
 }
@@ -1421,7 +1443,7 @@ pub fn networkChanged() void {
 /// empty menu until something moved.
 pub fn begin() void {
     readNetwork();
-    readEntryIcons();
+    readEntries();
 }
 
 /// What the bar's icon shows: the interface actually carrying the network,

@@ -120,10 +120,24 @@ pub const Features = struct {
     sep: bool = false,
     mtrr: bool = false,
     clflush: bool = false,
+    cmov: bool = false,
+    mmx: bool = false,
     fxsr: bool = false,
     sse: bool = false,
     sse2: bool = false,
     sse3: bool = false,
+    ssse3: bool = false,
+    sse4_1: bool = false,
+    sse4_2: bool = false,
+    popcnt: bool = false,
+    movbe: bool = false,
+    aes: bool = false,
+    pclmul: bool = false,
+    sha: bool = false,
+    rdrand: bool = false,
+    sse4a: bool = false,
+    lzcnt: bool = false,
+    @"3dnow": bool = false,
     /// Enhanced SpeedStep. Absent on the 701's Celeron M, no P-states, so
     /// there is no DVFS to drive and the governor is a no-op.
     est: bool = false,
@@ -146,17 +160,36 @@ pub const Features = struct {
             f.sep = edx.sep;
             f.mtrr = edx.mtrr;
             f.clflush = edx.clflush;
+            f.cmov = edx.cmov;
+            f.mmx = edx.mmx;
             f.fxsr = edx.fxsr;
             f.sse = edx.sse;
             f.sse2 = edx.sse2;
             f.htt = edx.htt;
             f.sse3 = ecx.sse3;
+            f.pclmul = ecx.pclmulqdq;
             f.est = ecx.est;
+            f.ssse3 = ecx.ssse3;
+            f.sse4_1 = ecx.sse4_1;
+            f.sse4_2 = ecx.sse4_2;
+            f.movbe = ecx.movbe;
+            f.popcnt = ecx.popcnt;
+            f.aes = ecx.aes;
+            f.rdrand = ecx.rdrand;
+        }
+        if (max_leaf >= 7) {
+            const ebx: Leaf7Ebx = @bitCast(cpuid(7, 0).ebx);
+            f.sha = ebx.sha;
         }
         const max_ext = cpuid(0x8000_0000, 0).eax;
         if (max_ext >= 0x8000_0001) {
-            const ext: ExtendedLeaf1Edx = @bitCast(cpuid(0x8000_0001, 0).edx);
+            const leaf = cpuid(0x8000_0001, 0);
+            const ext: ExtendedLeaf1Edx = @bitCast(leaf.edx);
+            const ext_ecx: ExtendedLeaf1Ecx = @bitCast(leaf.ecx);
             f.nx = ext.nx;
+            f.@"3dnow" = ext.amd3dnow;
+            f.lzcnt = ext_ecx.abm;
+            f.sse4a = ext_ecx.sse4a;
         }
         return f;
     }
@@ -202,15 +235,69 @@ const Leaf1Edx = packed struct(u32) {
 
 const Leaf1Ecx = packed struct(u32) {
     sse3: bool,
-    _1: u6,
+    pclmulqdq: bool,
+    _2: u5,
     est: bool,
-    _8: u24,
+    _8: u1,
+    ssse3: bool,
+    _10: u9,
+    sse4_1: bool,
+    sse4_2: bool,
+    _21: u1,
+    movbe: bool,
+    popcnt: bool,
+    _24: u1,
+    aes: bool,
+    _26: u4,
+    rdrand: bool,
+    _31: u1,
+};
+
+const Leaf7Ebx = packed struct(u32) {
+    _0: u29,
+    sha: bool,
+    _30: u2,
+};
+
+const ExtendedLeaf1Ecx = packed struct(u32) {
+    _0: u5,
+    /// LZCNT, which AMD calls advanced bit manipulation.
+    abm: bool,
+    sse4a: bool,
+    _7: u25,
 };
 
 const ExtendedLeaf1Edx = packed struct(u32) {
     _0: u20,
     nx: bool,
-    _21: u11,
+    _21: u10,
+    amd3dnow: bool,
+};
+
+/// Control register 0, by the bits the kernel sets.
+pub const Cr0 = packed struct(u32) {
+    protected: bool,
+    /// FWAIT honours `task_switched`.
+    monitor_coprocessor: bool,
+    /// x87 instructions trap as emulated.
+    emulation: bool,
+    task_switched: bool,
+    _4: u27,
+    paging: bool,
+};
+
+/// Control register 4, by the bits the kernel sets.
+pub const Cr4 = packed struct(u32) {
+    _0: u4,
+    page_size_extension: bool,
+    _5: u2,
+    global_pages: bool,
+    _8: u1,
+    /// FXSAVE and FXRSTOR, and SSE where the processor has it.
+    os_fxsr: bool,
+    /// SIMD floating-point exceptions to vector 19 rather than #UD.
+    os_xmm_exceptions: bool,
+    _11: u21,
 };
 
 /// The processor signature the first leaf returns in EAX: the family and

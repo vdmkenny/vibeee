@@ -6,6 +6,7 @@
 //! bootable SD image, see design/00-vibeee.md §14.
 
 const std = @import("std");
+const Processor = @import("src/lib/processor.zig").Processor;
 
 /// Hand every manual page to the index generator as a tracked input.
 fn addManualPages(b: *std.Build, run: *std.Build.Step.Run) void {
@@ -337,6 +338,14 @@ pub fn build(b: *std.Build) void {
         "Read command summaries from manual/ and require a page per command (default: true)",
     ) orelse true;
 
+    // The processor the image is compiled for; `make menuconfig` chooses it.
+    const processor = b.option(
+        Processor,
+        "cpu",
+        "Processor to compile for (default: pentium_m, the Eee PC 701's)",
+    ) orelse .pentium_m;
+    const processor_target = processor.target();
+
     // User programs to build with a symbol table, comma separated. A faulting
     // address reported on the target is only a number until something can match
     // it against a symbol, and the machine has no debugger and no serial port.
@@ -351,18 +360,16 @@ pub fn build(b: *std.Build) void {
     // ---------------------------------------------------------------------
     // Target, one per architecture.
     //
-    // x86: 32-bit, freestanding, the CPU baseline deliberately explicit rather
-    // than `.baseline`. The Eee PC 701's Celeron M 353 is a Dothan: it has
-    // SSE2 but NOT SSE3, so pinning the model here makes the compiler reject
-    // anything the real machine cannot execute, instead of us finding out via
-    // #UD on hardware.
+    // x86: 32-bit, freestanding, the processor model chosen with `-Dcpu`
+    // rather than `.baseline`, so the compiler emits only what that processor
+    // runs. The default is the Eee PC 701's Celeron M: SSE2, no SSE3.
     //
     // Kernel code must not touch the FPU or SIMD registers implicitly: we do
     // not save that state on interrupt entry, and lazy FPU handling arrives
     // with the scheduler. So SSE/MMX/x87 are subtracted and soft_float is
     // added, which makes the compiler refuse to emit them rather than
-    // corrupting user FPU state at some unlucky moment. Userspace modules
-    // (blitters, the mixer) get their own target with SSE2 enabled.
+    // corrupting user FPU state at some unlucky moment. User programs get
+    // their own target with the model's extensions.
     //
     // arm: ARM926EJ-S, the core of the VT8500/WM8505 Windows CE netbooks, and
     // the CPU QEMU's versatilepb presents by default. Same reasoning as x86:
@@ -382,9 +389,16 @@ pub fn build(b: *std.Build) void {
             .cpu_arch = .x86,
             .os_tag = .freestanding,
             .abi = .none,
-            .cpu_model = .{ .explicit = &std.Target.x86.cpu.pentium_m },
-            .cpu_features_add = std.Target.x86.featureSet(&.{.soft_float}),
-            .cpu_features_sub = std.Target.x86.featureSet(&.{ .x87, .mmx, .sse, .sse2 }),
+            .cpu_model = .{ .explicit = processor_target.model },
+            .cpu_features_add = add: {
+                var add = processor_target.add;
+                add.addFeature(@intFromEnum(std.Target.x86.Feature.soft_float));
+                break :add add;
+            },
+            .cpu_features_sub = std.Target.x86.featureSet(&.{
+                .x87,    .mmx,   .sse, .sse2,   .sse3, .ssse3,    .sse4_1,
+                .sse4_2, .sse4a, .aes, .pclmul, .sha,  .@"3dnow", .@"3dnowa",
+            }),
         });
 
     // ---------------------------------------------------------------------
@@ -405,7 +419,8 @@ pub fn build(b: *std.Build) void {
             .cpu_arch = .x86,
             .os_tag = .freestanding,
             .abi = .none,
-            .cpu_model = .{ .explicit = &std.Target.x86.cpu.pentium_m },
+            .cpu_model = .{ .explicit = processor_target.model },
+            .cpu_features_add = processor_target.add,
         });
 
     // ---------------------------------------------------------------------
@@ -964,6 +979,12 @@ pub fn build(b: *std.Build) void {
         .stack_protector = false,
     });
 
+    // The processor user programs are compiled for, which the kernel checks
+    // the machine against at boot.
+    const kernel_options = b.addOptions();
+    kernel_options.addOption([]const u8, "processor", @tagName(processor));
+    kernel_mod.addOptions("build_options", kernel_options);
+
     const kernel = b.addExecutable(.{
         .name = "vibeee.elf",
         .root_module = kernel_mod,
@@ -1387,6 +1408,18 @@ pub fn build(b: *std.Build) void {
         },
     });
     test_step.dependOn(&b.addRunArtifact(img_tests).step);
+
+    // The image configuration: options, presets, `.config` files, the plan of
+    // what an image holds and the menu editor, all host code.
+    const config_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/config/config.zig"),
+            .target = b.graph.host,
+            .optimize = .Debug,
+            .imports = &.{.{ .name = "lib", .module = host_lib }},
+        }),
+    });
+    test_step.dependOn(&b.addRunArtifact(config_tests).step);
 
     // The quirk registry is pure data and pure functions, so its recognition
     // and correction rules are testable on the host, where a machine's whole

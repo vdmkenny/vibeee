@@ -1,6 +1,7 @@
 //! x86 implementation of the HAL contract in kernel/hal.zig.
 
 const std = @import("std");
+const Processor = @import("lib").processor.Processor;
 const cpu = @import("cpu.zig");
 const fpu = @import("fpu.zig");
 const gdt = @import("gdt.zig");
@@ -65,6 +66,64 @@ pub const setupUserStack = @import("usermode.zig").setupStack;
 pub const enterUserMode = @import("usermode.zig").enter;
 pub const mapMmio = paging.mapMmio;
 pub const isLinearPhys = paging.isLinear;
+
+/// The instruction-set extensions user programs may be compiled to use, named
+/// as the compiler names them and as `cpu.Features` holds them.
+const extensions = [_]std.Target.x86.Feature{
+    .cmov,   .mmx,      .sse,   .sse2, .sse3,   .ssse3, .sse4_1,
+    .sse4_2, .popcnt,   .movbe, .aes,  .pclmul, .sha,   .sse4a,
+    .lzcnt,  .@"3dnow",
+};
+
+/// The extensions of the processor user programs are compiled for. Not the
+/// kernel's own target, which leaves SIMD out of its code.
+const model_extensions = (std.meta.stringToEnum(Processor, @import("build_options").processor) orelse
+    @compileError("unknown processor")).extensions();
+
+/// The first extension user programs are compiled to use that the running
+/// processor lacks.
+pub fn missingCpuFeature() ?[]const u8 {
+    const has = cpu.Features.detect();
+    inline for (extensions) |feature| {
+        if (std.Target.x86.featureSetHas(model_extensions, feature) and !@field(has, @tagName(feature))) {
+            return @tagName(feature);
+        }
+    }
+    return null;
+}
+
+/// Bytes from the processor's random number generator. False when it has none
+/// or it would not answer.
+pub fn processorRandom(into: []u8) bool {
+    if (!cpu.Features.detect().rdrand) return false;
+    var at: usize = 0;
+    while (at < into.len) {
+        const word = rdrand() orelse return false;
+        const bytes = std.mem.asBytes(&word);
+        const n = @min(bytes.len, into.len - at);
+        @memcpy(into[at..][0..n], bytes[0..n]);
+        at += n;
+    }
+    return true;
+}
+
+/// One word from RDRAND. It clears the carry flag while it has none ready, so
+/// it is asked a few times, as Intel advises.
+fn rdrand() ?u32 {
+    for (0..10) |_| {
+        var word: u32 = undefined;
+        const ready = asm volatile (
+            \\ rdrand %%eax
+            \\ movl %%eax, (%%edx)
+            \\ setc %%al
+            \\ movzbl %%al, %%eax
+            : [ready] "={eax}" (-> u32),
+            : [word] "{edx}" (&word),
+        );
+        if (ready != 0) return word;
+    }
+    return null;
+}
 
 pub fn initCpu(kernel_stack_top: usize) void {
     cpu.cli();

@@ -19,9 +19,44 @@ ifeq ($(filter $(ARCH),x86 arm),)
 $(error ARCH must be "x86" or "arm", not "$(ARCH)")
 endif
 
+# What goes into the image: the processor, the services, the programs, the
+# manual, the sizes and the boot line. Set in .config by `make menuconfig` or
+# `make <preset>_defconfig`; without a .config the image is the default, the Eee
+# PC 701 with everything but the extra applications. CONFIG names another file.
+#
+# The configuration tool turns it into build/config.mk, the variables below,
+# and build/etc/, the generated /etc files. It runs every time and rewrites a
+# file only when it changes, so a configuration change rebuilds what it affects
+# and nothing else. A variable given on the command line still wins.
+.DEFAULT_GOAL := all
+
+CONFIG      ?= .config
+CONFIG_TOOL := build/imageconfig
+CONFIG_MK   := build/config.mk
+
+$(CONFIG_TOOL): tools/imageconfig.zig $(wildcard src/config/*.zig) $(wildcard src/lib/*.zig)
+	@mkdir -p build
+	@$(ZIG) build-exe -O ReleaseSafe --dep config -Mroot=tools/imageconfig.zig \
+		-O ReleaseSafe --dep lib -Mconfig=src/config/config.zig \
+		-O ReleaseSafe -Mlib=src/lib/lib.zig \
+		--name imageconfig -femit-bin=$@
+
+.PHONY: FORCE
+FORCE:
+
+$(CONFIG_MK): $(CONFIG_TOOL) FORCE
+	@$(CONFIG_TOOL) plan $(CONFIG) build
+
+ifneq ($(filter-out clean help,$(or $(MAKECMDGOALS),all)),)
+include $(CONFIG_MK)
+endif
+
+# The processor, for the programs `zig build` compiles and the C ones eeecc does.
+ZIG_TARGET := -Dcpu=$(CONFIG_PROCESSOR)
+export EEECC_MCPU := $(CONFIG_MCPU)
+
 ifeq ($(ARCH),x86)
 QEMU     ?= qemu-system-i386
-QEMU_CPU  := pentium3,+sse2,+pae,+nx,-sse3
 
 # Sound, on by default because the machine has it. The 701's southbridge is
 # an ICH6, and QEMU's `intel-hda` is a model of that same controller down to
@@ -53,13 +88,6 @@ MFORMAT  ?= mformat
 MCOPY    ?= mcopy
 MMD      ?= mmd
 
-# Whether the image carries the manual. Twenty kilobytes of text, read
-# over the BIOS's own USB path at boot like everything else in the root
-# filesystem, so a build that wants the smallest possible image can
-# decline it: the command listings then print names alone and `man` says
-# there is no manual on this filesystem.
-MANUAL   ?= yes
-
 BUILD    := build
 IMAGE    := $(BUILD)/vibeee.img
 
@@ -73,13 +101,7 @@ IMAGE    := $(BUILD)/vibeee.img
 # where they begin rather than assuming: the table it writes and the offsets
 # below are then the same number, whatever that number is.
 RESERVED_MB   ?= 16
-PART1_MB      ?= 16
-CFG_MB        ?= 16
-HOME_MB       ?= 16
 IMAGE_MB      ?= $(shell expr $(RESERVED_MB) + $(PART1_MB) + $(CFG_MB) + $(HOME_MB))
-# Boot parameters baked into the image; the SD path has no equivalent of
-# QEMU's -append, so they travel in the stage2 header.
-CMDLINE  ?=
 
 # The x86 emulated machine is as close to the Eee PC 701 as QEMU gets: 512 MB
 # and the PIIX3 chipset. It is NOT an ICH6 and has no GMA900, no AR2425, no
@@ -102,12 +124,6 @@ ROOTFS_IMG    := $(BUILD)/rootfs.img
 # built without ever depending on the file it copies in.
 FONT_PACK     := $(BUILD)/fonts.pack
 CA_STORE      := $(BUILD)/ca.store
-# Small on purpose: the whole of it is read over the BIOS's slow USB path at
-# boot, so every kilobyte is time on the target machine. What sets the size is
-# the certificate store, which is a hundred and thirty kilobytes of authorities
-# and does not fit in two megabytes beside everything else.
-ROOTFS_MB     ?= 3
-
 # A megabyte, as a block size `dd` will take wherever this runs. The two
 # dd's disagree about the suffix: the BSD one wants `1m` and the GNU one
 # `1M`, and both take a plain count of bytes.
@@ -119,48 +135,54 @@ MEGABYTE      := 1048576
 # so switching it rebuilds and repeating it does not.
 MANUAL_STAMP  := $(BUILD)/manual.stamp
 
-PART1_LBA     := $(shell expr $(RESERVED_MB) \* 2048)
-PART1_OFFSET  := $(shell expr $(PART1_LBA) \* 512)
-PART1_SECTORS := $(shell expr $(PART1_MB) \* 2048)
-CFG_LBA       := $(shell expr $(PART1_LBA) + $(PART1_SECTORS))
-CFG_OFFSET    := $(shell expr $(CFG_LBA) \* 512)
-CFG_SECTORS   := $(shell expr $(CFG_MB) \* 2048)
-HOME_LBA      := $(shell expr $(CFG_LBA) + $(CFG_SECTORS))
-HOME_OFFSET   := $(shell expr $(HOME_LBA) \* 512)
-HOME_SECTORS  := $(shell expr $(HOME_MB) \* 2048)
+PART1_LBA      = $(shell expr $(RESERVED_MB) \* 2048)
+PART1_OFFSET   = $(shell expr $(PART1_LBA) \* 512)
+PART1_SECTORS  = $(shell expr $(PART1_MB) \* 2048)
+CFG_LBA        = $(shell expr $(PART1_LBA) + $(PART1_SECTORS))
+CFG_OFFSET     = $(shell expr $(CFG_LBA) \* 512)
+CFG_SECTORS    = $(shell expr $(CFG_MB) \* 2048)
+HOME_LBA       = $(shell expr $(CFG_LBA) + $(CFG_SECTORS))
+HOME_OFFSET    = $(shell expr $(HOME_LBA) \* 512)
+HOME_SECTORS   = $(shell expr $(HOME_MB) \* 2048)
 
 KERNEL_ELF := zig-out/bin/vibeee.elf
-USER_INIT  := zig-out/bin/init
-USER_WM    := zig-out/bin/eeewm
-USER_SETTINGS := zig-out/bin/settings
-USER_MONITOR := zig-out/bin/monitor
-USER_ETERM := zig-out/bin/eterm
-USER_PAD := zig-out/bin/pad
-USER_CALC := zig-out/bin/calc
-USER_SCREENSHOT := zig-out/bin/screenshot
-USER_EIMG := zig-out/bin/eimg
-USER_EFM := zig-out/bin/efm
-USER_TIMED := zig-out/bin/timed
-USER_LOGD := zig-out/bin/logd
-USER_DEVMGD := zig-out/bin/devmgd
-USER_NETD    := zig-out/bin/netd
-USER_SNDD    := zig-out/bin/sndd
-USER_USBD    := zig-out/bin/usbd
-USER_CFGD := zig-out/bin/cfgd
-USER_PLATD := zig-out/bin/platd
-USER_TOOLS := zig-out/bin/tools
-USER_VSH   := zig-out/bin/vsh
 KERNEL_BIN := $(BUILD)/kernel.bin
 STAGE1_BIN := $(BUILD)/stage1.bin
 STAGE2_BIN := $(BUILD)/stage2.bin
 MKIMAGE    := $(BUILD)/mkimage
 
-.PHONY: all clean image qemu qemu-sd run test fuzz tools sd update-sd help apps app hero echat roll fmt check check-all
+.PHONY: all clean image qemu qemu-sd run test fuzz tools sd update-sd help apps app hero echat roll fmt check check-all \
+	menuconfig defconfig savedefconfig olddefconfig list-defconfigs
 
 all: image
 
+# ---------------------------------------------------------------------------
+# Configuration, with Linux's and Buildroot's target names
+# ---------------------------------------------------------------------------
+menuconfig: $(CONFIG_TOOL)
+	@$(CONFIG_TOOL) menu $(CONFIG)
+
+# The default: the Eee PC 701 with everything but the extra applications.
+defconfig: $(CONFIG_TOOL)
+	@$(CONFIG_TOOL) defconfig eeepc_701 $(CONFIG)
+
+%_defconfig: $(CONFIG_TOOL)
+	@$(CONFIG_TOOL) defconfig $* $(CONFIG)
+
+savedefconfig: $(CONFIG_TOOL)
+	@$(CONFIG_TOOL) savedefconfig $(CONFIG) defconfig
+
+olddefconfig: $(CONFIG_TOOL)
+	@$(CONFIG_TOOL) olddefconfig $(CONFIG)
+
+list-defconfigs: $(CONFIG_TOOL)
+	@$(CONFIG_TOOL) list
+
 help:
 	@echo "vibeee build targets (ARCH=$(ARCH)):"
+	@echo "  make menuconfig       choose what goes in the image, into .config"
+	@echo "  make <name>_defconfig start .config from a preset; list-defconfigs names them"
+	@echo "  make savedefconfig    write what .config changes from the defaults to defconfig"
 	@echo "  make image            build $(IMAGE) (x86 only)"
 	@echo "  make qemu             boot the kernel in QEMU"
 	@echo "  make ARCH=arm qemu    boot the ARM kernel via -kernel + serial stdio"
@@ -179,7 +201,6 @@ help:
 	@echo "  make qemu-panic       boot into the panic screen (x86)"
 	@echo "  make sd DEV=/dev/rdiskN   flash the whole image to a card (x86), wiping it"
 	@echo "  make update-sd DEV=/dev/rdiskN  overwrite a card's system partition only"
-	@echo "  make MANUAL=no image   build without the manual"
 	@echo "  make clean"
 
 # ---------------------------------------------------------------------------
@@ -190,7 +211,7 @@ $(BUILD):
 
 .PHONY: kernel
 kernel:
-	$(ZIG) build $(ZIG_FLAGS) -Darch=$(ARCH) $(if $(filter yes,$(MANUAL)),,-Dmanual=false)
+	$(ZIG) build $(ZIG_FLAGS) $(ZIG_TARGET) -Darch=$(ARCH) $(if $(filter yes,$(MANUAL)),,-Dmanual=false)
 
 # The SD path loads a flat binary, not ELF: stage2 jumps to its first byte,
 # which is the entry stub placed there by the linker script.
@@ -239,7 +260,7 @@ apps: hero echat eeemod roll web qjs
 .PHONY: hero
 hero:
 	@$(ZIG) build test-hero
-	@$(ZIG) build hero
+	@$(ZIG) build hero $(ZIG_TARGET)
 	@mkdir -p home/bin
 	@cp zig-out/bin/hero home/bin/hero
 	@echo "  ready   home/bin/hero, on the machine at the next image build"
@@ -249,7 +270,7 @@ hero:
 .PHONY: echat
 echat:
 	@$(ZIG) build test-echat
-	@$(ZIG) build echat
+	@$(ZIG) build echat $(ZIG_TARGET)
 	@mkdir -p home/bin
 	@cp zig-out/bin/echat home/bin/echat
 	@echo "  ready   home/bin/echat, on the machine at the next image build"
@@ -259,7 +280,7 @@ echat:
 .PHONY: eeemod
 eeemod:
 	@$(ZIG) build test-eeemod
-	@$(ZIG) build eeemod
+	@$(ZIG) build eeemod $(ZIG_TARGET)
 	@mkdir -p home/bin
 	@cp zig-out/bin/eeemod home/bin/eeemod
 	@echo "  ready   home/bin/eeemod, on the machine at the next image build"
@@ -270,7 +291,7 @@ eeemod:
 .PHONY: roll
 roll:
 	@$(ZIG) build test-roll
-	@$(ZIG) build roll
+	@$(ZIG) build roll $(ZIG_TARGET)
 	@mkdir -p home/bin
 	@cp zig-out/bin/roll home/bin/roll
 	@echo "  ready   home/bin/roll, on the machine at the next image build"
@@ -282,7 +303,7 @@ roll:
 .PHONY: web
 web:
 	@$(ZIG) build test-web
-	@$(ZIG) build web
+	@$(ZIG) build web $(ZIG_TARGET)
 	@mkdir -p home/bin
 	@cp zig-out/bin/web home/bin/web
 	@echo "  ready   home/bin/web, on the machine at the next image build"
@@ -292,7 +313,7 @@ web:
 # that it builds for the machine, and the rest is a script run on the machine.
 .PHONY: qjs
 qjs:
-	@$(ZIG) build qjs
+	@$(ZIG) build qjs $(ZIG_TARGET)
 	@mkdir -p home/bin
 	@cp zig-out/bin/qjs home/bin/qjs
 	@echo "  ready   home/bin/qjs, on the machine at the next image build"
@@ -305,6 +326,10 @@ qjs:
 .PHONY: dom-test
 dom-test:
 	@$(ZIG) build test-dom
+
+.PHONY: doom
+doom:
+	@$(MAKE) --no-print-directory -C apps APP=doom build
 
 app:
 	@if [ -z "$(APP)" ]; then echo "usage: make app APP=<name>"; exit 1; fi
@@ -326,52 +351,23 @@ $(MANUAL_STAMP): manual-stamp
 # after that would not be seen. Listed explicitly for the ones that exist,
 # which is what makes rebuilding one of them rebuild the image it goes in:
 # without this the old binary ships and the new one is never run.
-$(ROOTFS_IMG): kernel examples $(FONT_PACK) $(CA_STORE) $(MANUAL_STAMP) $(wildcard manual/*) $(wildcard etc/*) $(wildcard drivers/*) $(wildcard $(BUILD)/ctest) | $(BUILD)
+$(ROOTFS_IMG): kernel examples $(FONT_PACK) $(CA_STORE) $(MANUAL_STAMP) $(CONFIG_MK) $(wildcard manual/*) $(wildcard etc/*) $(wildcard $(BUILD)/etc/*) $(wildcard drivers/*) | $(BUILD)
 	@rm -f $@
 	@dd if=/dev/zero of=$@ bs=$(MEGABYTE) count=$(ROOTFS_MB) status=none
 	@$(MFORMAT) -i $@ -F -T $(shell expr $(ROOTFS_MB) \* 2048) -v VIBEEEROOT ::
 	@for d in bin etc lib lib/drivers share tmp home media cfg; do $(MMD) -i $@ ::/$$d; done
 	@if [ "$(MANUAL)" = "yes" ]; then $(MMD) -i $@ ::/doc; fi
-	@$(MCOPY) -i $@ -o $(FONT_PACK) ::/share/fonts.pack
-	@$(MCOPY) -i $@ -o $(CA_STORE) ::/share/ca.store
-	@$(MCOPY) -i $@ -o $(USER_INIT) ::/bin/init
-	@$(MCOPY) -i $@ -o $(USER_VSH) ::/bin/vsh
-	@$(MCOPY) -i $@ -o $(BUILD)/greet ::/bin/greet
-	@if [ -f $(BUILD)/ctest ]; then $(MCOPY) -i $@ -o $(BUILD)/ctest ::/bin/ctest; fi
-	@$(MCOPY) -i $@ -o $(USER_TOOLS) ::/bin/tools
-	@$(MCOPY) -i $@ -o $(USER_DEVMGD) ::/bin/devmgd
-	@$(MCOPY) -i $@ -o $(USER_NETD) ::/bin/netd
-	@$(MCOPY) -i $@ -o $(USER_SNDD) ::/bin/sndd
-	@$(MCOPY) -i $@ -o $(USER_USBD) ::/bin/usbd
-	@$(MCOPY) -i $@ -o $(USER_CFGD) ::/bin/cfgd
-	@$(MCOPY) -i $@ -o $(USER_PLATD) ::/bin/platd
-	@$(MCOPY) -i $@ -o $(USER_WM) ::/bin/eeewm
-	@$(MCOPY) -i $@ -o $(USER_ETERM) ::/bin/eterm
-	@$(MCOPY) -i $@ -o $(USER_PAD) ::/bin/pad
-	@$(MCOPY) -i $@ -o $(USER_CALC) ::/bin/calc
-	@$(MCOPY) -i $@ -o $(USER_EIMG) ::/bin/eimg
-	@$(MCOPY) -i $@ -o $(USER_EFM) ::/bin/efm
-	@$(MCOPY) -i $@ -o $(USER_TIMED) ::/bin/timed
-	@$(MCOPY) -i $@ -o $(USER_LOGD) ::/bin/logd
-	@$(MCOPY) -i $@ -o $(USER_MONITOR) ::/bin/monitor
-	@$(MCOPY) -i $@ -o $(USER_SETTINGS) ::/bin/settings
-	@$(MCOPY) -i $@ -o $(USER_SCREENSHOT) ::/bin/screenshot
-	@$(MCOPY) -i $@ -o etc/services ::/etc/services
-	@$(MCOPY) -i $@ -o etc/input.cfg ::/etc/input.cfg
-	@$(MCOPY) -i $@ -o etc/wm.cfg ::/etc/wm.cfg
-	@$(MCOPY) -i $@ -o etc/net.cfg ::/etc/net.cfg
-	@$(MCOPY) -i $@ -o etc/time.cfg ::/etc/time.cfg
-	@$(MCOPY) -i $@ -o etc/hosts ::/etc/hosts
-	@$(MCOPY) -i $@ -o etc/disabled ::/etc/disabled
-	@$(MCOPY) -i $@ -o etc/open.cfg ::/etc/open.cfg
-	@$(MCOPY) -i $@ -o etc/openers ::/etc/openers
-	@$(MCOPY) -i $@ -o etc/power.cfg ::/etc/power.cfg
-	@for f in drivers/*.man; do $(MCOPY) -i $@ -o $$f ::/lib/drivers/$$(basename $$f); done
+	@for f in $(ROOTFS_SHARE); do $(MCOPY) -i $@ -o $(BUILD)/$$f ::/share/$$f; done
+	@for p in $(ROOTFS_PROGRAMS); do $(MCOPY) -i $@ -o zig-out/bin/$$p ::/bin/$$p; done
+	@for p in $(ROOTFS_EXAMPLES); do $(MCOPY) -i $@ -o $(BUILD)/$$p ::/bin/$$p; done
+	@for f in services disabled openers; do $(MCOPY) -i $@ -o $(BUILD)/etc/$$f ::/etc/$$f; done
+	@for f in input.cfg wm.cfg net.cfg time.cfg hosts open.cfg power.cfg; do $(MCOPY) -i $@ -o etc/$$f ::/etc/$$f; done
+	@for f in $(ROOTFS_DRIVERS); do $(MCOPY) -i $@ -o drivers/$$f ::/lib/drivers/$$f; done
 	@if [ "$(MANUAL)" = "yes" ]; then \
 		for f in manual/*; do $(MCOPY) -i $@ -o $$f ::/doc/$$(basename $$f); done; \
 	fi
 
-$(IMAGE): $(STAGE1_BIN) $(STAGE2_BIN) $(KERNEL_BIN) $(MKIMAGE) $(ROOTFS_IMG)
+$(IMAGE): $(STAGE1_BIN) $(STAGE2_BIN) $(KERNEL_BIN) $(MKIMAGE) $(ROOTFS_IMG) $(HOME_APPS)
 ifeq ($(ARCH),arm)
 	$(error $(IMAGE) is x86-only today; for arm use: make qemu)
 else
@@ -403,13 +399,16 @@ populate: | $(BUILD)
 	@$(MMD) -i $(IMG)@@$(HOME_OFFSET) ::/bin
 	@printf "vibeee\nbuilt %s\n" "$(shell date -u +%Y-%m-%dT%H:%M:%SZ)" > $(BUILD)/readme.txt
 	@$(MCOPY) -i $(IMG)@@$(HOME_OFFSET) -o $(BUILD)/readme.txt ::/readme.txt
-	@# And whatever is staged for it. `home/` on this side is what /home
-	@# holds on the machine, so an app installed there is there again
-	@# after a rebuild rather than lost with the old image.
-	@for f in home/*; do \
-		[ -e "$$f" ] || continue; \
-		$(MCOPY) -s -i $(IMG)@@$(HOME_OFFSET) -o "$$f" ::/ ; \
-	done
+	@# And what is staged for it: all of home/ when the configuration says
+	@# so, otherwise only the extra applications it selects.
+	@if [ "$(HOME_STAGED)" = "yes" ]; then \
+		for f in home/*; do \
+			[ -e "$$f" ] || continue; \
+			$(MCOPY) -s -i $(IMG)@@$(HOME_OFFSET) -o "$$f" ::/ ; \
+		done; \
+	else \
+		for a in $(HOME_APPS); do $(MCOPY) -i $(IMG)@@$(HOME_OFFSET) -o home/bin/$$a ::/bin/$$a; done; \
+	fi
 
 # ---------------------------------------------------------------------------
 # Running
@@ -440,7 +439,7 @@ DEV_CMDLINE ?= verbose
 DEV_PANEL ?= 800x600
 
 .PHONY: dev-image
-dev-image: $(STAGE1_BIN) $(STAGE2_BIN) $(KERNEL_BIN) $(MKIMAGE) $(ROOTFS_IMG)
+dev-image: $(STAGE1_BIN) $(STAGE2_BIN) $(KERNEL_BIN) $(MKIMAGE) $(ROOTFS_IMG) $(HOME_APPS)
 ifeq ($(ARCH),arm)
 	$(error $(DEV_IMAGE) is x86-only today; for arm use: make qemu)
 else
@@ -561,7 +560,14 @@ check:
 #
 # The partition offsets are passed in so that the script has no copy of the
 # image layout to fall out of step with.
-check-all: fmt check test dom-test dev-image image
+#
+# The configuration checked is the default one, whatever .config says: an
+# empty file is the defaults.
+check-all:
+	@$(MAKE) --no-print-directory CONFIG=/dev/null check-default
+
+.PHONY: check-default
+check-default: fmt check test dom-test dev-image image
 	@BUILD=$(BUILD) ROOTFS_IMG=$(ROOTFS_IMG) DEV_IMAGE=$(DEV_IMAGE) IMAGE=$(IMAGE) \
 		CFG_OFFSET=$(CFG_OFFSET) HOME_OFFSET=$(HOME_OFFSET) QEMU_CPU="$(QEMU_CPU)" \
 		tools/check-all.sh

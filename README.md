@@ -21,6 +21,18 @@ make vnc                   # boot with VNC on localhost:5901
 make check-all             # format, checks, tests, images, and QEMU boot checks
 ```
 
+Configure the image, as with Linux or Buildroot:
+
+```bash
+make menuconfig            # processor, services, desktop, extra applications, sizes
+make list-defconfigs       # presets: minimal, console, full, and netbook models
+make eeepc_901_defconfig   # start from a preset
+make savedefconfig         # write what differs from the defaults to defconfig
+```
+
+Without a `.config` the image is the default: the Eee PC 701 with everything but the
+extra applications.
+
 The system starts at a shell. Run `svc start eeewm` to start the desktop.
 
 Other targets:
@@ -29,7 +41,6 @@ Other targets:
 make image                 # build build/vibeee.img
 make qemu-sd               # boot the release image as USB storage
 make sd DEV=/dev/rdiskN    # guarded SD card writer on macOS
-make MANUAL=no image       # omit the on-device manual
 make fuzz                  # run fuzz targets (does not work on Zig 0.16.0)
 ```
 
@@ -43,14 +54,16 @@ across multiple workspaces, measured **about 19 MiB**.
 
 | Component | Minimum | Validated / recommended |
 |---|---|---|
-| CPU | 32-bit x86 with SSE2, APIC, TSC, MSRs and legacy BIOS; AMD Athlon 64 class or newer | 630 MHz Pentium M / Celeron M class or faster |
+| CPU | 32-bit x86 from the Pentium II on, with TSC, MSRs and legacy BIOS; the default image needs SSE2 | 630 MHz Pentium M / Celeron M class or faster |
 | RAM | 32 MiB for basic desktop use | 512 MiB |
 | Storage | 64 MiB bootable SD, USB or ATA media | Larger, with `grow` extending `/home` |
 | Graphics | VGA-class firmware framebuffer | Intel GMA 900/950 for native modesetting |
 
-32 MiB starts the desktop in QEMU with little room for applications. AMD Athlon 64 class
-systems meet the CPU feature floor but are not validated on hardware. SYSENTER, PAE, NX,
-SSE3, 64-bit mode and multiple cores are not required.
+32 MiB starts the desktop in QEMU with little room for applications. `make menuconfig`
+compiles for another processor: Pentium II and III, Atom, Bay Trail, Apollo Lake, Core
+2, Nehalem, K8, K10, VIA C3, C7 and Nano. An image stops at boot with the name of a
+missing extension. Only the 701 is validated on hardware. SYSENTER, PAE, NX, 64-bit mode
+and multiple cores are not required; the kernel runs on one core.
 
 ## Included System
 
@@ -130,7 +143,7 @@ glyphs. See [Status](docs/status.md).
 
 ## Real Hardware
 
-1. Run `make image`.
+1. Run `make image`, after `make <machine>_defconfig` for a netbook other than the 701.
 2. Write `build/vibeee.img` to an SD card with `make sd DEV=/dev/rdiskN` on macOS, or
    `dd` elsewhere.
 3. Boot the card as USB-HDD on the Eee PC.

@@ -1,7 +1,7 @@
 //! The machine's randomness.
 //!
-//! There is no hardware random source on this computer, so the surprise comes
-//! from timing. Interrupts land at moments that vary with caches, memory
+//! The Eee PC 701 has no hardware random source, so the surprise comes from
+//! timing. A processor with RDRAND adds its output at boot. Interrupts land at moments that vary with caches, memory
 //! refresh, bus traffic and the devices themselves, and the kernel is the only
 //! thing that sees every one of them. Each contributes the gap since the last.
 //!
@@ -48,6 +48,14 @@ var announced = false;
 pub fn sample(ticks: u64) void {
     jitter.sample(ticks);
     _ = jitter.drain(&pool);
+}
+
+/// Mix in the processor's random number generator, where it has one. Stirred
+/// like any outside source: it adds to what timing gives and stands for none
+/// of it.
+pub fn stirProcessor() void {
+    var bytes: [64]u8 = undefined;
+    if (hal.processorRandom(&bytes)) stir(&bytes);
 }
 
 /// Mix something in from outside the kernel.

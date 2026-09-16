@@ -78,6 +78,15 @@ pub fn Bounded(comptime T: type, comptime capacity: usize) type {
             self.len = 0;
         }
 
+        /// Put one in at `index`, moving the rest along. Fails when full, or
+        /// when `index` is past the end.
+        pub fn insert(self: *Self, index: usize, value: T) Error!void {
+            if (self.len == capacity or index > self.len) return error.Full;
+            std.mem.copyBackwards(T, self.items[index + 1 .. self.len + 1], self.items[index..self.len]);
+            self.items[index] = value;
+            self.len += 1;
+        }
+
         /// Take one out and close the gap, for a list whose order is read.
         pub fn remove(self: *Self, index: usize) void {
             if (index >= self.len) return;
@@ -160,6 +169,17 @@ test "clear keeps the capacity and drops the contents" {
     try std.testing.expectEqual(@as(usize, 0), list.slice().len);
     try list.append(9);
     try std.testing.expectEqual(@as(?u32, 9), list.at(0));
+}
+
+test "inserting moves the rest along, and refuses when full" {
+    var list: Bounded(u8, 4) = .{};
+    _ = list.set("ac");
+    try list.insert(1, 'b');
+    try list.insert(3, 'd');
+    try testing.expectEqualStrings("abcd", list.slice());
+    try testing.expectError(error.Full, list.insert(0, 'x'));
+    list.truncate(2);
+    try testing.expectError(error.Full, list.insert(3, 'x'));
 }
 
 test "removing keeps the order, or fills the gap with the last" {

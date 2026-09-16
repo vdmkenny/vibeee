@@ -259,7 +259,7 @@ Static loses ~1.3 MB RAM and ~0.6 MB compressed image; buys zero loader complexi
 ### 6.7 Sockets shim & C porting story
 
 - `socket bind connect listen accept send recv sendto recvfrom setsockopt/getsockopt(subset: SO_REUSEADDR, SO_ERROR, TCP_NODELAY) shutdown getaddrinfo/freeaddrinfo gethostbyname(shim) inet_ntop/pton`. socket() opens a channel to /svc/net; each socket = netd-side id + TX/RX shm rings + readable/writable events. AF_INET SOCK_STREAM/DGRAM only. getaddrinfo does DNS via a netd call (netd owns the resolver).
-- **C ports**: `eeecc` wrapper = pinned `zig cc -target x86-freestanding -mcpu=pentium_m -O ReleaseSmall -nostdinc -isystem $SYSROOT/include -nostdlib $SYSROOT/lib/crt0.o -leeelibc -T $SYSROOT/lib/user.ld`. A small editor (kilo-class) needs: termios raw mode (provided: `tcgetattr/tcsetattr` with ICANON/ECHO/VMIN over the terminal channel), read/write/snprintf, TIOCGWINSZ, all present. Port checklist shipped in docs: no fork → posix_spawn; no signal handlers beyond TERM/INT/HUP; no file mmap; no locale.
+- **C ports**: `eeecc` wrapper = pinned `zig cc -target x86-freestanding -mcpu=<configured processor> -O ReleaseSmall -nostdinc -isystem $SYSROOT/include -nostdlib $SYSROOT/lib/crt0.o -leeelibc -T $SYSROOT/lib/user.ld`. A small editor (kilo-class) needs: termios raw mode (provided: `tcgetattr/tcsetattr` with ICANON/ECHO/VMIN over the terminal channel), read/write/snprintf, TIOCGWINSZ, all present. Port checklist shipped in docs: no fork → posix_spawn; no signal handlers beyond TERM/INT/HUP; no file mmap; no locale.
 
 ## 7. CLI environment
 

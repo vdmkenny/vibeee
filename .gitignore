@@ -20,3 +20,7 @@ home/*
 
 # Python's own cache, from the fixture generator.
 __pycache__/
+# The image configuration: make menuconfig, make savedefconfig.
+/.config
+/.config.old
+/defconfig

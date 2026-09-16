@@ -1,10 +1,9 @@
 //! FPU and SSE state.
 //!
 //! The kernel is built without x87 or SSE, but user programs are not: the
-//! compiler emits `xorps` and `movaps` to zero and copy structures, and the GUI
-//! blitters will want SSE2 deliberately. Without CR4.OSFXSR set those
-//! instructions raise an invalid-opcode fault, which is a confusing way to
-//! discover the feature was never enabled.
+//! compiler emits `xorps` and `movaps` to zero and copy structures where the
+//! target has SSE, and x87 for floating point where it does not. Without
+//! CR4.OSFXSR the SSE instructions raise an invalid-opcode fault.
 //!
 //! State is saved and restored on every context switch rather than lazily on
 //! first use. Lazy switching trades a fault per thread against a copy per
@@ -28,25 +27,26 @@ var available = false;
 
 pub fn enable() void {
     const features = cpu.Features.detect();
-    if (!features.fxsr or !features.sse) return;
+    // FXSAVE carries the x87 and MMX state with FXSR alone, which every
+    // processor from the Pentium II has. SSE adds its own state to the same
+    // area where the processor has it.
+    if (!features.fxsr) return;
 
-    asm volatile (
-    // CR0: clear EM so SSE is not trapped as emulated, set MP so FWAIT
-    // behaves, clear TS so no device-not-available fault on first use.
-        \\ movl %%cr0, %%eax
-        \\ andl $0xFFFFFFF3, %%eax
-        \\ orl  $0x00000002, %%eax
-        \\ movl %%eax, %%cr0
-        // CR4: OSFXSR enables SSE and FXSAVE; OSXMMEXCPT routes SIMD
-        // exceptions to vector 19 rather than an invalid opcode.
-        \\ movl %%cr4, %%eax
-        \\ orl  $0x00000600, %%eax
-        \\ movl %%eax, %%cr4
-        \\ fninit
-        ::: .{ .eax = true, .memory = true });
+    var cr0: cpu.Cr0 = @bitCast(cpu.readCr0());
+    cr0.emulation = false;
+    cr0.monitor_coprocessor = true;
+    cr0.task_switched = false;
+    cpu.writeCr0(@bitCast(cr0));
 
-    save(&template);
+    var cr4: cpu.Cr4 = @bitCast(cpu.readCr4());
+    cr4.os_fxsr = true;
+    // Reserved before SSE: setting it on a Pentium II faults.
+    cr4.os_xmm_exceptions = features.sse;
+    cpu.writeCr4(@bitCast(cr4));
+
+    asm volatile ("fninit");
     available = true;
+    save(&template);
 }
 
 pub fn isAvailable() bool {

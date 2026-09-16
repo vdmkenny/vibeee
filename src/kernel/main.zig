@@ -17,6 +17,7 @@ const logo = lib.logo;
 const panic_mod = @import("panic.zig");
 const panicring = @import("panicring.zig");
 const pipe = @import("pipe.zig");
+const random = @import("random.zig");
 const vfs = @import("vfs.zig");
 const pmm = @import("pmm.zig");
 const heap = @import("heap.zig");
@@ -115,6 +116,11 @@ pub fn kmain(bi: *bootinfo.BootInfo) noreturn {
 
     const cpu_info = hal.cpuInfo();
     console.info("cpu", "{s}", .{cpu_info.brand});
+    // User programs would fault on their first instruction using it.
+    if (hal.missingCpuFeature()) |extension| {
+        std.debug.panic("this image needs a processor with {s}", .{extension});
+    }
+    random.stirProcessor();
     // What was armed, not what the CPU advertises: the two differ when the
     // MSRs could not be programmed, and userspace picks from the former.
     console.info("", "{s}{s}", .{

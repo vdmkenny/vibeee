@@ -287,18 +287,7 @@ fn unquote(value: []u8) ?[]const u8 {
     return null;
 }
 
-/// Split a `key = value` line. Null for a comment, a blank line, or anything
-/// without a separator.
-pub fn pair(line: []const u8) ?struct { key: []const u8, value: []const u8 } {
-    const text = str.trim(line);
-    if (text.len == 0 or text[0] == '#') return null;
-
-    for (text, 0..) |c, i| {
-        if (c != '=') continue;
-        return .{ .key = str.trim(text[0..i]), .value = str.trim(text[i + 1 ..]) };
-    }
-    return null;
-}
+pub const pair = @import("lib").stanzas.pair;
 
 /// Read a file whose every line configures one field of `target`.
 ///

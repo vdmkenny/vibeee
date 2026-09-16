@@ -129,7 +129,7 @@ pub const Prio = enum(u2) { rt = 0, high = 1, normal = 2, idle = 3 };
 
 Switch = save callee-saved regs on old kstack, swap `esp`, write `IA32_SYSENTER_ESP` (MSR 0x175) = new kstack_top, rewrite GDT TLS entry + `mov gs`, reload CR3 only if the process changes (kernel mappings are Global: PGE keeps them in TLB). Cost estimate: ~1–2 µs.
 
-**FPU: lazy via CR0.TS + #NM, safe and optimal on a single core** (the classic SMP hazard, stale state on another CPU, cannot occur). Switch sets TS; first SSE/x87 use traps #NM → `clts`, `fxsave` to previous owner's area, `fxrstor` current. Threads that never touch SSE (most driver servers' control paths) pay zero. Kernel itself is compiled **soft-float, no SSE/MMX/x87** (Zig target: `pentium_m` minus sse,sse2,mmx,x87) so kernel code never triggers #NM; the two exceptions (memcpy tuning) are not worth the state discipline, `rep movsd` saturates this bus anyway.
+**FPU: lazy via CR0.TS + #NM, safe and optimal on a single core** (the classic SMP hazard, stale state on another CPU, cannot occur). Switch sets TS; first SSE/x87 use traps #NM → `clts`, `fxsave` to previous owner's area, `fxrstor` current. Threads that never touch SSE (most driver servers' control paths) pay zero. Kernel itself is compiled **soft-float, no SSE/MMX/x87** (Zig target: the configured processor's model minus its SIMD extensions) so kernel code never triggers #NM; the two exceptions (memcpy tuning) are not worth the state discipline, `rep movsd` saturates this bus anyway.
 
 ### 4.3 Scheduler
 

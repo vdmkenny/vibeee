@@ -91,6 +91,18 @@ const RULES = [_]Rule{
     },
     // Keyboard layouts are compiled into the kernel and named by userspace. A
     // layout that reached for either would drag it into the other.
+    // The image configuration runs on the build machine. It reads what the
+    // system is built from and must not become part of it.
+    .{
+        .from = "src/config",
+        .forbid = "kernel/",
+        .why = "src/config is build-machine code and must not depend on the kernel",
+    },
+    .{
+        .from = "src/config",
+        .forbid = "user/",
+        .why = "src/config is build-machine code and must not depend on userspace",
+    },
     .{
         .from = "src/keymaps",
         .forbid = "kernel/",

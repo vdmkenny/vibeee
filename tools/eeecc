@@ -12,6 +12,9 @@
 #   -nostdlib     no crt files but our own, and no libc but ours
 #   -static       there is no dynamic loader, by decision, not by omission
 #
+# The processor comes from EEECC_MCPU, which the Makefile sets from the image
+# configuration; the Eee PC 701's by default.
+#
 set -e
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -25,7 +28,7 @@ fi
 
 exec "$ZIG" cc \
     -target x86-freestanding-none \
-    -mcpu=pentium_m \
+    -mcpu="${EEECC_MCPU:-pentium_m}" \
     -Os \
     -static \
     -nostdlibinc \

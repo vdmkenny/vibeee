@@ -68,6 +68,9 @@ the main `build.zig` into `home/`. Hero is one: `apps/hero/` holds its source, a
 Apps build into `home/bin/`, and the image seeds `/home` from `home/`. Rebuilding the
 image keeps installed apps: `home/` on the host is the source of truth.
 
+`make menuconfig` > Extra applications builds the selected apps with the image. Turning
+off "Copy home/ into /home" limits `/home` to the selected apps.
+
 `make qemu` and `make vnc` use whatever is already staged and do not build apps. After
 changing an app, build it before booting:
 
