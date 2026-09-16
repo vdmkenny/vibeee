@@ -558,21 +558,20 @@ pub fn stop(nic: *NicDev) void {
 /// The shape of the pass is `dev.serveIrq`'s: read a cause, hold the line
 /// over the work, release it, and look again. What only this driver knows
 /// is the three things below.
-pub fn irq(nic: *NicDev) bool {
-    if (!device.opened or !device.started) return false;
+pub fn irq(nic: *NicDev) dev_mod.Pass {
+    if (!device.opened or !device.started) return .idle;
     return dev_mod.serveIrq(@This(), nic);
 }
 
-/// What the adapter has latched, as one word: zero for nothing, which is
-/// what ends the pass, and on a shared line what says an edge was not
-/// ours.
+/// What the adapter has latched, or null for nothing, which on a shared
+/// line says the interrupt was not ours.
 ///
 /// ICR is read-to-clear, so this read is also the acknowledgement of
 /// everything it reported; `acknowledge` does not write it back.
-pub fn cause() u32 {
-    if (!device.started) return 0;
+pub fn cause() ?Causes {
+    if (!device.started) return null;
     const latched: Causes = @bitCast(device.regs.read(.icr));
-    return if (latched.none()) 0 else @bitCast(latched);
+    return if (latched.none()) null else latched;
 }
 
 /// Hold the line over the work, and let it go afterwards.
@@ -583,11 +582,10 @@ pub fn cause() u32 {
 /// holds the line here is the mask: IMC while the work runs, IMS after it,
 /// which on a level line is what stops the controller re-asserting
 /// mid-pass and on an edge one costs a posted write.
-pub fn acknowledge(_: u32, held: bool) void {
-    if (held) {
-        device.regs.write(.imc, AllCauses);
-    } else {
-        device.regs.write(.ims, @bitCast(UpCauses));
+pub fn acknowledge(_: Causes, ack: dev_mod.Ack) void {
+    switch (ack) {
+        .hold => device.regs.write(.imc, AllCauses),
+        .release => device.regs.write(.ims, @bitCast(UpCauses)),
     }
     _ = device.regs.read(.status); // flush the posted mask write
 }
@@ -598,23 +596,27 @@ pub fn acknowledge(_: u32, held: bool) void {
 /// on a shared line so is every neighbour's. Reaping is bounded by
 /// `RX_REAP_BUDGET` rather than by the number of rounds, because a round
 /// is a look at the cause and not a limit on what a wire can have filled.
-pub fn service(causes: u32, nic: *NicDev) void {
-    const latched: Causes = @bitCast(causes);
+pub fn service(latched: Causes, nic: *NicDev) dev_mod.Work {
     if (latched.rx_min or latched.rx_overrun or latched.rx_timer) reapRx(nic);
     if (latched.rx_sequence or latched.rx_overrun) nic.stats.rx_dropped += 1;
     if (latched.tx_done) reapTx(nic);
     if (latched.link_change) dev_mod.deliverLink(nic, link(nic));
+    return .done;
 }
 
-pub fn poll(dev: *NicDev) bool {
-    if (!device.opened or !device.started) return false;
+pub fn poll(dev: *NicDev) dev_mod.Work {
+    if (!device.opened or !device.started) return .done;
     // Whatever arrived with no interrupt behind it: a line the firmware
-    // routed nowhere, or an edge this service never saw. Nothing about
+    // routed nowhere, or one the loop is owed a look at. Nothing about
     // the ring depends on being woken; the descriptors are the hardware's
     // to fill whether an interrupt was delivered or not.
     reapRx(dev);
     reapTx(dev);
-    return true;
+    return .done;
+}
+
+comptime {
+    if (dev_mod.RX_REAP_BUDGET < RingSlots) @compileError("a receive pass must be able to take the whole ring");
 }
 
 /// Take what the receiver has finished, one lap of the ring at most.
@@ -622,7 +624,8 @@ pub fn poll(dev: *NicDev) bool {
 /// Each descriptor goes straight back to the part as it is taken, so at line
 /// rate the ring refills as fast as it empties. A pass bounded only by the
 /// ring going quiet holds this single-threaded service for as long as the
-/// wire keeps talking; what is left is the next pass's.
+/// wire keeps talking. What is left when a pass stops arrived after ICR was
+/// read, and latches a cause of its own.
 fn reapRx(dev: *NicDev) void {
     device.receiver.take(dev_mod.RX_REAP_BUDGET, Part{}, dev, delivered);
 }

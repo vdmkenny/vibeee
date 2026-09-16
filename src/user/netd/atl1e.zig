@@ -499,7 +499,7 @@ const Device = struct {
     /// passes rather than on the line: everything it waits on is the
     /// part's, and on a shared line every neighbour would wait with it.
     reseat_pending: bool = false,
-    reseat_cause: u32 = 0,
+    reseat_cause: Isr = .{},
     opened: bool = false,
     started: bool = false,
 };
@@ -983,36 +983,43 @@ fn applyLinkState(state: dev_mod.Link) void {
 // Traffic
 // ---------------------------------------------------------------------------
 
-pub fn irq(nic: *NicDev) bool {
-    if (!device.opened) return false;
+pub fn irq(nic: *NicDev) dev_mod.Pass {
+    if (!device.opened) return .idle;
     return dev_mod.serveIrq(@This(), nic);
 }
 
-/// What latched, or zero when nothing did. `serveIrq`'s vocabulary.
+/// What latched, or null when nothing did.
 ///
 /// Nothing at all while a reseat is owed: the part's next word belongs to
 /// the reseat rather than to this pass, and saying so is what ends the
 /// pass instead of working on an adapter that is about to be rebuilt.
-pub fn cause() u32 {
-    if (device.reseat_pending) return 0;
+pub fn cause() ?Isr {
+    if (device.reseat_pending) return null;
     const latched: Isr = @bitCast(device.regs.common.read(.isr));
-    return if (latched.none()) 0 else @bitCast(latched);
+    return if (latched.none()) null else latched;
 }
 
-pub fn acknowledge(what: u32, hold: bool) void {
-    var causes: Isr = @bitCast(what);
-    causes.hold = hold;
-    device.regs.common.write(.isr, @bitCast(causes));
+/// Hold: clear what was read, with the hold bit set so the part does not
+/// assert while the work runs. Release: write zero, which clears the hold
+/// bit alone, so a cause that latched during the work stays latched and
+/// asserts.
+pub fn acknowledge(latched: Isr, ack: dev_mod.Ack) void {
+    switch (ack) {
+        .hold => {
+            var causes = latched;
+            causes.hold = true;
+            device.regs.common.write(.isr, @bitCast(causes));
+        },
+        .release => device.regs.common.write(.isr, @bitCast(Isr{})),
+    }
 }
 
-pub fn service(what: u32, nic: *NicDev) void {
-    const causes: Isr = @bitCast(what);
-
+pub fn service(causes: Isr, nic: *NicDev) dev_mod.Work {
     // A cause that says the part is not there any more. Nothing below
     // would mean anything.
     if (causes.phy_link_down) {
         log.fail(name, "the PCIe link dropped under the adapter");
-        return;
+        return .done;
     }
     if (causes.phy or causes.phy_low_power) {
         // Read to clear, then take the answer from the PHY rather than
@@ -1021,7 +1028,8 @@ pub fn service(what: u32, nic: *NicDev) void {
         syncLink(nic);
     }
     if (causes.tx_packet or causes.tx_credit or causes.txf_underrun) reapTx();
-    if (causes.rx_packet or causes.page_full) receive(nic);
+    var work: dev_mod.Work = .done;
+    if (causes.rx_packet or causes.page_full) work = receive(nic);
 
     if (causes.rxf_overflow or causes.page_overflow) {
         // The wire outran this process. Counted rather than said every
@@ -1029,11 +1037,12 @@ pub fn service(what: u32, nic: *NicDev) void {
         nic.stats.rx_dropped += 1;
     }
     // An engine that stopped moving is not something a pass can fix.
-    if (causes.dmar_timeout or causes.dmaw_timeout) askReseat(what);
+    if (causes.dmar_timeout or causes.dmaw_timeout) askReseat(causes);
+    return work;
 }
 
 /// Ask for the adapter to be rebuilt between passes.
-fn askReseat(why: u32) void {
+fn askReseat(why: Isr) void {
     if (device.reseat_pending) return;
     device.reseat_cause = why;
     device.reseat_pending = true;
@@ -1059,7 +1068,7 @@ fn reseat(nic: *NicDev) void {
 
     log.begin(nic.name, .warn);
     out.text("reseating the adapter after cause 0x");
-    out.hex(device.reseat_cause, 8);
+    out.hex(@as(u32, @bitCast(device.reseat_cause)), 8);
     log.end();
 
     nic.stats.tx_failed += device.fill.used(device.reaped.at);
@@ -1080,13 +1089,13 @@ fn reseat(nic: *NicDev) void {
     log.say(name, .dim, "the adapter is back");
 }
 
-/// The adapter with no interrupt behind it, for a line that never fires.
-pub fn poll(nic: *NicDev) bool {
-    if (!device.opened or !device.started) return false;
+/// The adapter with no interrupt behind it: a line that never fires, or
+/// one the loop is owed a look at.
+pub fn poll(nic: *NicDev) dev_mod.Work {
+    if (!device.opened or !device.started) return .done;
     reseat(nic);
     reapTx();
-    receive(nic);
-    return true;
+    return receive(nic);
 }
 
 /// Give back every descriptor the part has finished with.
@@ -1111,16 +1120,20 @@ fn reapTx() void {
 const RX_BURST = dev_mod.RX_REAP_BUDGET;
 
 /// Everything the part has written into the page being read, and then the
-/// other page when this one is finished with.
-fn receive(nic: *NicDev) void {
-    var taken: usize = 0;
-    while (taken < RX_BURST) : (taken += 1) {
+/// other page when this one is finished with, up to `RX_BURST` records.
+///
+/// A page holds more records than that, and one written before the hold
+/// cleared the cause has no cause left to announce it, so a walk the budget
+/// stops answers `.unfinished`.
+fn receive(nic: *NicDev) dev_mod.Work {
+    for (0..RX_BURST) |_| {
         // Every record counts against the budget, whether or not it
         // turned out to be a frame: a page full of broken ones must not
         // hold the service any longer than a page full of good ones.
-        const frame = nextFrame(nic) orelse return;
+        const frame = nextFrame(nic) orelse return .done;
         if (frame.len != 0) dev_mod.deliverRx(nic, .{ .frame = frame, .ok = true });
     }
+    return .unfinished;
 }
 
 /// The next record in the page being read, or nothing when the part has
@@ -1176,7 +1189,7 @@ fn handBack() void {
 fn lost(nic: *NicDev) ?[]const u8 {
     nic.stats.rx_dropped += 1;
     log.warn(name, "lost the place in the receive page");
-    askReseat(@bitCast(Isr{ .rxf_overflow = true }));
+    askReseat(.{ .rxf_overflow = true });
     return null;
 }
 

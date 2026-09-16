@@ -62,6 +62,9 @@ test {
     _ = @import("user/netd/e100/rings.zig");
     // The 82540's two descriptor rings against a model of the part.
     _ = @import("user/netd/e1000/rings.zig");
+    // How the network service serves its interrupt lines, against a fake
+    // system and fake interfaces.
+    _ = @import("user/netd/lines.zig");
     _ = @import("user/netd/mii.zig");
     // The page an L1E receives into, which is the only part of that
     // driver that can be run anywhere but on the machine that has one.

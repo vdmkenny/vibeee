@@ -58,9 +58,10 @@ trusted, supervised system service. This trust boundary is documented, not mitig
 - Attansic L2 at 03:00.0, 1969:2048 rev a0, PCIe x1, 10/100, integrated PHY.
   Implemented and verified on the machine; register truth in §4 and in the driver.
 - Interrupt routing is the firmware's: netd asks `platd`, which answers from `_PRT`
-  (the wired port arrives on line 17). Lines are shareable level-triggered IOAPIC
-  inputs under the deferred-completion model; the controller is never touched at
-  runtime. Neither driver uses MSI (atl2 MSI is known-flaky in Linux).
+  (the wired port arrives on line 17). Lines are shareable IOAPIC inputs. The Eee PC
+  quirk routes them on the falling edge; other boards keep level lines under the
+  deferred-completion model. The controller is never touched at runtime. Neither
+  driver uses MSI (atl2 MSI is known-flaky in Linux).
 - Atheros AR2425 at 01:00.0, 168c:001c, b/g only: §5, later milestone.
 - QEMU emulates neither atl2 nor AR2425; the e1000, rtl8139 and e100 drivers exist so every
   layer above the driver interface is exercised in emulation (§11).
@@ -71,20 +72,28 @@ trusted, supervised system service. This trust boundary is documented, not mitig
 ### 3.1 Event loop
 
 One `wait_many`, every external stimulus an event or a channel message, and the
-timeout the stack's own next deadline:
+timeout the soonest deadline anything in the loop has:
 
 ```
 sources: service channel | one irq handle per taken line | cfg watch event
          | client doorbell event
-timeout: sys_timeouts_sleeptime()   (lwIP's next timer, FOREVER when it has none)
+timeout: the soonest of lwIP's next timer (sys_timeouts_sleeptime()), the
+         station's, and the adapters' (dev.nextDeadline); FOREVER when none
 ```
 
 - After every wake, whatever the reason: `sys_check_timeouts()`. lwIP schedules its
-  own retransmits, DHCP renewals, ARP aging and DNS retries through this one call;
-  netd never ticks, polls or sleeps on its own account. An idle network parks the
-  loop in `wait_many` forever.
-- IRQ wake: read the device ISR, service, `irq_ack`. A shared line costs the other
-  driver one "not mine" ISR read.
+  own retransmits, DHCP renewals, ARP aging and DNS retries through this one call.
+  An idle network wakes the loop for lwIP's cyclic timers and nothing else.
+- An adapter's deadline is zero while a receive budget left it frames (`owed`), 25 ms
+  while it has no interrupt line, and otherwise whatever its driver's `due` answers.
+- IRQ wake: `lines.serve` serves every interface on each delivered or owed line, then
+  `irq_ack` once. A shared line costs the other driver one "not mine" ISR read. A
+  line with more than one interface that did work gets a second round, because on an
+  edge line an interface that asserts under another's assertion makes no edge.
+- A line not served for 250 ms is served on the next pass the loop takes anyway, as if
+  it were owed. No wake is scheduled for it. It bounds the cost of an edge the
+  hardware loses, and of an assertion still hidden on a shared line after its second
+  round.
 - Channel wake: drain requests (§7 ops, §8 ops).
 - cfg watch wake: reload the `net` domain, diff against running state, apply (§7.3).
 - Doorbell wake: walk sockets with ring work pending (§8.2).
@@ -158,16 +167,32 @@ As implemented in `src/user/netd/dev.zig`: `open`, `start`, `stop`, `irq`,
 stack consumes rx via the netif glue and sees a radio as an ethernet netif
 carrying ethertype frames.
 
-Two entries are optional. `poll` services an adapter with no interrupt behind
-it: one the firmware routed nowhere, or one whose line has gone quiet. On this
-board the PIRQ pins ride the falling edge, so a missed edge never repeats.
-`service` runs work a driver owes between passes, such as a reset, because
-`irq` holds the line while it runs.
+`irq` answers a `Pass`: `idle`, `served`, or `unfinished` when a bound stopped
+work that no interrupt will announce. Three entries are optional. `poll` reaps
+the rings without an interrupt, for an adapter with no line and for a line that
+is owed work or unheard. `service` runs work a driver owes between passes, such
+as a reset, because `irq` holds the line while it runs. `due` says when `service`
+next has work no interrupt announces: e100's link reading, ar5212's transmit reap
+waiting for the queue to settle.
 
-Drivers do not write their own interrupt loop. They provide `cause`,
-`acknowledge` and `service` to `dev.serveIrq`, which bounds the rounds, holds
-the line during the work, and re-reads the cause on exit; a cause still latched
-is counted in `stats.irq_late`.
+Drivers do not write their own interrupt loop. They provide `cause` (their status
+word as a packed struct, or null), `acknowledge` (`.hold` or `.release`) and
+`service` (`.done` or `.unfinished`) to `dev.serveIrq`, which bounds the rounds and
+holds the line during the work. A delivery whose every round found a cause is
+counted in `stats.irq_late`. The cause is not read again after the last round,
+since some drivers' status registers clear on read, and one still latched asserted
+again at the last release. Rounds that find causes never keep the loop from
+sleeping, so a status bit a driver cannot clear costs rounds, not a busy loop.
+
+What keeps an edge line lossless:
+
+- Nothing is cleared on release, so a cause that latches during the work stays
+  latched and asserts at the release, which makes a fresh edge.
+- A reap bounded by its whole ring leaves only frames that arrived after the hold,
+  which latch their own cause. A reap bounded by `RX_REAP_BUDGET` with frames still
+  waiting (rtl8139, atl1e) answers `unfinished`.
+- Every interface on a line is served before its single `irq_ack`; a productive ack
+  on a line shared with another service wakes that service's owners (kernel cascade).
 
 Device memory is held as `dma.Arena(Body)`: one value with the pointer, the
 mapping, the physical address and the handle, acquired and released together.

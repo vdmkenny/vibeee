@@ -56,6 +56,11 @@ No counts: they go stale. Git records when this was last true.
 - This is a quirk of this firmware. A generic board keeps level lines with deferred
   completion. Each acknowledgement reports whether it found work, so a shared edge line
   held low across a neighbour's assertion is serviced again.
+- `netd` serves every interface on a line before acknowledging it once, gives a
+  shared line a second round after one that did work, and does not sleep while a
+  receive budget left frames waiting
+  ([`netd/lines.zig`](../src/user/netd/lines.zig), host-tested). A line not served
+  for 250 ms is served on the next pass the loop takes for another reason.
 - The SCI keeps level semantics, completes only after its owner clears the source, and
   sits in the lowest priority class.
 - IOAPIC entries are programmed at boot; the runtime never touches the controller.
@@ -288,7 +293,8 @@ driven. Modesetting belongs to the kernel; `firmware-set` keeps the firmware's m
 - DMA rings via `dma_alloc`, interrupts via `irqevent`, PCI routing from `platd`
   before the first packet.
 - lwIP, vendored unmodified, `NO_SYS`, raw API: IPv4, ARP, ICMP, UDP, TCP, DHCP per
-  interface, DNS stub. The loop's wait deadline is lwIP's next timer.
+  interface, DNS stub. The loop waits until the soonest of lwIP's next timer, the
+  station's and the adapters'; it has no fixed wake.
 - Configuration: `net` settings domain, four matcher slots (class, driver label or bus
   location; most specific wins). `net <iface> up|down|dhcp|static` persists and
   applies immediately.
@@ -405,7 +411,7 @@ every build. Code used by one driver only stays with that driver, for example
 - Pure logic is kept in files with no I/O so it can be tested directly: page-table
   walk, program-image plan, FAT long-name assembly, volume check decisions, volume
   geometry, receive-page walk, PRO/100 rings, 82540 rings, RTL8139 receive ring, OHCI
-  endpoint queue, EHCI transfer accounting.
+  endpoint queue, EHCI transfer accounting, netd's line serving.
 - A new test file runs only if `src/tests.zig`, `src/quirks/tests.zig` or the test
   block in `lib.zig` names it; a re-export is not enough. Confirm by making one of its
   tests fail.

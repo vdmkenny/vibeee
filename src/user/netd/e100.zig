@@ -269,42 +269,46 @@ fn commandNow(which: regs.Command, pointer: ?u32) bool {
 // Interrupts and housekeeping
 // ---------------------------------------------------------------------------
 
-pub fn irq(nic: *NicDev) bool {
-    if (!device.started) return false;
+pub fn irq(nic: *NicDev) dev_mod.Pass {
+    if (!device.started) return .idle;
     return dev_mod.serveIrq(@This(), nic);
 }
 
-/// What latched, as one word: zero for nothing, and for a part that has
-/// left the bus.
-pub fn cause() u32 {
-    if (!device.started) return 0;
-    const latched = device.bytes.read(.events);
-    if (latched == @as(u8, @bitCast(regs.Events.GONE))) return 0;
+/// What latched, or null for nothing and for a part that has left the bus.
+pub fn cause() ?regs.Events {
+    if (!device.started) return null;
+    const latched: regs.Events = @bitCast(device.bytes.read(.events));
+    if (latched == regs.Events{} or latched == regs.Events.GONE) return null;
     return latched;
 }
 
 /// Clear what was read and hold the line over the work; let it go after.
 /// A cause that latches during the work stays latched for the next look.
-pub fn acknowledge(causes: u32, held: bool) void {
-    if (held) device.bytes.write(.events, @truncate(causes));
-    mask(held);
+pub fn acknowledge(latched: regs.Events, ack: dev_mod.Ack) void {
+    switch (ack) {
+        .hold => {
+            device.bytes.write(.events, @bitCast(latched));
+            mask(true);
+        },
+        .release => mask(false),
+    }
 }
 
-pub fn service(causes: u32, nic: *NicDev) void {
-    const latched: regs.Events = @bitCast(@as(u8, @truncate(causes)));
+pub fn service(latched: regs.Events, nic: *NicDev) dev_mod.Work {
     if (latched.frame_received or latched.receiver_stopped) take(nic);
     if (latched.command_unit_left or latched.command_done) device.transmitter.reap(nic, failed);
     if (latched.mdi_done) heard(nic);
     keepRunning(nic);
+    return .done;
 }
 
 /// Whatever arrived with no interrupt behind it.
-pub fn poll(nic: *NicDev) bool {
-    if (!device.started) return false;
+pub fn poll(nic: *NicDev) dev_mod.Work {
+    if (!device.started) return .done;
     take(nic);
     device.transmitter.reap(nic, failed);
     keepRunning(nic);
-    return true;
+    return .done;
 }
 
 /// Between passes: start again what stopped while the part was busy, begin
@@ -325,6 +329,17 @@ fn tend(nic: *NicDev, now: u64) void {
     ask(.status, now);
 }
 
+/// How long until `tend` has work: the end of a reading's patience, or the
+/// next reading.
+fn tendDue(_: *NicDev, now: u64) ?u64 {
+    if (!device.started) return null;
+    const at = if (device.watch.reading != null)
+        device.watch.asked_at + MDI_PATIENCE_US
+    else
+        device.watch.due;
+    return at -| now;
+}
+
 // ---------------------------------------------------------------------------
 // The rings
 // ---------------------------------------------------------------------------
@@ -333,8 +348,14 @@ fn keepRunning(nic: *NicDev) void {
     rings.keepRunning(&device.receiver, &device.transmitter, Part{}, nic, failed);
 }
 
+/// One pass takes the whole ring, so a frame it leaves arrived after the
+/// hold cleared the cause and latches one of its own.
 fn take(nic: *NicDev) void {
     device.receiver.take(dev_mod.RX_REAP_BUDGET, nic, delivered);
+}
+
+comptime {
+    if (dev_mod.RX_REAP_BUDGET < RX_SLOTS) @compileError("a receive pass must be able to take the whole ring");
 }
 
 fn delivered(nic: *NicDev, frame: ?[]const u8) void {
@@ -407,6 +428,7 @@ pub const ops: dev_mod.NicOps = .{
     .irq = irq,
     .poll = poll,
     .service = tend,
+    .due = tendDue,
     .transmit = transmit,
     .link = link,
 };

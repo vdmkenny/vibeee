@@ -479,43 +479,37 @@ pub fn stop(nic: *NicDev) void {
     dev_mod.deliverLink(nic, .{});
 }
 
-pub fn irq(nic: *NicDev) bool {
+pub fn irq(nic: *NicDev) dev_mod.Pass {
     return dev_mod.serveIrq(@This(), nic);
 }
 
-/// What the adapter has latched, as the shared interrupt pass wants it:
-/// zero for nothing, and otherwise the interrupt status word itself, which
-/// is also what clears it and what `service` is handed back.
-pub fn cause() u32 {
-    if (!device.started) return 0;
+/// What the adapter has latched, or null for nothing. The whole status
+/// word, which is what the hold clears.
+pub fn cause() ?Events {
+    if (!device.started) return null;
     const raw = device.ports.read(u16, .isr);
     // Every bit set is what a read of nothing looks like: a shared line
     // driven by somebody else, or no adapter behind these ports at all.
-    if (raw == 0 or raw == std.math.maxInt(u16)) return 0;
-    const events = @as(Events, @bitCast(raw));
-    return if (events.hasWork()) @as(u32, raw) else 0;
+    if (raw == std.math.maxInt(u16)) return null;
+    const events: Events = @bitCast(raw);
+    return if (events.hasWork()) events else null;
 }
 
-/// Clear what this pass captured, and hold or release the line around the
-/// work done for it.
-///
-/// The clear comes first, as it did before this was three functions: a
-/// cause arriving during the drain stays latched and is handled by the next
-/// round, rather than being erased by a late write-one-to-clear. The mask
-/// is what holds the line, on a level-triggered one, between the clear and
-/// the end of the work it asked for.
-///
-/// `held` reaches here in two shapes -- a boolean while the pass holds the
-/// line, a zero once it lets it go -- and both mean the one thing this
-/// driver needs from it.
-pub fn acknowledge(latched: u32, held: bool) void {
-    const holding: bool = if (@TypeOf(held) == bool) held else held != 0;
-    device.ports.write(.isr, @as(u16, @truncate(latched)));
-    device.ports.write(.imr, if (holding) Events{} else EventsUp);
+/// Hold: clear what was read, and mask the adapter while the work runs.
+/// Release: unmask it. Only the hold clears, so a cause that latches during
+/// the work stays latched and asserts at the release.
+pub fn acknowledge(latched: Events, ack: dev_mod.Ack) void {
+    switch (ack) {
+        .hold => {
+            device.ports.write(.isr, latched);
+            device.ports.write(.imr, Events{});
+        },
+        .release => device.ports.write(.imr, EventsUp),
+    }
 }
 
-pub fn service(latched: u32, nic: *NicDev) void {
-    const events = @as(Events, @bitCast(@as(u16, @truncate(latched))));
+pub fn service(events: Events, nic: *NicDev) dev_mod.Work {
+    var work: dev_mod.Work = .done;
     if (events.losesSync()) {
         // TODO: this belongs in the `service` op, not on the line. A
         // receiver that has lost sync waits for the frame in flight to
@@ -527,23 +521,35 @@ pub fn service(latched: u32, nic: *NicDev) void {
         // silently.
         recoverRx(nic);
     } else if (events.hasRx()) {
-        reapRx(nic);
+        work = reapRx(nic);
     }
     if (events.hasTx()) reapTx(nic);
+    return work;
 }
 
 /// Service the adapter with no interrupt behind it: a line the firmware
-/// routed nowhere, or an edge this service never saw. Draining the ring
+/// routed nowhere, or one the loop is owed a look at. Draining the ring
 /// and the four transmit slots is all an interrupt would have asked for.
-pub fn poll(nic: *NicDev) bool {
-    if (!device.started) return false;
-    reapRx(nic);
+pub fn poll(nic: *NicDev) dev_mod.Work {
+    if (!device.started) return .done;
+    const work = reapRx(nic);
     reapTx(nic);
-    return true;
+    return work;
 }
 
-fn reapRx(nic: *NicDev) void {
-    if (device.receiver.take(dev_mod.RX_REAP_BUDGET, Part{}, nic, delivered) == .lost) recoverRx(nic);
+/// Take up to `RX_REAP_BUDGET` frames from the ring. The ring holds more
+/// short frames than that, and one that arrived before the hold cleared
+/// the cause has no cause left to announce it, so a walk the budget stops
+/// answers `.unfinished`.
+fn reapRx(nic: *NicDev) dev_mod.Work {
+    return switch (device.receiver.take(dev_mod.RX_REAP_BUDGET, Part{}, nic, delivered)) {
+        .ok => .done,
+        .more => .unfinished,
+        .lost => {
+            recoverRx(nic);
+            return .done;
+        },
+    };
 }
 
 fn delivered(nic: *NicDev, frame: ?[]const u8) void {

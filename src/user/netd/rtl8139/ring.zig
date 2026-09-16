@@ -125,8 +125,12 @@ pub fn judge(size: Size, header: Header, published: usize) Record {
 
 /// How a pass over the ring ended.
 pub const Pass = enum {
-    /// At a record boundary. The next pass goes on from there.
+    /// At a record boundary, with no whole record left to take. The next
+    /// pass goes on from there.
     ok,
+    /// At the budget, with at least a header published past the read
+    /// position. The next pass goes on from there.
+    more,
     /// At a length no record can have. The receiver must be restarted.
     lost,
 };
@@ -157,7 +161,8 @@ pub fn Receiver(comptime size: Size, comptime Barrier: type) type {
         /// Take up to `budget` records, of those CBR had passed when the pass
         /// began, handing each to `deliver`: the frame, or null for one
         /// stepped over. `part` answers `empty` from BUFE and `written` from
-        /// CBR, and `readTo` writes CAPR.
+        /// CBR, and `readTo` writes CAPR. A pass the budget stops with more
+        /// published answers `.more`.
         pub fn take(
             self: *Self,
             budget: usize,
@@ -193,7 +198,7 @@ pub fn Receiver(comptime size: Size, comptime Barrier: type) type {
                 Barrier.publish();
                 part.readTo(self.mark());
             }
-            return .ok;
+            return if (published >= @sizeOf(Header)) .more else .ok;
         }
 
         /// Byte by byte: the chip writes this memory, and every load has to
@@ -363,6 +368,18 @@ test "records are taken in order, one past the end of the ring read from the spi
     try testing.expectEqual(@as(u16, 32 - CAPR_LAG), registers.marks[1]);
     try testing.expectEqual(@as(u16, @intCast(next - CAPR_LAG)), registers.marks[2]);
     try testing.expectEqual(next, receiver.at.at);
+
+    // The same records with a budget of one: each pass but the last stops
+    // with more published.
+    var stepped = Ring{ .area = &memory };
+    stepped.at.advance(first);
+    var again = Registers{ .cbr = @intCast(next) };
+    var one_by_one = Taken{};
+    try testing.expectEqual(Pass.more, stepped.take(1, &again, &one_by_one, Taken.deliver));
+    try testing.expectEqual(Pass.more, stepped.take(1, &again, &one_by_one, Taken.deliver));
+    try testing.expectEqual(Pass.ok, stepped.take(1, &again, &one_by_one, Taken.deliver));
+    try testing.expectEqual(@as(usize, 3), one_by_one.count);
+    try testing.expectEqual(next, stepped.at.at);
 }
 
 // ---------------------------------------------------------------------------
@@ -796,6 +813,7 @@ fn runRing(from: Choices) anyerror!void {
             .step => chip.step(),
             .take => switch (receiver.take(from.upTo(12), &chip, &chip, Chip.deliver)) {
                 .ok => {},
+                .more => if (chip.seen < @sizeOf(Header)) chip.fail("a pass said there was more with less than a header published"),
                 .lost => chip.lost(&receiver),
             },
             // What the driver does when the chip says its FIFO overflowed.
@@ -811,6 +829,7 @@ fn runRing(from: Choices) anyerror!void {
     for (0..2) |_| {
         switch (receiver.take(RECORDS, &chip, &chip, Chip.deliver)) {
             .ok => {},
+            .more => if (chip.seen < @sizeOf(Header)) chip.fail("a pass said there was more with less than a header published"),
             .lost => chip.lost(&receiver),
         }
         if (chip.fault) |why| return fail(why);

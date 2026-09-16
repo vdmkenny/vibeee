@@ -83,6 +83,10 @@ const NOISE_BYTES = 64;
 /// recycled until it has.
 const TX_SETTLE_MICROS: u32 = 1000;
 
+/// How long a transmit reap that found the queue still busy waits before
+/// trying again.
+const TX_RETRY_US: u64 = 25_000;
+
 /// How a station waits its turn: the window it backs off within, in
 /// slots, and the fixed space it leaves ahead of that. The distributed
 /// access defaults, which every station in a cell shares.
@@ -167,6 +171,8 @@ const Device = struct {
     tx_reap: cursor.Cursor(RING_SLOTS) = .{},
     /// One hardware-owned TX descriptor; all others are software queued.
     tx_active: ?usize = null,
+    /// When a transmit reap that found the queue still busy is tried again.
+    tx_retry_at: ?u64 = null,
     /// Whether the receive engine ran off the end of its run and is owed
     /// being pointed back at it. Named on the line, done between passes:
     /// what putting it back costs is a stop, a drain and a bounded wait on
@@ -200,8 +206,10 @@ pub const ops = dev_mod.NicOps{
     .irq = irq,
     .poll = poll,
     // What the line cannot wait for, given to the loop instead: a receiver
-    // run off the end of its chain, put back between passes.
+    // run off the end of its chain, put back between passes, and a
+    // transmit reap tried again.
     .service = maintain,
+    .due = maintainDue,
     .transmit = transmit,
     .link = link,
     .radio = .{
@@ -1360,6 +1368,7 @@ fn stopTransmit(regs: Regs) bool {
     device.tx_next = .{};
     device.tx_reap = .{};
     device.tx_active = null;
+    device.tx_retry_at = null;
     return true;
 }
 
@@ -1432,8 +1441,8 @@ fn stopReceive(regs: Regs) bool {
 /// driver gets wrong, and on this radio more than most: the line rides the
 /// falling edge, so a cause that latches while the pass is working raises
 /// no second edge and is news nobody will ever be given again.
-pub fn irq(nic: *NicDev) bool {
-    if (!device.started or device.gone) return false;
+pub fn irq(nic: *NicDev) dev_mod.Pass {
+    if (!device.started or device.gone) return .idle;
     return dev_mod.serveIrq(@This(), nic);
 }
 
@@ -1443,17 +1452,16 @@ pub fn irq(nic: *NicDev) bool {
 /// noticed at all, because a vanished part reads as a cause nobody owns.
 const ABSENT: u32 = std.math.maxInt(u32);
 
-/// What the radio has latched, as one word: zero for nothing to service,
-/// which is what ends a pass, and `ABSENT` for a card that is no longer
-/// there.
+/// What the radio has latched, or null for nothing to service, and
+/// `ABSENT` for a card that is no longer there.
 ///
 /// Read from the status register that clears as it is read, so a cause
 /// handed to `service` is one nothing else will be given -- which is why
 /// the card's absence is settled first, against two words that do not
 /// clear.
-pub fn cause() u32 {
-    if (!device.started or device.gone) return 0;
-    const chip: *reset.Chip = if (device.chip) |*c| c else return 0;
+pub fn cause() ?regs_mod.Interrupts {
+    if (!device.started or device.gone) return null;
+    const chip: *reset.Chip = if (device.chip) |*c| c else return null;
     const regs = chip.regs;
 
     // All ones before anything else. A card that has gone answers that to
@@ -1464,10 +1472,11 @@ pub fn cause() u32 {
     // bitfield, because a bitfield is an interpretation and this is the
     // value that means there was nothing to interpret.
     const pending = regs.read(.interrupt_pending);
-    if (pending == ABSENT) return ABSENT;
-    if (pending != @as(u32, @bitCast(regs_mod.InterruptPending{ .pending = true }))) return 0;
+    if (pending == ABSENT) return @bitCast(ABSENT);
+    if (pending != @as(u32, @bitCast(regs_mod.InterruptPending{ .pending = true }))) return null;
 
-    return @as(u32, @bitCast(regs.get(.interrupt_status_clearing, regs_mod.Interrupts)));
+    const latched = regs.get(.interrupt_status_clearing, regs_mod.Interrupts);
+    return if (latched.any()) latched else null;
 }
 
 /// Hold the line over the work, or release it afterwards.
@@ -1479,17 +1488,16 @@ pub fn cause() u32 {
 /// raised against a mask nobody meant. Opening it on the way out also
 /// re-arms the masks, so a pass that changed nothing leaves the radio
 /// listening for exactly what it was listening for before.
-pub fn acknowledge(_: u32, held: bool) void {
+pub fn acknowledge(_: regs_mod.Interrupts, ack: dev_mod.Ack) void {
     // A card that has gone has no gate to hold: everything written to it
     // is dropped, and saying so again on the way out would re-arm a
     // receiver that is not there.
     if (device.gone) return;
     const chip: *reset.Chip = if (device.chip) |*c| c else return;
-    if (held) {
-        listenFor(chip.regs, .{});
-    } else {
-        listenFor(chip.regs, WANTED);
-    }
+    listenFor(chip.regs, switch (ack) {
+        .hold => .{},
+        .release => WANTED,
+    });
 }
 
 /// One pass of the radio's work, on the line.
@@ -1498,16 +1506,15 @@ pub fn acknowledge(_: u32, held: bool) void {
 /// while it runs, and on a shared line so is every neighbour's. A receiver
 /// that ran off the end of its run is *named* here and put back between
 /// passes, by `maintain`.
-pub fn service(causes: u32, nic: *NicDev) void {
-    const latched: regs_mod.Interrupts = @bitCast(causes);
+pub fn service(latched: regs_mod.Interrupts, nic: *NicDev) dev_mod.Work {
     // The word a card that has gone answers every read with. Not one of
     // the causes this driver asks for, but the only shape in which an
     // absent card says anything at all.
     if (latched.isAbsent()) {
         goneAway(nic);
-        return;
+        return .done;
     }
-    const chip: *reset.Chip = if (device.chip) |*c| c else return;
+    const chip: *reset.Chip = if (device.chip) |*c| c else return .done;
 
     if (latched.rx_ok or latched.rx_descriptor or latched.rx_error) reapRx(nic, chip);
     if (latched.tx_ok or latched.tx_error or latched.tx_end_of_list or latched.tx_underrun) {
@@ -1532,18 +1539,29 @@ pub fn service(causes: u32, nic: *NicDev) void {
         log.warn(name, "the card reported a bus error");
         device.bus_error_said = true;
     }
+    // Receive takes the whole run; transmit left unreaped is owed to
+    // `maintain` at `tx_retry_at`.
+    return .done;
 }
 
-/// Put the receiver back where it belongs, off the line.
+/// Work owed off the line: a transmit reap tried again once the queue has
+/// had time to settle, and the receiver put back where it belongs.
 ///
-/// What `service` names as owed. Stop, drain, and only restart on an armed
-/// descriptor, never over a completed frame awaiting delivery. Where it
-/// cannot be done, the radio keeps the memory it was given and the next
-/// hop resets the whole of it: this is a pass without a receiver rather
-/// than the end of one, and retiring the interface here would make one
-/// crowded moment on one channel the last thing it ever heard.
-pub fn maintain(nic: *NicDev, _: u64) void {
+/// The receiver is what `service` names as owed. Stop, drain, and only
+/// restart on an armed descriptor, never over a completed frame awaiting
+/// delivery. Where it cannot be done, the radio keeps the memory it was
+/// given and the next hop resets the whole of it: this is a pass without a
+/// receiver rather than the end of one, and retiring the interface here
+/// would make one crowded moment on one channel the last thing it ever
+/// heard.
+pub fn maintain(nic: *NicDev, now: u64) void {
     if (!device.started or device.gone) return;
+    if (device.tx_retry_at) |at| {
+        if (now >= at) {
+            reapTx(nic);
+            if (device.chip) |*chip| resumeTransmit(chip);
+        }
+    }
     if (!device.rx_rearm) return;
     device.rx_rearm = false;
 
@@ -1560,6 +1578,13 @@ pub fn maintain(nic: *NicDev, _: u64) void {
     }
 }
 
+/// How long until `maintain` tries a transmit reap again.
+fn maintainDue(_: *NicDev, now: u64) ?u64 {
+    if (!device.started or device.gone) return null;
+    const at = device.tx_retry_at orelse return null;
+    return at -| now;
+}
+
 /// The kill switch power-gates the slot: the card vanishes mid-word, and
 /// everything after reads as ones. Said once, and the carrier is down.
 fn goneAway(nic: *NicDev) void {
@@ -1572,9 +1597,9 @@ fn goneAway(nic: *NicDev) void {
 /// which is the one thing a missed edge would leave undone: what arrived
 /// is sitting in descriptors the radio has finished with, and nothing
 /// else about a delivery is needed to hand it over.
-pub fn poll(nic: *NicDev) bool {
-    if (!device.started or device.gone) return false;
-    const chip: *reset.Chip = if (device.chip) |*c| c else return false;
+pub fn poll(nic: *NicDev) dev_mod.Work {
+    if (!device.started or device.gone) return .done;
+    const chip: *reset.Chip = if (device.chip) |*c| c else return .done;
     reapRx(nic, chip);
     // Transmit as well as receive: a queue stopped by a completion the
     // interrupt never reported is one this pass is the only thing that can
@@ -1584,7 +1609,7 @@ pub fn poll(nic: *NicDev) bool {
     // the queue at leaves the frames standing in it.
     reapTx(nic);
     resumeTransmit(chip);
-    return true;
+    return .done;
 }
 
 /// Take every finished receive descriptor, in the order the radio filled
@@ -1770,6 +1795,7 @@ fn resumeTransmit(chip: *reset.Chip) void {
 /// Take every finished transmit descriptor, in the order the radio
 /// worked through them, and account for what became of each frame.
 fn reapTx(nic: *NicDev) void {
+    device.tx_retry_at = null;
     const rings = chains() orelse return;
     const chip = if (device.chip) |*c| c else return;
     if (txUsed() == 0) return;
@@ -1777,7 +1803,11 @@ fn reapTx(nic: *NicDev) void {
     if (!first.sendFinished()) return;
     // DONE can precede TXE clearing. Do not recycle the DMA slot yet.
     // Give EOL time to settle even when its interrupt preceded TXE clearing.
-    if (!pace.looking(chip.regs, txIdle, TX_SETTLE_MICROS)) return;
+    // No interrupt says when it has, so `maintain` tries again later.
+    if (!pace.looking(chip.regs, txIdle, TX_SETTLE_MICROS)) {
+        device.tx_retry_at = dev_mod.clock() + TX_RETRY_US;
+        return;
+    }
 
     while (txUsed() != 0) {
         const slot = device.tx_reap.at;

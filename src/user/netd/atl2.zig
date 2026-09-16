@@ -356,7 +356,7 @@ const Device = struct {
     /// A fatal event whose reset is owed: named on the line, done between
     /// passes.
     reseat_pending: bool = false,
-    reseat_cause: u32 = 0,
+    reseat_cause: Isr = .{},
     /// Where the host writes next in the TXD fifo and where the host is
     /// still owed fifo bytes, where the next status will be filled and
     /// where the next completion is reaped, and where the next receive slot
@@ -776,28 +776,26 @@ var overflow_said = false;
 /// will ever be told about again, and the receive side falls silent until
 /// some other bit happens to edge. Frames delivered seconds late, in one
 /// clump, are exactly what that silence looks like.
-pub fn irq(nic: *NicDev) bool {
-    if (!device.opened or !device.started) return false;
+pub fn irq(nic: *NicDev) dev_mod.Pass {
+    if (!device.opened or !device.started) return .idle;
     return dev_mod.serveIrq(@This(), nic);
 }
 
-/// What the adapter has latched, as one word.
+/// What the adapter has latched, or null when nothing is.
 ///
 /// The hold bit is not a cause but this driver's own line, so it is left
-/// out: zero means there is nothing to service, and that is what ends the
-/// pass.
-pub fn cause() u32 {
+/// out.
+pub fn cause() ?Isr {
     // A reseat is owed: the adapter is masked and its next word belongs to
     // the reseat, not to this pass. Saying "nothing latched" is what lets
     // the pass end here rather than naming one fatal event once per round
     // until the budget runs out.
-    if (device.reseat_pending) return 0;
+    if (device.reseat_pending) return null;
 
-    const latched: Isr = @bitCast(device.regs.common.read(.isr));
-    if (latched.none()) return 0; // nothing latched, or a shared line
-    var causes = latched;
-    causes.hold = false;
-    return @bitCast(causes);
+    var latched: Isr = @bitCast(device.regs.common.read(.isr));
+    if (latched.none()) return null; // nothing latched, or a shared line
+    latched.hold = false;
+    return latched;
 }
 
 /// Acknowledge what latched, and either hold the line over the work or
@@ -808,16 +806,12 @@ pub fn cause() u32 {
 /// rather than the causes again: whatever latched while the work ran is
 /// work owed, and clearing it on the way out is how it goes unseen -- the
 /// pass reads the cause again instead.
-pub fn acknowledge(causes: u32, held: bool) void {
-    // The flag reaches here in two shapes -- a boolean while the pass
-    // holds the line, a zero once it lets it go -- and both mean the one
-    // thing asked of it.
-    const holding: bool = if (@TypeOf(held) == bool) held else held != 0;
-    if (!holding) {
-        device.regs.common.write(.isr, 0);
+pub fn acknowledge(latched: Isr, ack: dev_mod.Ack) void {
+    if (ack == .release) {
+        device.regs.common.write(.isr, @bitCast(Isr{}));
         return;
     }
-    var acknowledged: Isr = @bitCast(causes);
+    var acknowledged = latched;
     // The PHY holds its interrupt line until its own status register is
     // read, so that read comes before the write that clears the bit:
     // acknowledged the other way round, the line is still asserted when
@@ -831,9 +825,7 @@ pub fn acknowledge(causes: u32, held: bool) void {
 ///
 /// Nothing here may wait on the part: the line is held while it runs, and
 /// on a shared line so is every neighbour's.
-pub fn service(causes: u32, nic: *NicDev) void {
-    const latched: Isr = @bitCast(causes);
-
+pub fn service(latched: Isr, nic: *NicDev) dev_mod.Work {
     // The everyday causes are traffic, not news, and stay quiet: the
     // status updates, the PHY answering a poll, and the companions this
     // MAC raises beside them, a TXD underrun with every completion and
@@ -865,7 +857,7 @@ pub fn service(causes: u32, nic: *NicDev) void {
     if (@as(u32, @bitCast(unexpected)) != 0) {
         log.begin("atl2", .dim);
         out.text("cause 0x");
-        out.hex(causes, 8);
+        out.hex(@as(u32, @bitCast(latched)), 8);
         log.end();
     }
 
@@ -886,12 +878,12 @@ pub fn service(causes: u32, nic: *NicDev) void {
         // reseat between passes. Linux does the same from a workqueue.
         // The acknowledgement that follows this return releases the line,
         // and the next read has nothing to say while a reseat is owed.
-        device.reseat_cause = causes;
+        device.reseat_cause = latched;
         device.reseat_pending = true;
         device.regs.common.write(.imr, 0);
         _ = device.regs.common.read(.imr);
         log.warn("atl2", "fatal adapter event; the adapter will be reseated");
-        return;
+        return .done;
     }
 
     // The vendor services on the whole event class, errors included:
@@ -903,18 +895,21 @@ pub fn service(causes: u32, nic: *NicDev) void {
         dev_mod.deliverLink(nic, link(nic));
         applyLinkState(nic.state);
     }
+    // Both reaps take a whole ring, so a frame they leave arrived after the
+    // acknowledgement and latches a cause of its own.
+    return .done;
 }
 
 /// Service the adapter with no interrupt behind it: a line the firmware
-/// routed nowhere, or an edge this service never saw. The two reaps are
+/// routed nowhere, or one the loop is owed a look at. The two reaps are
 /// all an interrupt would have asked for, and the mailboxes they write
 /// are what the engine looks at either way.
-pub fn poll(nic: *NicDev) bool {
-    if (!device.opened or !device.started) return false;
+pub fn poll(nic: *NicDev) dev_mod.Work {
+    if (!device.opened or !device.started) return .done;
     reseat(nic);
     reapRx(nic);
     reapTx(nic);
-    return true;
+    return .done;
 }
 
 /// Work owed between passes rather than on the line: a pending reseat, and
@@ -935,7 +930,7 @@ fn reseat(nic: *NicDev) void {
 
     log.begin(nic.name, .warn);
     out.text("reseating the adapter after cause 0x");
-    out.hex(device.reseat_cause, 8);
+    out.hex(@as(u32, @bitCast(device.reseat_cause)), 8);
     log.end();
 
     nic.stats.tx_failed += device.txs_used;

@@ -9,6 +9,7 @@
 
 const ifmatch = @import("lib").ifmatch;
 const lib = @import("lib");
+const lines = @import("lines.zig");
 const log = @import("ulib").log;
 const mii = @import("mii.zig");
 const out = @import("ulib").out;
@@ -17,6 +18,14 @@ const settings = @import("proto").settings;
 const pci = @import("ulib").pci;
 
 pub const Location = pci.Location;
+
+/// What serving a line came to: nothing waiting, work done, or work left
+/// that no interrupt will announce.
+pub const Pass = lines.Pass;
+
+/// Whether a driver's work stopped short, with more waiting that no
+/// interrupt will announce.
+pub const Work = enum { done, unfinished };
 
 /// What a link has come to. Bandwidth is `mbps`, the machine-readable half of
 /// "100 Mbit full duplex" when the tool wants the words.
@@ -44,10 +53,8 @@ pub const Stats = struct {
     tx_failed: u64 = 0,
     /// ARP replies this interface has carried.
     rx_arp: u64 = 0,
-    /// Deliveries that ended with a cause still latched: work the pass owed
-    /// and did not finish. A line that rides the falling edge gets no second
-    /// chance at it, which is why the loop asks as well as listens; `net`
-    /// reports it beside the frames that were dropped.
+    /// Deliveries whose every round found a cause. `net` reports it beside
+    /// the frames that were dropped.
     irq_late: u64 = 0,
 };
 
@@ -72,30 +79,24 @@ pub const NicOps = struct {
     start: *const fn (dev: *NicDev) bool,
     /// Stop the engine and mask everything; called at teardown only.
     stop: *const fn (dev: *NicDev) void,
-    /// Service one interrupt delivery. Bounded: the line stays masked while
-    /// this runs, so everything done here must finish.
-    /// Service the line: read the status, move what moved, clear it. Returns
-    /// whether anything was actually serviced, which on a shared line is what
-    /// wakes the neighbours to look again.
-    irq: *const fn (dev: *NicDev) bool,
-    /// Service the adapter with no interrupt behind it: reap what has
-    /// arrived, and say whether there was an adapter running to be
-    /// asked.
-    ///
-    /// A lost or unrouted interrupt is a wire that goes silent while the
-    /// ring fills, and nothing in the driver can tell that from a quiet
-    /// network: the line is simply never asserted again. The service
-    /// therefore asks every interface whose line is absent, on the passes
-    /// it would otherwise have spent waiting for one. Safe to call with
-    /// nothing pending, as often as the loop likes, and on an adapter that
-    /// has not started; every driver answers that for itself.
-    poll: ?*const fn (dev: *NicDev) bool = null,
+    /// Serve the line: read what latched, do the work, clear it. Bounded,
+    /// and usually `serveIrq`. Anything but `.idle` on a shared edge line
+    /// wakes the line's other owners to look again.
+    irq: *const fn (dev: *NicDev) Pass,
+    /// Reap the rings with no interrupt behind them. Asked every pass of an
+    /// adapter with no line, and of one whose line owes work or has gone
+    /// unheard (`lines.zig`). Safe with nothing waiting and on an adapter
+    /// that has not started.
+    poll: ?*const fn (dev: *NicDev) Work = null,
     /// Work a driver owes that must not happen on an interrupt: a reset, a
     /// re-tune, anything that waits on the part. Called from the loop
     /// between passes rather than from `irq`, where a slow or wedged
     /// adapter would hold the line and everything behind it. `now` is the
     /// pass's clock, read once for every adapter.
     service: ?*const fn (dev: *NicDev, now: u64) void = null,
+    /// Microseconds until `service` has work that no interrupt announces,
+    /// such as a reading on a timer. Null when it has none.
+    due: ?*const fn (dev: *NicDev, now: u64) ?u64 = null,
     /// Put one frame on the wire. The bytes are the service's until this
     /// returns, copied into the ring before it does.
     transmit: *const fn (dev: *NicDev, frame: []const u8) bool,
@@ -183,7 +184,8 @@ pub const NicDev = struct {
     class: ifmatch.Class = .ether,
     ops: NicOps,
     location: Location,
-    irq: u32 = 0,
+    /// The handle of the interrupt line, shared by every interface on it.
+    irq: ?u32 = null,
     irq_gsi: ?u32 = null,
     irq_owned: bool = false,
     /// Whether the hardware is claimed, mapped and started right now.
@@ -201,17 +203,32 @@ pub const NicDev = struct {
     state: Link = .{},
     stats: Stats = .{},
 
-    /// What the hardware thinks happened to the last interrupt, remembered so
-    /// the service can narrate without poking registers back.
+    /// Interrupts delivered on the line.
     irq_count: u64 = 0,
-    /// When this adapter was last asked about its rings, by its interrupt or
-    /// by the loop. Kept so a line that has stopped asserting is noticed
-    /// rather than waited on.
-    serviced_at: u64 = 0,
+    /// When the line was last served, for `lines.UNHEARD_US`.
+    served_at: u64 = 0,
+    /// A receive budget left frames that no interrupt will announce. The loop
+    /// does not sleep while any interface owes them.
+    owed: bool = false,
 
     /// The last ARP reply this interface carried: who answered, by hardware
     /// and by address. The traffic proof until the stack replaces the stub.
     peer: ?Peer = null,
+
+    /// Serve the interface's line, and reap the rings as well when it owes
+    /// work. A reap does not touch the line, so it adds to the answer only
+    /// when it stopped short.
+    pub fn serveLine(self: *NicDev) Pass {
+        const owed = self.owed;
+        self.owed = false;
+        const pass = self.ops.irq(self);
+        if (!owed) return pass;
+        const poll = self.ops.poll orelse return pass;
+        return switch (poll(self)) {
+            .done => pass,
+            .unfinished => .unfinished,
+        };
+    }
 };
 
 /// The far end of a wire, as an ARP reply names it.
@@ -402,67 +419,61 @@ pub fn deliverRx(dev: *NicDev, report: RxReport) void {
     }
 }
 
-/// Service one interrupt delivery, the way every driver should.
+/// The two halves of acknowledging a cause, around the work it asks for.
+pub const Ack = enum {
+    /// Clear what was read, where reading did not, and keep the adapter
+    /// from asserting while the work runs.
+    hold,
+    /// Let the adapter assert again, clearing nothing. A cause that latched
+    /// during the work asserts now, which on an edge line is a fresh edge.
+    release,
+};
+
+/// Serve one delivery with a driver's `cause`, `acknowledge` and `service`.
 ///
-/// A driver supplies the three things only it can know -- what latched, how
-/// to acknowledge it, what to do about it -- and the shape of the pass is
-/// this function's: read a cause, hold the line while it is worked on,
-/// release it, and look again. Bounded, and re-read on the way out.
+/// `cause` answers what latched, or null. Each round holds the adapter,
+/// does the work and releases it, until `cause` answers null. When every
+/// round found a cause, `irq_late` counts the delivery and the cause is not
+/// read again here: some drivers' cause registers clear on read, and one
+/// still latched asserted again at the last release.
 ///
-/// The re-read is the part a driver gets wrong. A cause that latches
-/// *during* the last pass's work is real work owed, and a driver that ends
-/// its loop on a fixed count without looking again has dropped it: on a
-/// line that rides the falling edge there is no second edge coming, so the
-/// adapter is silent for the rest of the run. Counted where `net` shows it
-/// rather than trusted to the driver.
-///
-/// `Driver.service` must not wait on the part, reset anything, or do
-/// anything else slow: the line is held while it runs, and on a shared line
-/// so is every neighbour's. Slow work belongs in the `service` op, which
-/// the loop calls between passes.
-pub fn serveIrq(comptime Driver: type, nic: *NicDev) bool {
+/// `service` answers `.unfinished` when a budget stopped its work with more
+/// waiting that no cause will announce. It must not wait on the part: on a
+/// shared line every neighbour waits behind it. Slow work belongs in the
+/// `service` op.
+pub fn serveIrq(comptime Driver: type, nic: *NicDev) Pass {
     comptime {
         for (.{ "cause", "acknowledge", "service" }) |need| {
             if (!@hasDecl(Driver, need)) @compileError("an interrupt driver needs a " ++ need);
         }
     }
 
-    var serviced = false;
-    var round: usize = 0;
-
-    while (round < IRQ_ROUNDS) : (round += 1) {
-        const cause = Driver.cause();
-        if (cause == 0) break;
-        serviced = true;
-
-        // Held for the work, released after it: on a level line that is
-        // what keeps the controller from re-asserting mid-pass, and on an
-        // edge one it costs nothing.
-        Driver.acknowledge(cause, true);
-        Driver.service(cause, nic);
-        Driver.acknowledge(cause, false);
+    var pass: Pass = .idle;
+    for (0..IRQ_ROUNDS) |_| {
+        const latched = Driver.cause() orelse return pass;
+        Driver.acknowledge(latched, .hold);
+        const work = Driver.service(latched, nic);
+        Driver.acknowledge(latched, .release);
+        pass = pass.merge(switch (work) {
+            .done => .served,
+            .unfinished => .unfinished,
+        });
     }
-
-    if (Driver.cause() != 0) {
-        // Work a bounded pass could not finish. The loop asks again
-        // (`serviceAdapters`), so it is not lost -- but it is worth seeing.
-        nic.stats.irq_late += 1;
-    }
-    return serviced;
+    nic.stats.irq_late += 1;
+    return pass;
 }
 
 /// How many cause/reap rounds one delivery may take. Enough for a burst,
 /// bounded so a device that never stops latching cannot hold the loop.
 const IRQ_ROUNDS = 8;
 
-/// How many frames one reaping pass may take off an adapter.
+/// How many frames one reaping pass may take off an adapter, which bounds
+/// how long one interface holds the service.
 ///
-/// A bound every driver needs and one number for all of them: a pass that
-/// drains whatever has arrived holds the loop for as long as the wire cares
-/// to send, and a pass that stops after four leaves latency to the next
-/// wake. What is left is not lost -- `serveIrq` looks again, and the loop
-/// polls an adapter whose line has gone quiet -- so this is how long one
-/// interface may hold the service and nothing more.
+/// A reap that covers its whole ring takes every frame its cause announced,
+/// and a frame arriving later latches a cause of its own. A reap that can
+/// stop on this budget with announced frames still waiting answers
+/// `.unfinished`.
 pub const RX_REAP_BUDGET = 64;
 
 /// Say a frame went onto the wire.
@@ -480,45 +491,40 @@ pub fn deliverLink(dev: *NicDev, fresh: Link) void {
     if (stack_link) |follow| follow(dev, fresh.up);
 }
 
-/// Whatever a pass owes the adapters besides the lines it waited on.
-///
-/// Two kinds of asking. An adapter the firmware routed nowhere is asked
-/// every pass, because there is no line and no second chance at whatever
-/// arrived while the service was busy elsewhere. An adapter that *has* a
-/// line is asked too, but only when that line has been quiet for
-/// `QUIET_US`: on this class of machine the PIRQ pins ride the falling
-/// edge, and an edge that arrives while the driver is mid-service -- or
-/// between the last status read and the return -- is gone for good. The
-/// interrupt is still the fast path; this is what keeps a lost one from
-/// being permanent.
-///
-/// Deferred work runs for every driven adapter: a reseat that may wait on
-/// the part belongs to the loop, not to the line.
-pub fn serviceAdapters(interfaces: []NicDev) void {
-    const now = clock();
-
+/// Work each driven adapter owes between passes: its `service` op, and a
+/// poll of an adapter with no interrupt line. `now` is the pass's clock.
+pub fn serviceAdapters(interfaces: []NicDev, now: u64) void {
     for (interfaces) |*iface| {
         if (!iface.driving) continue;
-
         if (iface.ops.service) |work| work(iface, now);
-
+        if (iface.irq != null) continue;
         const poll = iface.ops.poll orelse continue;
-        const quiet = iface.irq == 0 or now -% iface.serviced_at >= QUIET_US;
-        if (!quiet) continue;
-        if (poll(iface)) iface.serviced_at = now;
+        iface.owed = poll(iface) == .unfinished;
     }
 }
 
-/// How long a line may be quiet before the loop asks as well as listens.
-///
-/// Long enough that a busy adapter is served by its interrupts and not by
-/// this, short enough that a lost one costs a few frames rather than the
-/// rest of the boot.
-const QUIET_US: u64 = 25_000;
+/// Microseconds the loop may sleep before an adapter needs it without an
+/// interrupt: none while one owes work, `UNROUTED_US` while one has no
+/// line, and whatever a driver's `due` answers. Null when only interrupts
+/// bring work.
+pub fn nextDeadline(interfaces: []NicDev) ?u64 {
+    var soonest: ?u64 = null;
+    for (interfaces) |*iface| {
+        if (!iface.driving) continue;
+        if (iface.owed) return 0;
+        if (iface.irq == null) soonest = @min(soonest orelse UNROUTED_US, UNROUTED_US);
+        const due = iface.ops.due orelse continue;
+        const wait = due(iface, clock()) orelse continue;
+        soonest = @min(soonest orelse wait, wait);
+    }
+    return soonest;
+}
 
-/// Microseconds since the machine started, as this file counts them. Public
-/// so that the loop marking an adapter serviced and the loop deciding whether
-/// one has been quiet read the same clock.
+/// How often an adapter with no interrupt line is polled.
+const UNROUTED_US: u64 = 25_000;
+
+/// Microseconds since the machine started: the clock `served_at` is kept in
+/// and a driver's `due` is asked against.
 pub fn clock() u64 {
     return @intCast(@import("sys").clockMicros());
 }

@@ -3,7 +3,8 @@
 //! One process, one thread, one event loop, per design/08-network.md §1: a
 //! 630 MHz core buys no parallelism from threads and pays locks. Everything
 //! here waits on `wait_many`: the service channel and the interrupt lines of
-//! the adapters it was handed. Nothing polls.
+//! the adapters it was handed, until the soonest deadline the stack, the
+//! station or an adapter has.
 //!
 //! Started by init once the platform service has published its name, which
 //! only happens with the firmware fully settled. The /svc name doubles as
@@ -22,6 +23,7 @@ const rtl8139 = @import("rtl8139.zig");
 const dev = @import("dev.zig");
 const e100 = @import("e100.zig");
 const e1000 = @import("e1000.zig");
+const lines = @import("lines.zig");
 
 // The routines lwIP's C calls by name, emitted into this binary from the
 // libc's own C-callable half: one implementation in the system, not two.
@@ -278,15 +280,12 @@ fn attach(iface: *dev.NicDev) bool {
     // shared, not refused.
     if (line) |gsi| {
         iface.irq_gsi = gsi;
-        var shared = false;
-        for (ifaces[0..count]) |other| {
-            if (other.irq != 0 and other.irq_gsi == gsi) {
-                iface.irq = other.irq;
-                shared = true;
-                break;
-            }
+        for (ifaces[0..count]) |*other| {
+            if (other.irq_gsi != gsi) continue;
+            iface.irq = other.irq orelse continue;
+            break;
         }
-        if (!shared) {
+        if (iface.irq == null) {
             iface.irq = sys.irqAttach(gsi) catch {
                 log.warn("netd", "the interrupt line refused to attach");
                 return false;
@@ -341,6 +340,7 @@ fn attach(iface: *dev.NicDev) bool {
 fn detach(iface: *dev.NicDev) void {
     if (!iface.driving) return;
     iface.driving = false;
+    iface.owed = false;
     dev.radioGone(iface);
     iface.ops.stop(iface);
     releaseIrq(iface);
@@ -361,12 +361,12 @@ fn detach(iface: *dev.NicDev) void {
 /// straight back out for something else, which would leave the set waiting on
 /// whatever that turned out to be.
 fn releaseIrq(iface: *dev.NicDev) void {
-    const handle = iface.irq;
+    const held = iface.irq;
     const owned = iface.irq_owned;
-    iface.irq = 0;
+    iface.irq = null;
     iface.irq_gsi = null;
     iface.irq_owned = false;
-    if (handle == 0) return;
+    const handle = held orelse return;
 
     for (ifaces[0..count]) |*other| {
         if (other == iface or other.irq != handle) continue;
@@ -399,7 +399,8 @@ fn routedLine(iface: *dev.NicDev) ?u32 {
 /// with nothing more behind it. An interface that arrived after the loop
 /// started joins the same way the ones at boot did.
 fn watchLine(iface: *dev.NicDev) void {
-    _ = sources.add(iface.irq);
+    const handle = iface.irq orelse return;
+    _ = sources.add(handle);
 }
 
 /// What the loop waits on: the channel, one handle per interface's line, the
@@ -474,18 +475,12 @@ fn serve(channel: u32) noreturn {
     }
 
     while (true) {
-        // The wait's deadline is the stack's own next timer: DHCP renewals,
-        // TCP retransmits and ARP aging all ride this one number, and an
-        // idle network parks here forever.
-        // Capped, even when nothing is due: the loop asks the adapters as
-        // well as listening to them, and a wait with no end is a loop that
-        // never asks. The stack's own timers are usually the sooner answer;
-        // this is the backstop that keeps a quiet machine from parking
-        // somewhere no wake will come.
-        const timeout: usize = idle: {
-            const due = soonest(stack.nextDeadline(), station.nextDeadline()) orelse break :idle IDLE_WAIT_US;
-            break :idle @as(usize, @intCast(@min(due, IDLE_WAIT_US)));
-        };
+        // The wait lasts until the soonest deadline: the stack's timers
+        // (DHCP renewals, TCP retransmits, ARP aging), the station's, and
+        // the adapters' (frames a budget left waiting, an adapter with no
+        // line, a driver's own timer). With none, only an event ends it.
+        const due = soonest(soonest(stack.nextDeadline(), station.nextDeadline()), dev.nextDeadline(ifaces[0..count]));
+        const timeout: usize = if (due) |us| @intCast(@min(us, std.math.maxInt(usize) - 1)) else sys.FOREVER;
         const woke = sys.waitMany(sources.slice(), timeout);
         load.wakes +%= 1;
         // Keep the handle, not its index: dispatch can remove a source.
@@ -521,14 +516,13 @@ fn serve(channel: u32) noreturn {
         }
 
         // waitMany consumes only the winning signal. IPC can win while a
-        // radio reply is already queued, so service every ready line before
-        // expiring exchanges. One pass per distinct line bounds the work;
-        // idle loops still block on the normal wait above.
-        drainReadyIrqs(ifaces[0..count], selected, sys);
-        // And whatever the lines did not say: an adapter the firmware
-        // routed nowhere still fills its ring, and an edge-routed line
-        // that missed an edge never asserts again.
-        dev.serviceAdapters(ifaces[0..count]);
+        // radio reply is already queued, so every ready line is served
+        // before exchanges expire.
+        const now = dev.clock();
+        const served = lines.serve(sys, ifaces[0..count], selected, now);
+        load.irqs +%= served.delivered;
+        load.unclaimed +%= served.unclaimed;
+        dev.serviceAdapters(ifaces[0..count], now);
         stack.tick();
         station.tick();
 
@@ -536,93 +530,6 @@ fn serve(channel: u32) noreturn {
         // before the loop sleeps: loopback never waits for a wake.
         stack.deliverLoopback();
     }
-}
-
-fn drainReadyIrqs(interfaces: []dev.NicDev, selected: ?u32, comptime io: type) void {
-    for (interfaces, 0..) |iface, i| {
-        const handle = iface.irq;
-        if (handle == 0) continue;
-        var duplicate = false;
-        for (interfaces[0..i]) |earlier| {
-            if (earlier.irq == handle) duplicate = true;
-        }
-        if (duplicate) continue;
-        // The main wait already consumed this line's signal if it won.
-        if (selected != handle) {
-            _ = io.waitMany(&.{handle}, sys.POLL) catch continue;
-        }
-        var found = false;
-        for (interfaces) |*other| {
-            if (other.irq != handle) continue;
-            other.irq_count += 1;
-            if (other.ops.irq(other)) {
-                other.serviced_at = dev.clock();
-                found = true;
-            }
-        }
-        load.irqs +%= 1;
-        if (!found) load.unclaimed +%= 1;
-        // All devices sharing our handle must run before its single ack.
-        io.irqAck(handle, found);
-    }
-}
-
-test "ready IRQs precede expiry even when IPC wins, with one ack per shared line" {
-    const Fake = struct {
-        var polled: [4]u8 = @splat(0);
-        var acked: [4]u8 = @splat(0);
-        var claimed: [4]bool = @splat(false);
-        var serviced: usize = 0;
-        var before_ack: [4]usize = @splat(0);
-
-        pub fn waitMany(handles: []const u32, timeout: usize) error{TimedOut}!usize {
-            std.debug.assert(handles.len == 1 and timeout == sys.POLL);
-            const handle = handles[0];
-            polled[handle] += 1;
-            if (handle == 3) return error.TimedOut;
-            return 0;
-        }
-
-        pub fn irqAck(handle: u32, found: bool) void {
-            acked[handle] += 1;
-            claimed[handle] = found;
-            before_ack[handle] = serviced;
-        }
-
-        fn irq(iface: *dev.NicDev) bool {
-            serviced += 1;
-            return iface.class == .wifi;
-        }
-    };
-    var devices: [4]dev.NicDev = undefined;
-    for (&devices, [_]u32{ 1, 1, 2, 3 }, 0..) |*iface, handle, i| {
-        iface.* = .{
-            .name = "test",
-            .ops = undefined,
-            .location = .{ .bus = 0, .device = 0, .function = 0 },
-            .irq = handle,
-            .class = if (i == 1) .wifi else .ether,
-        };
-        iface.ops.irq = Fake.irq;
-    }
-    // IPC won; lines 1 and 2 are ready, and line 1 has two devices.
-    drainReadyIrqs(&devices, 99, Fake);
-    try std.testing.expectEqualSlices(u8, &.{ 0, 1, 1, 1 }, &Fake.polled);
-    try std.testing.expectEqualSlices(u8, &.{ 0, 1, 1, 0 }, &Fake.acked);
-    try std.testing.expect(Fake.claimed[1]);
-    try std.testing.expect(!Fake.claimed[2]);
-    try std.testing.expectEqual(@as(usize, 2), Fake.before_ack[1]);
-    try std.testing.expectEqual(@as(usize, 3), Fake.serviced);
-    try std.testing.expectEqual(@as(u64, 0), devices[3].irq_count);
-    // A selected IRQ's signal is already consumed: do not poll it again.
-    drainReadyIrqs(&devices, 1, Fake);
-    try std.testing.expectEqual(@as(u8, 1), Fake.polled[1]);
-    try std.testing.expectEqual(@as(u8, 2), Fake.acked[1]);
-    // A deadline-only wake must also check pending RX, rather than expiring
-    // an exchange just because no source was selected by the main wait.
-    drainReadyIrqs(&devices, null, Fake);
-    try std.testing.expectEqual(@as(u8, 2), Fake.polled[1]);
-    try std.testing.expectEqual(@as(u8, 3), Fake.acked[1]);
 }
 
 /// Everything the platform service has queued. The wireless key is the
@@ -751,14 +658,10 @@ fn wirelessPlace() ?lib.pci.Location {
     return stack.configuredPlace(.wifi);
 }
 
-/// The nearer of two deadlines, either of which may be none.
-/// How long the loop may sleep with nothing due: long enough to be idle,
-/// short enough that a missed interrupt costs a few frames.
-const IDLE_WAIT_US: usize = 25_000;
-
 /// How many hotkey presses one pass acts on.
 const HOTKEYS_PER_WAKE = 4;
 
+/// The nearer of two deadlines, either of which may be none.
 fn soonest(a: ?u64, b: ?u64) ?u64 {
     const first = a orelse return b;
     const second = b orelse return first;
