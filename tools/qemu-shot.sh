@@ -20,7 +20,9 @@
 # how the pointing device is exercised: `mouse_move dx dy`, `mouse_button mask`
 # with 1 left, 2 middle, 4 right. A line of `wait-for TEXT` is not a monitor
 # command: it holds the rest of the sequence until the machine says TEXT, which
-# is how a step that has to happen in order stays in order on a loaded host.
+# is how a step that has to happen in order stays in order on a loaded host. A
+# line of `type TEXT` types TEXT and enters it, as a line of `-t` is, at that
+# point in the sequence.
 #
 # The CPU model comes from QEMU_CPU, which the Makefile exports. It must match
 # the target: emulating something less capable than the real Celeron M makes
@@ -212,20 +214,24 @@ keyname() {
     esac
 }
 
-# Each line of TYPE is typed and then entered. Keys go one at a time with a
-# pause: the guest's keyboard interrupt has to drain the controller between
-# them, and a burst gets coalesced into missing characters.
+# Type one line and enter it. Keys go one at a time with a pause: the guest's
+# keyboard interrupt has to drain the controller between them, and a burst gets
+# coalesced into missing characters.
+typeLine() {
+    i=1
+    while [ $i -le ${#1} ]; do
+        ch=$(printf '%s' "$1" | cut -c$i)
+        key=$(keyname "$ch")
+        [ -n "$key" ] && monitor "sendkey $key"
+        sleep 0.06
+        i=$((i+1))
+    done
+    monitor "sendkey ret"
+}
+
 if [ -n "$TYPE" ]; then
     printf '%s\n' "$TYPE" | while IFS= read -r line; do
-        i=1
-        while [ $i -le ${#line} ]; do
-            ch=$(printf '%s' "$line" | cut -c$i)
-            key=$(keyname "$ch")
-            [ -n "$key" ] && monitor "sendkey $key"
-            sleep 0.06
-            i=$((i+1))
-        done
-        monitor "sendkey ret"
+        typeLine "$line"
         sleep "$PAUSE"
     done
 fi
@@ -250,6 +256,7 @@ if [ -n "$MONITOR" ]; then
         [ -n "$line" ] || continue
         case "$line" in
             "wait-for "*) awaitLine "${line#wait-for }" || true ;;
+            "type "*) typeLine "${line#type }" ;;
             *) monitor "$line" ;;
         esac
         sleep 0.3

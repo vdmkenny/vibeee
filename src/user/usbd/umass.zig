@@ -251,13 +251,11 @@ pub const Error = error{
     Refused,
     /// The device did not answer at all.
     Gone,
-    /// More was asked for than one transfer carries.
-    TooLarge,
 };
 
-/// How many sectors one request carries, from what the controller will
-/// take in a single bulk transfer.
-pub fn sectorsPerRequest(disk: *const Disk) u32 {
+/// How many sectors one command carries: what the controller takes in a
+/// single bulk transfer.
+fn sectorsPerCommand(disk: *const Disk) u32 {
     const size = @max(disk.sectorBytes(), 1);
     const limit: u32 = @intCast(disk.ops.bulkLimit());
     return @max(limit / size, 1);
@@ -278,23 +276,32 @@ pub fn flush(disk: *Disk) void {
     _ = command(disk, scsi.synchronizeCache(), .out, &.{}) catch {};
 }
 
+/// Whole sectors, one command for each bulk transfer's worth.
 fn move(disk: *Disk, lba: u64, buffer: []u8, writing: bool) Error!void {
     const size = @max(disk.sectorBytes(), 1);
     if (buffer.len % size != 0) return Error.Refused;
-    const count = buffer.len / size;
-    if (count == 0) return;
-    if (count > sectorsPerRequest(disk)) return Error.TooLarge;
-    if (lba + count > disk.sectors()) return Error.Refused;
+    if (lba + buffer.len / size > disk.sectors()) return Error.Refused;
 
+    const most: usize = sectorsPerCommand(disk) * size;
+    var done: usize = 0;
+    while (done < buffer.len) {
+        const length: usize = @min(most, buffer.len - done);
+        const piece = buffer[done..][0..length];
+        try moveOnce(disk, lba + done / size, @intCast(length / size), piece, writing);
+        done += length;
+    }
+}
+
+/// One read or write command, no longer than one bulk transfer.
+fn moveOnce(disk: *Disk, lba: u64, sectors: u16, piece: []u8, writing: bool) Error!void {
     const at_lba: u32 = @intCast(lba);
-    const blocks: u16 = @intCast(count);
-    const block = if (writing) scsi.write10(at_lba, blocks) else scsi.read10(at_lba, blocks);
+    const block = if (writing) scsi.write10(at_lba, sectors) else scsi.read10(at_lba, sectors);
 
     const verdict = command(
         disk,
         block,
         if (writing) .out else .in,
-        buffer,
+        piece,
     ) catch |err| return switch (err) {
         hc.Error.Timeout => Error.Gone,
         else => Error.Confused,

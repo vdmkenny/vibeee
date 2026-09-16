@@ -26,6 +26,8 @@ rm -f "$BUILD"/check-serial.png "$BUILD"/check-serial.log "$BUILD"/check-serial.
 rm -f "$BUILD"/check-console.png "$BUILD"/check-console.log "$BUILD"/check-console.log.txt "$BUILD"/check-console.out
 rm -f "$BUILD"/check-bus.png "$BUILD"/check-bus.log "$BUILD"/check-bus.log.txt "$BUILD"/check-stick.img
 rm -f "$BUILD"/check-stick-ohci.img "$BUILD"/check-stick-ohci.out
+rm -f "$BUILD"/check-copy.png "$BUILD"/check-copy.log "$BUILD"/check-copy.log.txt "$BUILD"/check-copy.bin
+rm -f "$BUILD"/check-copy-*.img "$BUILD"/check-copy-*.out
 rm -f "$BUILD"/check-cut*.png "$BUILD"/check-cut*.log "$BUILD"/check-cut*.log.txt
 rm -f "$BUILD"/check-grow*.png "$BUILD"/check-grow*.log "$BUILD"/check-grow*.log.txt "$BUILD"/check-grow.img
 
@@ -288,7 +290,9 @@ step "disks behind a hub and on an open host controller, across the bus being pu
 # a volume followed by address rather than by where its disk sits would
 # come back mounted over the wrong one. A second disk and the keyboard
 # everything is typed on sit on an OHCI controller, and the disk is
-# written to as well as read.
+# written to as well as read. Typing waits for both mounts and for each
+# command's output: a key's OHCI interrupt that usbd has not acknowledged
+# holds back the UHCI line while usbd reads for a mount.
 STICK=$BUILD/check-stick.img
 dd if=/dev/zero of="$STICK" bs=1m count=16 >/dev/null 2>&1
 mformat -i "$STICK" -F :: || fail "cannot make a stick to test with"
@@ -301,14 +305,27 @@ echo "the open controller's stick reads" > "$BUILD/check-stick-ohci.txt"
 mcopy -i "$OPEN_STICK" "$BUILD/check-stick-ohci.txt" ::/open.txt || fail "cannot write to the second test stick"
 
 LOGBUS=$BUILD/check-bus.log
-QEMU_CPU="$QEMU_CPU" tools/qemu-shot.sh "$BUILD/check-bus.png" -w 30 -p 4 -s 4 \
-    -t "cat /media/usb0/hello.txt
-cat /media/usb1/open.txt
-cp /media/usb1/open.txt /media/usb1/copied.txt
-usb rebuild
-cat /media/usb0/hello.txt
-cat /media/usb1/copied.txt
-unmount /media/usb1" \
+QEMU_CPU="$QEMU_CPU" tools/qemu-shot.sh "$BUILD/check-bus.png" -w 30 -s 1 \
+    -m "wait-for /media/usb0 on usb0
+wait-for /media/usb1 on usb1
+type cat /media/usb0/hello.txt
+wait-for the stick still reads
+type cat /media/usb1/open.txt
+wait-for open controller's stick reads
+type cp /media/usb1/open.txt /media/usb1/copied.txt
+type echo copied
+wait-for 2005lcopied
+type usb rebuild
+wait-for the bus is back
+type cat /media/usb0/hello.txt
+type echo read-again
+wait-for 2005lread-again
+type cat /media/usb1/copied.txt
+type echo read-copy
+wait-for 2005lread-copy
+type unmount /media/usb1
+type echo unmounted
+wait-for 2005lunmounted" \
     -- -drive if=ide,format=raw,file="$DEV_IMAGE" \
     -device piix3-usb-uhci,id=uh -device usb-hub,bus=uh.0,port=1 \
     -drive if=none,id=st,format=raw,file="$STICK" \
@@ -335,6 +352,44 @@ mcopy -o -i "$OPEN_STICK" ::/copied.txt "$BUILD/check-stick-ohci.out" 2>/dev/nul
     cmp -s "$BUILD/check-stick-ohci.txt" "$BUILD/check-stick-ohci.out" ||
     fail "what was written to the open controller's disk is not on it (see $LOGBUS)"
 echo "the bus went down and came back; both disks kept their mounts, and a copy reached the disk"
+
+step "copies on UHCI and EHCI sticks"
+# Each controller on its own interrupt line. A 256 KiB copy on each; on UHCI
+# its 4 KiB requests exceed one bulk transfer and go as several commands.
+COPY_DATA=$BUILD/check-copy.bin
+head -c 262144 /dev/urandom > "$COPY_DATA"
+for which in uhci ehci; do
+    dd if=/dev/zero of="$BUILD/check-copy-$which-disk.img" bs=1m count=16 >/dev/null 2>&1
+    mformat -i "$BUILD/check-copy-$which-disk.img" -F :: || fail "cannot make a stick to test with"
+    mcopy -i "$BUILD/check-copy-$which-disk.img" "$COPY_DATA" ::/data.bin || fail "cannot write to the test stick"
+done
+
+LOGCOPY=$BUILD/check-copy.log
+QEMU_CPU="$QEMU_CPU" tools/qemu-shot.sh "$BUILD/check-copy.png" -w 30 -s 1 \
+    -m "wait-for /media/usb0 on usb0
+wait-for /media/usb1 on usb1
+type cp /media/usb0/data.bin /media/usb0/copy.bin
+type echo first-done
+wait-for 2005lfirst-done
+type cp /media/usb1/data.bin /media/usb1/copy.bin
+type echo second-done
+wait-for 2005lsecond-done" \
+    -- -drive if=ide,format=raw,file="$DEV_IMAGE" -nic none \
+    -device piix3-usb-uhci,id=uh,addr=4 \
+    -drive if=none,id=ud,format=raw,file="$BUILD/check-copy-uhci-disk.img" \
+    -device usb-storage,bus=uh.0,port=1,drive=ud \
+    -device ich9-usb-ehci1,id=eh,addr=6 \
+    -drive if=none,id=ed,format=raw,file="$BUILD/check-copy-ehci-disk.img" \
+    -device usb-storage,bus=eh.0,port=1,drive=ed >/dev/null \
+    || fail "the emulator did not run (see $LOGCOPY)"
+plain "$LOGCOPY" > "$LOGCOPY.txt"
+! grep -qi "panic" "$LOGCOPY.txt" || fail "the kernel panicked (see $LOGCOPY)"
+for which in uhci ehci; do
+    mcopy -o -i "$BUILD/check-copy-$which-disk.img" ::/copy.bin "$BUILD/check-copy-$which.out" 2>/dev/null &&
+        cmp -s "$COPY_DATA" "$BUILD/check-copy-$which.out" ||
+        fail "the copy on the $which stick does not match its source (see $LOGCOPY)"
+done
+echo "both copies match their source"
 
 step "the machine asleep and awake again, with its screen, its keys and its disk"
 # The whole suspend path, which the emulator can run because its display

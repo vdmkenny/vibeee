@@ -245,7 +245,8 @@ driven. Modesetting belongs to the kernel; `firmware-set` keeps the firmware's m
 - `core.zig` enumerates: port reset, packet size, address, descriptors, configuration,
   driver lookup through `devmgd`. A device silent through two requests gets one more
   reset. A failed transfer logs each stage.
-- Class drivers: `umass.zig` (bulk-only disks), `hid.zig` (boot-protocol keyboards and
+- Class drivers: `umass.zig` (bulk-only disks; a request longer than one bulk transfer
+  goes as several commands), `hid.zig` (boot-protocol keyboards and
   mice), `hub.zig`, `acm.zig` (CDC-ACM serial), `ftdi.zig` (FTDI serial; values in
   [`ftdi/regs.zig`](../src/user/usbd/ftdi/regs.zig), host-tested against documented
   divisors).
@@ -479,8 +480,10 @@ every build. Code used by one driver only stays with that driver, for example
   8. Serial console: the log reaches the port, including lines written after it opened.
   9. Hub and bus rebuild: a disk behind a hub keeps its mount across `usb rebuild`, and
      a disk and keyboard on an OHCI controller are read, written and typed on across it.
-  10. Suspend and resume: display, keyboard, disk and network work after waking.
-  11. Card reader boot: the volumes arrive through USB.
+  10. USB copies: a 256 KiB copy on a UHCI stick and on an EHCI stick matches its
+      source.
+  11. Suspend and resume: display, keyboard, disk and network work after waking.
+  12. Card reader boot: the volumes arrive through USB.
 - Boot self-tests: heap, syscall ABI, clock advance, IPC. Failures print `fail` in the
   boot log rather than hanging.
 - `make shot OUT=x.png TYPE="..."` boots headless, types at the shell, and writes a
@@ -583,6 +586,12 @@ syscalls, Ring 3, IPC, ramfs, VESA console, i8042 keyboard, `vsh`. Exercised eve
 - Full or low speed devices behind a hub on the EHCI controller need split
   transactions. The arithmetic is written and untested: the emulator does not put a
   full speed hub on EHCI, and the 701's own hubs are on the companions.
+- `usbd` acknowledges a controller's interrupt only when it services that controller. On
+  a level-triggered line, a delivery it has not acknowledged holds back every line in
+  the same interrupt priority class, and transfers on another controller fall back to
+  50 ms wait steps meanwhile: two controllers on one line, or a USB keyboard typed on
+  while a disk on another controller is read. QEMU's lines are level-triggered; the
+  701's are edge-triggered.
 - A serial port has one pending read: one packet on the companions, eight on EHCI. A
   device that outruns the service loses data; the ring flags the loss and `ser` prints
   it.

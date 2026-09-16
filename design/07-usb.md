@@ -361,8 +361,7 @@ per controller (00:1d.0..3), I/O BAR at cfg 0x20 (32 ports), via ioport_grant:
 ports: PORTSC1/2 at io+0x10/0x12: reset = set bit9 50 ms, clear, 10 ms, set PED(bit2); LS device if bit8.
 TD (32 B, 16-aligned): DW0 link(Vf|Q|T) · DW1 status: SPD|C_ERR=3|LS|IOC|Active|errbits|ActLen(10:0)
                        DW2 token: MaxLen(31:21)|DT(19)|EndPt(18:15)|DevAddr(14:8)|PID(7:0) · DW3 buffer
-Scope deliberately minimal: control + interrupt-IN only (HID boot kbd 8-B reports @10 ms, mouse 4-B @10 ms).
-No UHCI bulk (FS mass storage refused with a devmgr "unsupported" event; USB1.1 sticks are museum pieces).
+Control, bulk and interrupt-IN. A bulk transfer is one descriptor per packet, at most 1 KiB.
 ```
 
 ### 5.6.1 OHCI
@@ -432,8 +431,8 @@ Error/retry ladder (per failed transfer, escalate):
   L3 timeout (no CSW within op timeout): cancel qTDs → port reset → re-enumerate (identity match keeps ublk attach) → retry once
   L4 fail op upward: UblkStatus.io_err (or no_medium/timeout as diagnosed). Ladder state is per-device; 3 L3 trips
      in 60 s ⇒ mark device bad, detach, devmgr event (GUI toast).
-Request coalescing: adjacent-LBA same-op SQEs merged up to 64 KiB per BOT command (conservative cheap-reader cap;
-128 KiB experiment behind a manifest flag). 20 MB/s ⇒ ~320 BOT cmds/s ⇒ ~320 IRQs/s (IOC-on-CSW only).
+A volume request longer than one bulk transfer (bulkLimit: UHCI 1 KiB, OHCI 4 KiB, EHCI 16 KiB) goes as
+consecutive READ(10)/WRITE(10) commands of one transfer each.
 ```
 
 ### 5.9 UVC session (M3), power + probe/commit
