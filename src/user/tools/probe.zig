@@ -326,8 +326,18 @@ fn strayHandle() isize {
 /// this case covers is the whole path: that a file which cannot be believed
 /// comes back as a program that would not start, from the call that starts it.
 fn crookedProgram() isize {
-    var image: [Elf.SIZE]u8 = @splat(0);
-    Elf.write(&image, .{ .offset = 0xFFFF_F000, .filesz = 0x1000 });
+    const image = std.mem.toBytes(Crooked{
+        .program = .{
+            .type = .load,
+            .offset = 0xFFFF_F000,
+            .vaddr = 0x1000,
+            .paddr = 0x1000,
+            .filesz = 0x1000,
+            .memsz = 0x1000,
+            .flags = .{ .executable = true, .readable = true },
+            .alignment = 0x1000,
+        },
+    });
 
     const file = sys.open(CROOKED, .{ .write = true, .create = true, .truncate = true }) catch return NOT_RUN;
     const wrote = sys.write(file, &image) catch 0;
@@ -343,56 +353,12 @@ fn crookedProgram() isize {
 
 const CROOKED = "/tmp/crooked";
 
-/// Just enough of a program image to be believed as far as its one segment.
-///
-/// Built out of the format's own structs rather than by writing numbers at
-/// remembered offsets: the layout is stated once, in `lib`, and both the
-/// kernel that refuses this file and the program that writes it read the same
-/// declaration.
-const Elf = struct {
-    const format = @import("lib").elf;
+/// A program image of one segment: a header and its program header table.
+const Crooked = extern struct {
+    header: elf.Header = .{ .entry = 0x1000, .phnum = 1 },
+    program: elf.ProgramHeader,
 
-    pub const SIZE = @sizeOf(format.Header) + @sizeOf(format.ProgramHeader);
-
-    const Says = struct { offset: u32, filesz: u32 };
-
-    fn write(into: *[SIZE]u8, says: Says) void {
-        const header: *align(1) format.Header = @ptrCast(into);
-        header.* = .{
-            .magic = format.MAGIC.*,
-            .class = .bits32,
-            .data = .little,
-            .version = 1,
-            .abi = 0,
-            .abi_version = 0,
-            ._pad = @splat(0),
-            .type = .executable,
-            .machine = .x86,
-            .object_version = 1,
-            .entry = 0x1000,
-            .phoff = @sizeOf(format.Header),
-            .shoff = 0,
-            .flags = 0,
-            .ehsize = @sizeOf(format.Header),
-            .phentsize = @sizeOf(format.ProgramHeader),
-            .phnum = 1,
-            .shentsize = 0,
-            .shnum = 0,
-            .shstrndx = 0,
-        };
-
-        const program: *align(1) format.ProgramHeader = @ptrCast(into[@sizeOf(format.Header)..].ptr);
-        program.* = .{
-            .type = .load,
-            .offset = says.offset,
-            .vaddr = 0x1000,
-            .paddr = 0x1000,
-            .filesz = says.filesz,
-            .memsz = says.filesz,
-            .flags = .{ .executable = true, .writable = false, .readable = true },
-            .alignment = 0x1000,
-        };
-    }
+    const elf = @import("lib").elf;
 };
 
 /// The keyboard, while a program of this one's own is holding it.

@@ -15,6 +15,8 @@
 
 const std = @import("std");
 const bindings = @import("ulib").bindings;
+const command = @import("ulib").command;
+const notes = @import("ulib").notes;
 const anchors = @import("proto").anchors;
 const info = @import("ulib").info;
 const dir = @import("ulib").dir;
@@ -161,9 +163,8 @@ pub const Category = enum {
 pub const Item = struct {
     label: []const u8,
     category: Category,
-    /// The picture beside it. Null where nothing says it better than the
-    /// name does.
-    mark: ?eui_icon.Icon = null,
+    /// The picture beside it, where it is not the icon the program carries.
+    mark: ?eui_icon.Mark = null,
     action: Kind,
 
     pub const Kind = union(enum) {
@@ -183,18 +184,18 @@ pub const Item = struct {
 };
 
 pub const items = [_]Item{
-    .{ .label = "eTerm", .category = .tools, .mark = .terminal, .action = .{ .run = .{ .path = "/bin/eterm", .name = "eterm" } } },
-    .{ .label = "Pad", .category = .tools, .mark = .document, .action = .{ .run = .{ .path = "/bin/pad", .name = "pad" } } },
-    .{ .label = "Files", .category = .tools, .mark = .folder, .action = .{ .run = .{ .path = "/bin/efm", .name = "efm" } } },
-    .{ .label = "Calc", .category = .tools, .mark = .calculator, .action = .{ .run = .{ .path = "/bin/calc", .name = "calc" } } },
-    .{ .label = "Viewer", .category = .tools, .mark = .picture, .action = .{ .run = .{ .path = "/bin/eimg", .name = "eimg" } } },
-    .{ .label = "Monitor", .category = .system, .mark = .chart, .action = .{ .run = .{ .path = "/bin/monitor", .name = "monitor" } } },
-    .{ .label = "Settings", .category = .system, .mark = .sliders, .action = .{ .run = .{ .path = "/bin/settings", .name = "settings" } } },
-    .{ .label = "About this computer", .category = .system, .mark = .about, .action = .{ .run = .{ .path = "/bin/settings", .name = "settings", .arg = "about" } } },
-    .{ .label = "Exit to shell", .category = .session, .mark = .exit, .action = .quit },
-    .{ .label = "Sleep", .category = .session, .mark = .moon, .action = .sleep },
-    .{ .label = "Restart", .category = .session, .mark = .reload, .action = .reboot },
-    .{ .label = "Shut down", .category = .session, .mark = .power, .action = .power_off },
+    .{ .label = "eTerm", .category = .tools, .action = .{ .run = .{ .path = "/bin/eterm", .name = "eterm" } } },
+    .{ .label = "Pad", .category = .tools, .action = .{ .run = .{ .path = "/bin/pad", .name = "pad" } } },
+    .{ .label = "Files", .category = .tools, .action = .{ .run = .{ .path = "/bin/efm", .name = "efm" } } },
+    .{ .label = "Calc", .category = .tools, .action = .{ .run = .{ .path = "/bin/calc", .name = "calc" } } },
+    .{ .label = "Viewer", .category = .tools, .action = .{ .run = .{ .path = "/bin/eimg", .name = "eimg" } } },
+    .{ .label = "Monitor", .category = .system, .action = .{ .run = .{ .path = "/bin/monitor", .name = "monitor" } } },
+    .{ .label = "Settings", .category = .system, .action = .{ .run = .{ .path = "/bin/settings", .name = "settings" } } },
+    .{ .label = "About this computer", .category = .system, .mark = .icon(.about), .action = .{ .run = .{ .path = "/bin/settings", .name = "settings", .arg = "about" } } },
+    .{ .label = "Exit to shell", .category = .session, .mark = .icon(.exit), .action = .quit },
+    .{ .label = "Sleep", .category = .session, .mark = .icon(.moon), .action = .sleep },
+    .{ .label = "Restart", .category = .session, .mark = .icon(.reload), .action = .reboot },
+    .{ .label = "Shut down", .category = .session, .mark = .icon(.power), .action = .power_off },
 };
 
 /// Whether a key produced a character somebody meant to type.
@@ -266,7 +267,7 @@ const Found = struct {
     hit: ui.MenuItem.Run,
     /// A picture of its own, for a row that has one. Everything else takes
     /// the one its sort carries.
-    mark: ?eui_icon.Icon = null,
+    mark: ?eui_icon.Mark = null,
     score: i32,
     at: usize,
     what: What,
@@ -295,15 +296,15 @@ const Found = struct {
 
         /// The picture for a row that has none of its own. A window is a
         /// window whatever is in it, and something the keys can do is a key.
-        fn mark(self: What) eui_icon.Icon {
-            return switch (self) {
+        fn mark(self: What) eui_icon.Mark {
+            return .icon(switch (self) {
                 .entry, .place => .apps,
                 .window => .maximised,
                 .verb => .keyboard,
                 // A file's picture comes from what it is, so a row that
                 // reaches here is one whose sort was not recognised.
                 .file => .document,
-            };
+            });
         }
     };
 };
@@ -375,7 +376,7 @@ fn refreshFound(desktop: *const layout.Desktop) void {
             .label = item.label,
             .note = item.category.title(),
             .hit = runOf(hit),
-            .mark = item.mark,
+            .mark = entryMark(index),
             .score = hit.score,
             .at = seq,
             .what = .{ .entry = index },
@@ -394,7 +395,7 @@ fn refreshFound(desktop: *const layout.Desktop) void {
                 .label = anchor.says,
                 .note = program.name,
                 .hit = runOf(hit),
-                .mark = program.mark,
+                .mark = .icon(program.mark),
                 .score = hit.score,
                 .at = seq,
                 .what = .{ .place = .{ .program = program_index, .anchor = anchor_index } },
@@ -412,7 +413,7 @@ fn refreshFound(desktop: *const layout.Desktop) void {
             .label = one.name(),
             .note = one.what.says(),
             .hit = runOf(hit),
-            .mark = eui_icon.forFamily(one.what.family()),
+            .mark = .firstOf(null, &one.icon, eui_icon.forFamily(one.what.family())),
             .score = hit.score,
             .at = seq,
             .what = .{ .file = index },
@@ -492,7 +493,7 @@ fn categoryItems(into: []ui.MenuItem) []ui.MenuItem {
         // The name and its picture, and no count. A number beside a category
         // claims to say how much is in it, and what it would be counting is
         // this table rather than what is installed on the machine.
-        into[n] = .{ .label = which.title(), .mark = which.icon() };
+        into[n] = .{ .label = which.title(), .mark = .icon(which.icon()) };
         n += 1;
     }
     return into[0..n];
@@ -575,6 +576,8 @@ const FoundFile = struct {
     /// large and where it lives small without holding both.
     name_at: u8 = 0,
     what: lib.kind.Kind = .data,
+    /// The icon a program carries.
+    icon: ?[eui_icon.BYTES]u8 = null,
 
     fn pathSlice(self: *const FoundFile) []const u8 {
         return self.path[0..self.path_len];
@@ -612,18 +615,36 @@ fn walk(where: []const u8, depth: u8) void {
             continue;
         }
 
+        // Known by name, without reading: this runs over every file under
+        // /home. Programs are known by their directory, and only they are
+        // read, for their icon.
+        const program = command.onPath(command.DEFAULT_PATH, where);
         var one = FoundFile{
             .path_len = @intCast(path.len),
             .name_at = @intCast(path.len - entry.name.len),
-            // By name rather than by bytes: this runs over every file under
-            // /home when the launcher opens, and reading each of them would
-            // be a seek apiece for an icon.
-            .what = lib.kind.fromName(entry.name) orelse .data,
+            .what = if (program) .program else lib.kind.fromName(entry.name) orelse .data,
+            .icon = if (program) notes.read(eui_icon.Note, path) else null,
         };
         @memcpy(one.path[0..path.len], path);
         files[file_count] = one;
         file_count += 1;
     }
+}
+
+/// Icons carried by the programs the entries run, read when the bar begins.
+/// `/bin` is part of the root image and does not change while it runs.
+var entry_icons: [items.len]?[eui_icon.BYTES]u8 = @splat(null);
+
+fn readEntryIcons() void {
+    for (items, &entry_icons) |item, *icon| icon.* = switch (item.action) {
+        .run => |program| if (item.mark == null) notes.read(eui_icon.Note, program.path) else null,
+        else => null,
+    };
+}
+
+fn entryMark(index: usize) eui_icon.Mark {
+    const item = items[index];
+    return .firstOf(item.mark, &entry_icons[index], item.category.icon());
 }
 
 /// Open the applications menu, from the V button or a key.
@@ -647,10 +668,10 @@ fn menuItems(out: []ui.MenuItem) []ui.MenuItem {
     var n: usize = 0;
 
     if (launcher_query.len == 0) {
-        for (items) |item| {
+        for (items, 0..) |item, index| {
             if (n == out.len) break;
             if (item.category != launcher_category) continue;
-            out[n] = .{ .label = item.label, .mark = item.mark };
+            out[n] = .{ .label = item.label, .mark = entryMark(index) };
             n += 1;
         }
         return out[0..n];
@@ -1400,6 +1421,7 @@ pub fn networkChanged() void {
 /// empty menu until something moved.
 pub fn begin() void {
     readNetwork();
+    readEntryIcons();
 }
 
 /// What the bar's icon shows: the interface actually carrying the network,
@@ -1448,14 +1470,14 @@ fn netItems(into: []ui.MenuItem) []ui.MenuItem {
             .label = net.nameOf(&ifaces[i].iface),
             // The rows say what is; changing it is the settings' business.
             .kind = .disabled,
-            .mark = if (radio) .wifi else .ethernet,
+            .mark = .icon(if (radio) .wifi else .ethernet),
             .detail = detail,
         };
         count += 1;
     }
 
     if (count == 0 and into.len > 0) {
-        into[count] = .{ .label = "No interfaces", .kind = .disabled, .mark = .ethernet };
+        into[count] = .{ .label = "No interfaces", .kind = .disabled, .mark = .icon(.ethernet) };
         count += 1;
     }
 
@@ -1471,7 +1493,7 @@ fn netItems(into: []ui.MenuItem) []ui.MenuItem {
             into[count] = .{
                 .label = heard[i].name(),
                 .kind = if (heard[i].security.joinable()) .item else .disabled,
-                .mark = .wifi,
+                .mark = .icon(.wifi),
                 .detail = spelled.done(),
             };
             count += 1;
@@ -1484,13 +1506,13 @@ fn netItems(into: []ui.MenuItem) []ui.MenuItem {
         var spelled = str.Builder{ .buf = &more_text };
         spelled.number(@intCast(heard_total - heard_count));
         spelled.text(" more networks");
-        into[count] = .{ .label = spelled.done(), .mark = .wifi };
+        into[count] = .{ .label = spelled.done(), .mark = .icon(.wifi) };
         count += 1;
     }
 
     if (count + 2 <= into.len) {
         into[count] = .{ .kind = .separator };
-        into[count + 1] = .{ .label = "Network settings", .mark = .sliders };
+        into[count + 1] = .{ .label = "Network settings", .mark = .icon(.sliders) };
         count += 2;
     }
     return into[0..count];
@@ -1732,7 +1754,7 @@ fn powerItems(into: []ui.MenuItem) []ui.MenuItem {
             into[count] = .{
                 .label = p.stateLabel(),
                 .kind = .disabled,
-                .mark = .battery,
+                .mark = .icon(.battery),
                 .detail = chargeText(),
             };
             count += 1;
@@ -1750,13 +1772,13 @@ fn powerItems(into: []ui.MenuItem) []ui.MenuItem {
             }
         }
     } else if (count < into.len) {
-        into[count] = .{ .label = "No battery", .kind = .disabled, .mark = .battery };
+        into[count] = .{ .label = "No battery", .kind = .disabled, .mark = .icon(.battery) };
         count += 1;
     }
 
     if (count + 2 <= into.len) {
         into[count] = .{ .kind = .separator };
-        into[count + 1] = .{ .label = "Power settings", .mark = .sliders };
+        into[count + 1] = .{ .label = "Power settings", .mark = .icon(.sliders) };
         count += 2;
     }
     return into[0..count];
@@ -1909,7 +1931,7 @@ fn soundItems(into: []ui.MenuItem) []ui.MenuItem {
                 .label = sound_port_names[i][0..sound_port_name_len[i]],
                 // The tick says which one the machine is using; the others
                 // carry nothing, and the column keeps them lined up.
-                .mark = if (port.default != 0) .check else null,
+                .mark = if (port.default != 0) .icon(.check) else null,
             }, port.id);
         }
     }
@@ -2093,11 +2115,11 @@ fn clockItems(into: []ui.MenuItem) []ui.MenuItem {
     var n: usize = 0;
 
     if (clock_date_len == 0) {
-        into[n] = .{ .label = "The clock has not been set", .kind = .disabled, .mark = .clock };
+        into[n] = .{ .label = "The clock has not been set", .kind = .disabled, .mark = .icon(.clock) };
         return into[0 .. n + 1];
     }
 
-    into[n] = .{ .label = clock_date[0..clock_date_len], .kind = .disabled, .mark = .clock };
+    into[n] = .{ .label = clock_date[0..clock_date_len], .kind = .disabled, .mark = .icon(.clock) };
     n += 1;
     into[n] = .{ .label = clock_time[0..clock_time_len], .kind = .disabled };
     n += 1;

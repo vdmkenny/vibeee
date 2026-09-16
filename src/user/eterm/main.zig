@@ -52,6 +52,11 @@ var running = false;
 var line: [512]u8 = @splat(0);
 var line_len: usize = 0;
 
+// The icon the launcher shows for this program.
+comptime {
+    eui.icon.carry(eui.icon.of(.terminal).*);
+}
+
 export fn _start() callconv(.c) noreturn {
     etermMain();
 }

@@ -42,19 +42,14 @@ pub fn load(space: *hal.AddressSpace, image: []const u8) Error!Loaded {
 
     for (wanted.list()) |segment| try loadSegment(space, image, segment);
 
-    return .{
-        .entry = @intCast(wanted.entry),
-        .brk = @intCast(wanted.brk),
-    };
+    return .{ .entry = wanted.entry, .brk = wanted.brk };
 }
 
 fn loadSegment(space: *hal.AddressSpace, image: []const u8, segment: plan.Segment) Error!void {
-    const first: usize = @intCast(segment.first(hal.PAGE_SIZE));
-    const last: usize = @intCast(segment.last(hal.PAGE_SIZE));
-    const at: usize = @intCast(segment.at);
-    const file_end: usize = @intCast(segment.at + segment.bytes);
+    const last = segment.last(hal.PAGE_SIZE);
+    const file_end = segment.at + segment.bytes;
 
-    var page = first;
+    var page = segment.first(hal.PAGE_SIZE);
     while (page < last) : (page += hal.PAGE_SIZE) {
         const phys = pmm.allocFrame() catch return error.OutOfMemory;
         // Until it is mapped the frame is nobody's but ours, and a mapping
@@ -67,10 +62,10 @@ fn loadSegment(space: *hal.AddressSpace, image: []const u8, segment: plan.Segmen
         @memset(dest[0..hal.PAGE_SIZE], 0);
 
         // Whatever part of this page the file actually covers.
-        const from = @max(page, at);
+        const from = @max(page, segment.at);
         const to = @min(page + hal.PAGE_SIZE, file_end);
         if (to > from) {
-            const source: usize = @intCast(segment.from + (from - at));
+            const source = segment.from + (from - segment.at);
             const len = to - from;
             @memcpy(dest[from - page ..][0..len], image[source..][0..len]);
         }

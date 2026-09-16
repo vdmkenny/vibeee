@@ -124,7 +124,7 @@ pub fn widthFor(entries: []const []const u8) i32 {
 fn open(index: usize, where: Rect, entries: []const []const u8, chosen: usize) void {
     count = @min(entries.len, items.len);
     for (items[0..count], entries[0..count], 0..) |*item, text, i| {
-        item.* = .{ .label = text, .mark = if (i == chosen) .check else null };
+        item.* = .{ .label = text, .mark = if (i == chosen) .icon(.check) else null };
     }
     anchor = where;
     owner = index;
@@ -296,7 +296,7 @@ test "a press on the control opens the list, and one on a row chooses it" {
     // Released on itself: the list opens, with the chosen entry ticked.
     _ = pass(ctx, where, 1, .{});
     try testing.expect(isOpen());
-    try testing.expectEqual(@as(?icons.Icon, .check), items[1].mark);
+    try testing.expectEqual(icons.Icon.check, items[1].mark.?.named);
 
     // A press on the third row, which is under the second, chooses it: the
     // control says so on its next pass.

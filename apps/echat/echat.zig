@@ -115,6 +115,24 @@ var notice: Bounded(u8, 128) = .{};
 // Start
 // ---------------------------------------------------------------------------
 
+// The icon the launcher shows for this program: a speech bubble.
+comptime {
+    eui.icon.carry(eui.icon.pack(.{
+        "............",
+        ".##########.",
+        "#..........#",
+        "#.########.#",
+        "#..........#",
+        "#.#####....#",
+        "#..........#",
+        ".#.########.",
+        ".#.#........",
+        ".##.........",
+        ".#..........",
+        "............",
+    }));
+}
+
 export fn _start(frame: [*]usize) callconv(.c) noreturn {
     model.init();
     for (&links) |*link| forget(link);

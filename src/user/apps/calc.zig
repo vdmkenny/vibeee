@@ -106,6 +106,11 @@ fn readoutHeight() i32 {
     return t.padding * 2 + eui.Surface.textHeight() + eui.Surface.titleHeight();
 }
 
+// The icon the launcher shows for this program.
+comptime {
+    eui.icon.carry(eui.icon.of(.calculator).*);
+}
+
 export fn _start() callconv(.c) noreturn {
     const size = wanted();
     proto.app.run("calc", "Calc", size.w, size.h, .{

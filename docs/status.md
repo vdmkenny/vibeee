@@ -33,7 +33,7 @@ No counts: they go stale. Git records when this was last true.
 | Panic record | [`kernel/panicring.zig`](../src/kernel/panicring.zig) | One low-memory page holding the last panic across a warm reboot, magic and checksum guarded. The next boot reports it, logs it and clears it. |
 | Kernel log | [`kernel/klog.zig`](../src/kernel/klog.zig) | 16 KiB ring of kernel lines and service lines (via the `log` syscall). Lines are recorded whether or not printed. `debug` lines are recorded only when `debug` is on the command line. |
 | Capabilities | [`lib/syscalls.zig`](../src/lib/syscalls.zig) | Intersected at every spawn, so authority only narrows down the process tree. Declared per service in `/etc/services`. `Caps.service` guards the names the system's own services use ([`lib/services.zig`](../src/lib/services.zig)); other names are open to any program. The session holds no capabilities; the desktop is started with `svc start eeewm`. |
-| User buffer checks | [`arch/x86/pagetable.zig`](../src/arch/x86/pagetable.zig), [`syscall/context.zig`](../src/kernel/syscall/context.zig), [`kernel/elf/plan.zig`](../src/kernel/elf/plan.zig) | Every syscall buffer is checked page by page against the caller's mappings: present, user-accessible, and writable where the kernel writes. `userRead` and `userWrite` encode the direction in the type. Program images and device apertures are validated in 64 bits. `map_device` maps any physical range the page allocator does not own, on the driver's word; the trust is the `driver` capability, held only by first-party drivers. Host-tested and fuzzed; [`probe`](../src/user/tools/probe.zig) exercises the same checks from Ring 3. |
+| User buffer checks | [`arch/x86/pagetable.zig`](../src/arch/x86/pagetable.zig), [`syscall/context.zig`](../src/kernel/syscall/context.zig), [`kernel/elf/plan.zig`](../src/kernel/elf/plan.zig) | Every syscall buffer is checked page by page against the caller's mappings: present, user-accessible, and writable where the kernel writes. `userRead` and `userWrite` encode the direction in the type. Program images are validated with overflow-checked sums, device apertures in 64 bits. `map_device` maps any physical range the page allocator does not own, on the driver's word; the trust is the `driver` capability, held only by first-party drivers. Host-tested and fuzzed; [`probe`](../src/user/tools/probe.zig) exercises the same checks from Ring 3. |
 | Driver capabilities | [`kernel/irqevent.zig`](../src/kernel/irqevent.zig), [`syscall/driver.zig`](../src/kernel/syscall/driver.zig) | `irq_attach` hands a device interrupt to userspace as a waitable event: the kernel masks and signals, the driver services and acknowledges. `ioport_grant` sets the TSS I/O bitmap, copied on process switch. `map_device` maps an aperture uncached and excluded from the page allocator. `pci_read`/`pci_write` serialise config space through the kernel. All need `Caps.driver`. |
 | Interrupts | [`kernel/irq.zig`](../src/kernel/irq.zig), [`arch/x86/lapic.zig`](../src/arch/x86/lapic.zig), [`arch/x86/ioapic.zig`](../src/arch/x86/ioapic.zig) | LAPIC and IOAPIC routed from the MADT with per-line polarity and trigger; 8259s as fallback. PCI interrupts use `_PRT` routing. See [Interrupt model](#interrupt-model). |
 | Syscalls | [`syscall.zig`](../src/kernel/syscall.zig) + [`syscall/`](../src/kernel/syscall/) | Bound to the table at comptime in both directions. SYSENTER where available, `int 0x80` otherwise, same register convention. Userspace asks which is armed rather than reading CPUID. |
@@ -142,6 +142,9 @@ driven. Modesetting belongs to the kernel; `firmware-set` keeps the firmware's m
   and drag, and stop at the screen edge.
 - The launcher indexes `/home` two levels deep when it opens and ranks files with apps,
   windows and verbs. Enter opens a file with its opener; Shift+Enter opens its folder.
+- Launcher rows show the icon a program carries as an ELF note
+  ([design/10-gui.md](../design/10-gui.md) §6.7), or its category's icon. The system
+  applications and the first-party extra applications carry one; Doom does not.
 
 ## Userspace
 
@@ -149,7 +152,7 @@ driven. Modesetting belongs to the kernel; `firmware-set` keeps the firmware's m
 |---|---|---|
 | `init` | [`user/init.zig`](../src/user/init.zig) | PID 1. Manifests, dependency order, readiness, restart policy, orphan reaping. A service promising a name is up only once the name is registered; missing the window counts as a failed start. Stop asks through the quit event and ends the process after three seconds. `svc` shows `starting` and `stopping`. The boot line can hold a service down (`nonet`, `nohw`, `no.<name>`) or start it late under the watchdog (`netlate`, `late.<name>`). |
 | `vsh` | [`user/vsh.zig`](../src/user/vsh.zig) | Builtins, `/bin` lookup, multicall dispatch, pipelines, `>` and `>>`. Line editing with history and completion. Prompt shows `~` for home and colours its arrow by the last exit status. |
-| Tools | [`user/tools/`](../src/user/tools/) | `ls cp mv rm mkdir cat hexdump file find tree grep head tail wc sort pack unpack page free top kill log irq devices display disk mount unmount check format grow svc cfg date eeefetch smbios sysinfo net backlight battery vol ser`. `log -f` follows new lines on the ring's event. Lines come from [`ulib.lines`](../src/user/lib/lines.zig) and directory walks from [`ulib.walk`](../src/user/lib/walk.zig). `pack` writes ustar, checked against a real archiver both ways. |
+| Tools | [`user/tools/`](../src/user/tools/) | `ls cp mv rm mkdir cat hexdump file icon find tree grep head tail wc sort pack unpack page free top kill log irq devices display disk mount unmount check format grow svc cfg date eeefetch smbios sysinfo net backlight battery vol ser`. `log -f` follows new lines on the ring's event. Lines come from [`ulib.lines`](../src/user/lib/lines.zig) and directory walks from [`ulib.walk`](../src/user/lib/walk.zig). `pack` writes ustar, checked against a real archiver both ways. |
 | `edit` | [`user/tools/edit.zig`](../src/user/tools/edit.zig) | Text editor in the console. Text handling is `lib/text`; screen handling is shared with `page`, including folding, numbering and the overflow arrow. Opens a named file, a pipe, or nothing (asks for a name on save). Writes nothing until asked. A file too long to hold opens read-only. |
 | `cfgd` | [`user/cfgd/`](../src/user/cfgd/) | Sole writer of the settings store. Validates against a build-time schema, writes the domain file, signals an event per domain. |
 | `platd` | [`user/platd/`](../src/user/platd/) | Platform service running uACPI. See [Platform service](#platform-service). |
@@ -354,6 +357,7 @@ every build. Code used by one driver only stays with that driver, for example
 | [`escapes.zig`](../src/lib/escapes.zig) | Terminal escape-sequence parser, shared by the console and eTerm. |
 | [`style.zig`](../src/lib/style.zig) | Output colour roles shared by console and GUI. |
 | [`driver.zig`](../src/lib/driver.zig) | Driver confidence and binding state for the boot table and `devices`. |
+| [`elf.zig`](../src/lib/elf.zig) | ELF32 identification, header, program headers and notes, read from untrusted bytes with checked arithmetic. `FixedNote` lays out a note for export and finds it again. Used by the loader's plan, `file`, `icon` and the launcher. Host-tested; the note walk is fuzzed. |
 | [`kind.zig`](../src/lib/kind.zig) | File kind from name (`fromName`), from bytes (`fromBytes`), or both (`of`), with a family per kind. Used by `file`, the file manager and the launcher. Host-tested. |
 | [`openers.zig`](../src/lib/openers.zig) | Which program opens which file family. Programs declare themselves in `/etc/openers`; `open.cfg` holds the user's choice, falling back if the chosen program is gone. Host-tested. |
 | [`calc.zig`](../src/lib/calc.zig) | Calculator: immediate execution, six-place fixed point, keys as a state machine. Host-tested. |
@@ -388,6 +392,8 @@ every build. Code used by one driver only stays with that driver, for example
   - Boot sector, same file: fields pushed past their checks.
   - Program image, [`elf/plan.zig`](../src/kernel/elf/plan.zig): every accepted plan
     satisfies what the loader assumes.
+  - Note segment, [`lib/elf.zig`](../src/lib/elf.zig): the walk ends, and every owner
+    and description lies inside the segment.
   - Receive page, [`netd/rxpage.zig`](../src/user/netd/rxpage.zig): the walk advances or
     stops; frames lie inside the page.
   - Management frame, [`lib/mlme.zig`](../src/lib/mlme.zig): parsers are total and
@@ -522,9 +528,6 @@ syscalls, Ring 3, IPC, ramfs, VESA console, i8042 keyboard, `vsh`. Exercised eve
   refused otherwise.
 - `atl1e` has not run against hardware. It does not use checksum or segmentation
   offload, uses one of four receive queues, and uses the link's negotiated burst size.
-- **The launcher cannot show a program's own icon.** Launcher entries use a fixed icon
-  set held by the window manager. [design/10-gui.md](../design/10-gui.md) §6.7 describes
-  embedding the icon in the program binary.
 - **TLS does not work.** `ulib.tls` wraps `std.crypto.tls.Client` with the CA store; the
   transport, store, randomness and buffers are verified, and the handshake reaches
   certificate name comparison. Two standard library limits block it: no response to

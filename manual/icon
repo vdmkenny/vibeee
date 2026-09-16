@@ -1,0 +1,7 @@
+icon - the picture a program carries for the launcher
+
+  icon /home/bin/hero    one
+  icon /bin/*            several
+
+Prints twelve rows of # and dots. A program carries its icon as an ELF
+note; one without is drawn with its category's picture.

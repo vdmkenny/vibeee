@@ -504,6 +504,24 @@ const FileAsk = enum {
 // Start
 // ---------------------------------------------------------------------------
 
+// The icon the launcher shows for this program: a twenty-sided die.
+comptime {
+    eui.icon.carry(eui.icon.pack(.{
+        "............",
+        ".....##.....",
+        "...##..##...",
+        ".##..##..##.",
+        ".#..#..#..#.",
+        ".#..#..#..#.",
+        ".#.#....#.#.",
+        ".#.#....#.#.",
+        ".##.####.##.",
+        "...##..##...",
+        ".....##.....",
+        "............",
+    }));
+}
+
 export fn _start(frame: [*]usize) callconv(.c) noreturn {
     if (env.argument(frame)) |wanted| {
         // The one question a shell asks a program without opening it.
@@ -1520,7 +1538,7 @@ fn draw() void {
     drawHeadshot(surface, head_area);
     const rows_area = Rect{ .x = body.x, .y = head_area.bottom(), .w = rail_w, .h = body.h - head_area.h };
     var items: [std.enums.values(Section).len]eui.rail.Item = undefined;
-    for (std.enums.values(Section), 0..) |which, i| items[i] = .{ .label = which.word(), .glyph = &section_glyphs[i] };
+    for (std.enums.values(Section), 0..) |which, i| items[i] = .{ .label = which.word(), .mark = .picture(&section_glyphs[i]) };
     const chosen = ctx.rail(rows_area, &items, @intFromEnum(section), caption());
     if (chosen != @intFromEnum(section)) setSection(@enumFromInt(chosen));
 

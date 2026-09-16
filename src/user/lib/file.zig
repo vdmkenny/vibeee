@@ -20,8 +20,7 @@ const sys = @import("sys");
 pub fn readWhole(path: []const u8, into: []u8) ?usize {
     const handle = sys.open(path, .{}) catch return null;
     defer sys.close(handle);
-    const filled = fill(handle, into);
-    return if (filled.failed) null else filled.read;
+    return fill(handle, into) catch null;
 }
 
 /// Read `into.len` bytes of the file at `path` starting `from` bytes in, and
@@ -35,9 +34,9 @@ pub fn readAt(path: []const u8, from: usize, into: []u8) ?usize {
     const handle = sys.open(path, .{}) catch return null;
     defer sys.close(handle);
 
-    _ = sys.seek(handle, @intCast(from), sys.SEEK_SET) catch return null;
-    const filled = fill(handle, into);
-    return if (filled.failed) null else filled.read;
+    const offset = std.math.cast(isize, from) orelse return null;
+    _ = sys.seek(handle, offset, sys.SEEK_SET) catch return null;
+    return fill(handle, into) catch null;
 }
 
 /// What a file is, without reading any of it.
@@ -82,9 +81,7 @@ pub const EntireError = error{ NoFile, TooBig, Unreadable };
 pub fn readEntire(path: []const u8, into: []u8) EntireError!usize {
     const handle = sys.open(path, .{}) catch return error.NoFile;
     defer sys.close(handle);
-    const filled = fill(handle, into);
-    if (filled.failed) return error.Unreadable;
-    const read = filled.read;
+    const read = try fill(handle, into);
     if (read < into.len) return read;
     // The room is full. One byte more tells a file that fits exactly from
     // one that goes on.
@@ -93,24 +90,17 @@ pub fn readEntire(path: []const u8, into: []u8) EntireError!usize {
     return read;
 }
 
-/// How much was read, and whether a read failed rather than ended.
-const Filled = struct { read: usize, failed: bool };
-
-/// Read from `handle` until the file or the room runs out.
-///
-/// A read that failed and a read that ended look alike to a loop that
-/// stops on "nothing more", and taking the first for the second is the
-/// mistake this module exists to make only once: a file half read would
-/// come back as a whole file that happened to be short, and settings half
-/// applied read as settings applied.
-fn fill(handle: u32, into: []u8) Filled {
+/// Read from `handle` until the file or the room runs out, and say how much.
+/// A failed read is an error, not the end of the file: a file half read must
+/// not come back as a short one.
+fn fill(handle: u32, into: []u8) error{Unreadable}!usize {
     var read: usize = 0;
     while (read < into.len) {
-        const n = sys.read(handle, into[read..]) catch return .{ .read = read, .failed = true };
+        const n = sys.read(handle, into[read..]) catch return error.Unreadable;
         if (n == 0) break;
         read += n;
     }
-    return .{ .read = read, .failed = false };
+    return read;
 }
 
 /// Write `bytes` as the whole of the file at `path`, creating it or

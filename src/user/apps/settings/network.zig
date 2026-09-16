@@ -205,7 +205,7 @@ fn drawInterfaces(pane: eui.Rect, from: i32) i32 {
         const iface = &model.ifaces[i].iface;
         rows[i] = .{
             .cells = .{ net.nameOf(iface), stateOf(i, &cells[i][0]), addressOf(i, &cells[i][1]), "", "", "" },
-            .icon = if (iface.kind == .radio) .wifi else .ethernet,
+            .mark = .icon(if (iface.kind == .radio) .wifi else .ethernet),
         };
     }
     const listed = rows[0..model.count];
@@ -423,7 +423,7 @@ fn drawWireless(pane: eui.Rect, from: i32, radio: usize) i32 {
                 .key => |row| row == i,
                 .none => if (joined) |ssid| std.mem.eql(u8, ssid.slice(), network.name()) else false,
             },
-            .icon = eui.icon.signal(network.bars),
+            .mark = .icon(eui.icon.signal(network.bars)),
         };
     }
     const shown = @max(network_count, 1);

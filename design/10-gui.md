@@ -385,32 +385,23 @@ no subpixel positioning.
 
 ### 6.7 Icons: carried by the program, fallen back to by the shell
 
-**A program carries its own icon, in its own binary.** Not in a directory the
-shell owns, not in a manifest beside it, and not in a table the window manager
-has to be taught: an application that cannot look like itself without the
-shell being changed is one that nobody can install. The picture travels with
-the thing it depicts, so copying the binary copies the icon and deleting it
-takes the icon with it.
+A program carries its icon in its own binary. Copying the binary copies the
+icon; no shell table or manifest has to list it.
 
-The shape follows what `eui.icon` already draws: one-bit rows and a size, in
-the form the surface's blitter takes. What is needed on top is where to put it
-and how to find it, which is a named section in the ELF the loader already
-parses. A program with no such section has no icon, which is the ordinary case
-and not an error.
+- Picture: the `eui.icon` format, 12×12 at one bit, 24 bytes.
+- Container: an ELF note, owner `vibeee`, type 1 (`icon`), in section
+  `.note.vibeee.icon`. `src/user/linker.ld` keeps it in the read-only segment,
+  and a `PT_NOTE` program header locates it. A changed format gets a new type.
+- Declared with `eui.icon.carry(...)` in a `comptime` block. A second icon in
+  one program fails to link.
+- Read by the launcher through `ulib.notes`, and printed by `icon <program>`.
 
-**The shell falls back rather than refusing.** A program with no icon of its
-own is drawn with one of the shell's, chosen by what the program is: the
-category it was launched from, or failing that a plain one that means "a
-program". So the launcher never has a row with a hole in it, and an icon is
-something a program may have rather than something it must supply before it
-can be listed.
+A program without an icon is not an error. A launcher row shows the first of:
+the mark its entry states, the program's icon, the entry's category icon. A
+program found under `/home/bin` falls back to the program icon.
 
-Two things this rules out on purpose. An icon *theme*, because a set of
-pictures that overrides what programs carry is a second source of truth and
-the machine has one screen to argue about. And icons at more than one size:
-the interface scale doubles a bitmap by whole pixels, so a program supplies
-one picture and it is drawn at whatever the interface is set to, like every
-other picture in the system.
+Not planned: icon themes, which would be a second source of truth, and more
+than one size. The interface scale doubles a bitmap by whole pixels.
 
 ## 7. Fonts & text rendering
 

@@ -493,15 +493,19 @@ pub const Surface = struct {
         self.bitmapAt(x, y, bits, face.width, face.height, face.row_bytes, color, scale);
     }
 
-    /// A named picture, which is a bitmap with a name rather than a code
-    /// point and goes through the same expansion a letter does.
-    /// A caller's own picture, in the icons' format and at their size.
+    /// A picture in the icons' format, at their size, through the same
+    /// expansion a letter takes.
     pub fn picture(self: Surface, x: i32, y: i32, glyph_bits: icons.Glyph, color: Color) void {
         self.bitmapAt(x, y, glyph_bits, icons.WIDTH, icons.HEIGHT, icons.ROW_BYTES, color, theme.textScale());
     }
 
+    /// A mark: a named icon or a program's own picture.
+    pub fn mark(self: Surface, x: i32, y: i32, which: icons.Mark, color: Color) void {
+        self.picture(x, y, which.bits(), color);
+    }
+
     pub fn icon(self: Surface, x: i32, y: i32, which: icons.Icon, color: Color) void {
-        self.bitmapAt(x, y, icons.rows(which), icons.WIDTH, icons.HEIGHT, icons.ROW_BYTES, color, theme.textScale());
+        self.picture(x, y, icons.of(which), color);
     }
 
     /// A named picture in the middle of `area`: a key, a button, a place on
@@ -514,7 +518,7 @@ pub const Surface = struct {
     /// The same picture, drawn `times` larger. For a mark that stands for the
     /// machine rather than sitting beside a word.
     pub fn iconLarge(self: Surface, x: i32, y: i32, which: icons.Icon, color: Color, times: i32) void {
-        self.bitmapAt(x, y, icons.rows(which), icons.WIDTH, icons.HEIGHT, icons.ROW_BYTES, color, theme.textScale() * times);
+        self.bitmapAt(x, y, icons.of(which), icons.WIDTH, icons.HEIGHT, icons.ROW_BYTES, color, theme.textScale() * times);
     }
 
     pub fn iconLargeSize(times: i32) i32 {

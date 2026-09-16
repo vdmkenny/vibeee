@@ -336,6 +336,24 @@ const History = struct {
 // Starting
 // ---------------------------------------------------------------------------
 
+// The icon the launcher shows for this program: a globe.
+comptime {
+    eui.icon.carry(eui.icon.pack(.{
+        "............",
+        "....####....",
+        "..###..###..",
+        ".#..#..#..#.",
+        ".##########.",
+        "#...#..#...#",
+        "#...#..#...#",
+        ".##########.",
+        ".#..#..#..#.",
+        "..###..###..",
+        "....####....",
+        "............",
+    }));
+}
+
 export fn _start(frame: [*]usize) callconv(.c) noreturn {
     // Read before anything is asked of a site, by the window or the shell.
     choices = proto.settings.load("web");
@@ -1633,7 +1651,7 @@ fn atOf(on: bool) usize {
 /// longer than the setting holds.
 fn homeRow() eui.widget.MenuItem {
     const label = "Set as home page";
-    const mark: eui.icon.Icon = .home;
+    const mark: eui.icon.Mark = .icon(.home);
     const here = onScreen() orelse return .{ .label = label, .kind = .disabled, .mark = mark };
     if (isHome(here)) return .{ .label = "This is the home page", .kind = .disabled, .mark = mark };
     if (proto.settings.Address.parse(here) == null) {

@@ -127,6 +127,11 @@ var status: []const u8 = "";
 /// How often the window looks for a medium that has come or gone.
 const MEDIA_TICK_US: usize = 2_000_000;
 
+// The icon the launcher shows for this program.
+comptime {
+    eui.icon.carry(eui.icon.of(.folder).*);
+}
+
 export fn _start(frame: [*]usize) callconv(.c) noreturn {
     // A directory on the command line is where to start, which is how the
     // launcher says "show me where this lives".
@@ -559,7 +564,7 @@ fn drawPane(index: usize, area: Rect) void {
             .cells = .{ entry.name, "", "", "", "", "" },
             // The same reading of what a file is that the preview uses, so
             // a row and the pane beside it cannot disagree about it.
-            .icon = preview.Kind.icon(preview.Kind.of(entry)),
+            .mark = .icon(preview.Kind.icon(preview.Kind.of(entry))),
         };
         // Spelled into a store that outlives this loop, because a cell is a
         // slice and the table reads it after the row is built.

@@ -14,6 +14,7 @@
 //! label should be the size of the label, and one that has to be measured
 //! against the text every time it moves is one that will drift.
 
+const elf = @import("lib").elf;
 const kind = @import("lib").kind;
 const std = @import("std");
 const bitmap = @import("lib").bitmap;
@@ -22,8 +23,10 @@ pub const WIDTH: usize = 12;
 pub const HEIGHT: usize = 12;
 /// Two bytes a row, because twelve pixels do not fit in one.
 pub const ROW_BYTES: usize = 2;
+/// A packed picture, row by row.
+const PackedRows = [HEIGHT][ROW_BYTES]u8;
 /// The bytes one picture packs to.
-pub const BYTES: usize = HEIGHT * ROW_BYTES;
+pub const BYTES: usize = @sizeOf(PackedRows);
 
 /// One picture, packed: what `of` hands out for a named icon, and what a
 /// program's own picture is once `pack` has made it. A pointer to the bytes
@@ -923,23 +926,11 @@ const art = [_]Picture{
     },
 };
 
-/// The pictures, packed the way the blitter reads them: most significant bit
-/// of the first byte is the leftmost pixel, which is the order the fonts use.
-const packed_bits = blk: {
-    @setEvalBranchQuota(20_000);
-    var out: [art.len * BYTES]u8 = @splat(0);
-    for (art, 0..) |picture, index| {
-        for (picture.rows, 0..) |row, y| {
-            if (row.len != WIDTH) @compileError("every icon row is twelve pixels wide");
-            for (row, 0..) |cell, x| {
-                if (cell != '#' and cell != '.') @compileError("an icon row is hashes and dots");
-                if (cell != '#') continue;
-                bitmap.light(out[index * BYTES + y * ROW_BYTES ..][0..ROW_BYTES], x);
-            }
-        }
-    }
-    const frozen = out;
-    break :blk frozen;
+/// The named pictures, packed, in `Icon` order.
+const packed_art = blk: {
+    var out: [art.len][BYTES]u8 = undefined;
+    for (art, &out) |picture, *bits| bits.* = packRows(picture.rows);
+    break :blk out;
 };
 
 comptime {
@@ -959,40 +950,15 @@ comptime {
         }
     }
 
-    // And drawn in the middle of its own cell. A picture beside a word is
-    // placed by its cell, so one drawn high inside that cell sits high beside
-    // every label in the system, and the fault looks like a layout bug in
-    // whichever window somebody happened to notice it in.
+    // And drawn in the middle of its own cell: a picture beside a word is
+    // placed by its cell, so one drawn high sits high beside every label.
     for (art) |picture| {
-        var top: ?usize = null;
-        var bottom: usize = 0;
-        for (picture.rows, 0..) |row, y| {
-            for (row) |cell| {
-                if (cell != '#') continue;
-                if (top == null) top = y;
-                bottom = y;
-                break;
-            }
-        }
-
-        if (picture.anchor == .corner) continue;
-        const first = top orelse continue;
-        // Twice the centre, so the half a row an even-height picture lands on
-        // stays a whole number: eleven is the middle of twelve rows.
-        const twice = first + bottom;
-        if (twice < 10 or twice > 12) {
-            @compileError("the picture for " ++ @tagName(picture.icon) ++
-                " is not centred in its cell");
+        if (picture.anchor == .centre and !centred(picture.rows)) {
+            @compileError("the picture for " ++ @tagName(picture.icon) ++ " is not centred in its cell");
         }
     }
 }
 
-/// The picture for a sound level.
-///
-/// Here rather than beside the sound protocol because it is a decision about
-/// pictures, and every place that shows a level wants the same one: a bar
-/// indicator and a panel that disagreed about what half volume looks like
-/// would be two different machines.
 /// Which picture says how well a network is heard.
 ///
 /// `bars` is what the network service reports, zero to three, so the
@@ -1006,6 +972,7 @@ pub fn signal(bars: u8) Icon {
     };
 }
 
+/// The picture for a sound level. One rule, so the bar and a panel agree.
 pub fn volume(percent: u8, muted: bool) Icon {
     if (muted or percent == 0) return .muted;
     return if (percent < 50) .speaker_low else .speaker;
@@ -1035,53 +1002,109 @@ pub fn holdsCharge(which: Icon) bool {
 /// rectangle: the surface that has one already imports this.
 pub const battery_inside = .{ .x = 2, .y = 4, .w = 7, .h = 4 };
 
-/// The rows of one icon, in the shape the surface's bitmap blitter takes.
-pub fn rows(which: Icon) []const u8 {
-    const at = @intFromEnum(which) * BYTES;
-    return packed_bits[at..][0..BYTES];
-}
-
-/// A named icon as a glyph, for anything that takes a caller's own picture.
+/// A named icon's picture.
 pub fn of(which: Icon) Glyph {
-    return packed_bits[@intFromEnum(which) * BYTES ..][0..BYTES];
+    return &packed_art[@intFromEnum(which)];
 }
 
-/// Pack a picture written as rows of dots and hashes, the way the icons here
-/// are written, into the bytes the surface draws. At compile time, so a
-/// program's own pictures cost nothing at run time, and a row of the wrong
-/// length or a picture sitting off centre in its cell is refused before it
-/// ships rather than looking like a layout bug in whichever window somebody
-/// notices it in.
-pub fn pack(comptime picture: [HEIGHT][]const u8) [BYTES]u8 {
-    // A picture is a hundred and forty-four cells of arithmetic done once at
-    // compile time; a program packing a handful in one initialiser is past
-    // the default allowance.
-    @setEvalBranchQuota(20_000);
-    comptime {
-        var top: ?usize = null;
-        var bottom: usize = 0;
-        for (picture, 0..) |row, y| {
-            if (row.len != WIDTH) @compileError("a picture row is twelve cells wide");
-            for (row) |cell| {
-                if (cell != '#') continue;
-                if (top == null) top = y;
-                bottom = y;
-                break;
-            }
-        }
-        if (top) |first| {
-            const twice = first + bottom;
-            if (twice < 10 or twice > 12) @compileError("a picture is drawn centred in its cell");
-        }
+/// A picture beside a label: one of the named icons, or a picture of the
+/// caller's. Build with `.icon(.wifi)` or `.picture(&glyph)`.
+pub const Mark = union(enum) {
+    named: Icon,
+    own: Glyph,
+
+    pub fn icon(which: Icon) Mark {
+        return .{ .named = which };
     }
 
-    var out: [BYTES]u8 = @splat(0);
-    inline for (picture, 0..) |row, y| {
-        inline for (row, 0..) |cell, x| {
-            if (cell == '#') bitmap.light(out[y * ROW_BYTES ..][0..ROW_BYTES], x);
-        }
+    pub fn picture(glyph: Glyph) Mark {
+        return .{ .own = glyph };
     }
-    return out;
+
+    /// The first of: the mark stated for a thing, the icon it carries, and
+    /// `fallback`.
+    pub fn firstOf(stated: ?Mark, carried: *const ?[BYTES]u8, fallback: Icon) Mark {
+        if (stated) |mark| return mark;
+        if (carried.*) |*own| return .picture(own);
+        return .icon(fallback);
+    }
+
+    /// The bits to draw.
+    pub fn bits(self: Mark) Glyph {
+        return switch (self) {
+            .named => |which| of(which),
+            .own => |glyph| glyph,
+        };
+    }
+};
+
+/// A program's icon as an ELF note: owner `vibeee`, type `icon`, the packed
+/// picture as the description.
+pub const Note = elf.FixedNote(elf.VIBEEE_OWNER, @intFromEnum(elf.VibeeeNote.icon), [BYTES]u8);
+
+/// Section the icon note is placed in. `src/user/linker.ld` keeps it.
+pub const NOTE_SECTION = ".note.vibeee.icon";
+
+/// Carry `picture` in this program's binary as its icon. Call once, from a
+/// `comptime` block:
+///
+///     comptime {
+///         eui.icon.carry(eui.icon.pack(.{ ... }));
+///     }
+///
+/// A second call with another picture fails to link.
+pub fn carry(comptime picture: [BYTES]u8) void {
+    const note: Note = .{ .desc = picture };
+    @export(&note, .{ .name = "vibeee_program_icon", .section = NOTE_SECTION });
+}
+
+/// Pack a picture written as rows of dots and hashes into the bytes the
+/// surface draws. At compile time: a row of the wrong length or a picture off
+/// centre in its cell is a compile error.
+pub fn pack(comptime picture: [HEIGHT][]const u8) [BYTES]u8 {
+    if (!comptime centred(picture)) @compileError("a picture is drawn centred in its cell");
+    return packRows(picture);
+}
+
+/// Rows of dots and hashes, packed: the most significant bit of a row's first
+/// byte is its leftmost pixel, the order the fonts use.
+fn packRows(comptime picture: [HEIGHT][]const u8) [BYTES]u8 {
+    return comptime packed_rows: {
+        @setEvalBranchQuota(20_000);
+        var rows: PackedRows = @splat(@splat(0));
+        for (picture, &rows) |row, *bits| {
+            if (row.len != WIDTH) @compileError("a picture row is twelve cells wide");
+            for (row, 0..) |cell, x| switch (cell) {
+                '#' => bitmap.light(bits, x),
+                '.' => {},
+                else => @compileError("a picture row is dots and hashes"),
+            };
+        }
+        break :packed_rows @bitCast(rows);
+    };
+}
+
+/// Whether a picture's lit rows are centred in its cell. Counted doubled, so
+/// the middle of twelve rows is a whole eleven. An empty picture is centred.
+fn centred(comptime picture: [HEIGHT][]const u8) bool {
+    var top: ?usize = null;
+    var bottom: usize = 0;
+    for (picture, 0..) |row, y| {
+        if (std.mem.indexOfScalar(u8, row, '#') == null) continue;
+        if (top == null) top = y;
+        bottom = y;
+    }
+    const first = top orelse return true;
+    return first + bottom >= 10 and first + bottom <= 12;
+}
+
+/// A packed picture as rows of dots and hashes, the form `pack` takes.
+pub fn unpack(glyph: Glyph) [HEIGHT][WIDTH]u8 {
+    var picture: [HEIGHT][WIDTH]u8 = undefined;
+    for (&picture, std.mem.bytesAsValue(PackedRows, glyph)) |*row, *bits| {
+        for (row, 0..) |*cell, x| cell.* = if (bitmap.lit(bits, x)) '#' else '.';
+    }
+    return picture;
 }
 
 // ---------------------------------------------------------------------------
@@ -1091,8 +1114,12 @@ pub fn pack(comptime picture: [HEIGHT][]const u8) [BYTES]u8 {
 test "a caller's picture packs to the same bytes a named icon does" {
     // The document icon, redrawn by hand, packs to the document's own bytes.
     const again = pack(art[@intFromEnum(Icon.document)].rows);
-    try std.testing.expectEqualSlices(u8, rows(.document), &again);
-    try std.testing.expectEqualSlices(u8, rows(.document), of(.document));
+    try std.testing.expectEqualSlices(u8, of(.document), &again);
+}
+
+test "a picture unpacks to the rows it was packed from" {
+    const rows = art[@intFromEnum(Icon.terminal)].rows;
+    for (rows, unpack(of(.terminal))) |want, got| try testing.expectEqualStrings(want, &got);
 }
 
 const testing = std.testing;
@@ -1100,14 +1127,22 @@ const testing = std.testing;
 /// Whether a pixel is set, read back out of the packing the way the blitter
 /// reads it. The tests check the pictures against what they look like.
 fn lit(which: Icon, x: usize, y: usize) bool {
-    return bitmap.lit(rows(which)[y * ROW_BYTES ..][0..ROW_BYTES], x);
+    return unpack(of(which))[y][x] == '#';
 }
 
-test "every icon is the same size, and there is one per name" {
-    try testing.expectEqual(@as(usize, 24), rows(.wifi).len);
-    for (std.enums.values(Icon)) |which| {
-        try testing.expectEqual(BYTES, rows(which).len);
-    }
+test "a thing is pictured by its stated mark, then its own icon, then the fallback" {
+    const carried: ?[BYTES]u8 = @splat(0x5A);
+    const none: ?[BYTES]u8 = null;
+
+    try testing.expectEqual(Mark.icon(.about), Mark.firstOf(.icon(.about), &carried, .apps));
+    try testing.expectEqual(&carried.?, Mark.firstOf(null, &carried, .apps).own);
+    try testing.expectEqual(Mark.icon(.apps), Mark.firstOf(null, &none, .apps));
+}
+
+test "an icon note carries the packed picture" {
+    const glyph = of(.terminal);
+    const note: Note = .{ .desc = glyph.* };
+    try testing.expectEqual(@as(?[BYTES]u8, glyph.*), Note.find(std.mem.asBytes(&note)));
 }
 
 test "a picture packs to the bits the blitter reads" {
@@ -1188,12 +1223,8 @@ test "the quiet speaker is the loud one with a wave taken off" {
 
 test "nothing is lit outside the twelve pixels a row holds" {
     for (std.enums.values(Icon)) |which| {
-        const bits = rows(which);
-        var y: usize = 0;
-        while (y < HEIGHT) : (y += 1) {
-            // The second byte of a row carries four pixels; the low four bits
-            // are past the right edge and must stay clear.
-            try testing.expectEqual(@as(u8, 0), bits[y * ROW_BYTES + 1] & 0x0F);
+        for (std.mem.bytesAsValue(PackedRows, of(which))) |*bits| {
+            for (WIDTH..ROW_BYTES * 8) |x| try testing.expect(!bitmap.lit(bits, x));
         }
     }
 }

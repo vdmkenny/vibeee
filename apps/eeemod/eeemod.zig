@@ -75,6 +75,24 @@ var waits: [1]u32 = @splat(0);
 var dialog: proto.FileDialog = .{};
 const connection = &proto.app.connection;
 
+// The icon the launcher shows for this program: two beamed notes.
+comptime {
+    eui.icon.carry(eui.icon.pack(.{
+        "............",
+        "...########.",
+        "...########.",
+        "...#......#.",
+        "...#......#.",
+        "...#......#.",
+        "...#......#.",
+        ".###....###.",
+        "####...####.",
+        "####...####.",
+        ".##.....##..",
+        "............",
+    }));
+}
+
 export fn _start(frame: [*]usize) callconv(.c) noreturn {
     if (env.argument(frame)) |wanted| load(wanted);
 

@@ -26,10 +26,7 @@ const Rect = draw.Rect;
 /// depending on whether their section has an icon read as two lists.
 pub const Item = struct {
     label: []const u8,
-    icon: ?icons.Icon = null,
-    /// A picture of the program's own, in the toolkit's format, for a row
-    /// the toolkit has no name for. Drawn where the icon would be.
-    glyph: ?icons.Glyph = null,
+    mark: ?icons.Mark = null,
     /// How far the row is held under the ones above it. A rail with more
     /// places than fit groups them, and the group is the parent row: a
     /// channel sits under its network, a folder's contents under the folder.
@@ -89,7 +86,7 @@ pub fn spellCount(count: u16, room: *[4]u8) []const u8 {
 /// them.
 pub fn marked(items: []const Item) bool {
     for (items) |item| {
-        if (item.icon != null or item.glyph != null) return true;
+        if (item.mark != null) return true;
     }
     return false;
 }

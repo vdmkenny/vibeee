@@ -53,7 +53,8 @@ Fetched source goes into `build/apps/<name>/`, untracked.
 
 First-party programs that are not part of the image live here whole, in Zig, built by
 the main `build.zig` into `home/`. Hero is one: `apps/hero/` holds its source, and
-`make hero` builds and stages it.
+`make hero` builds and stages it. Each carries its launcher icon with
+`eui.icon.carry` ([design/10-gui.md](../design/10-gui.md) §6.7).
 
 ## Building
 

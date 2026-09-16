@@ -1599,11 +1599,7 @@ fn paintRow(surface: Surface, area: Rect, item: rails.Item, visual: Visual, styl
     const clipped = surface.clipped(room);
     const left = area.x + t.menu_padding + rails.indentOf(item.depth);
     const baseline = area.y + @divTrunc(area.h - Surface.textHeight(), 2);
-    if (item.glyph) |picture| {
-        clipped.picture(left, Surface.iconTopFor(baseline), picture, ink);
-    } else if (item.icon) |which| {
-        clipped.icon(left, Surface.iconTopFor(baseline), which, ink);
-    }
+    if (item.mark) |which| clipped.mark(left, Surface.iconTopFor(baseline), which, ink);
     clipped.text(
         left + if (style.indented) markWidth() else 0,
         baseline,
@@ -2005,10 +2001,8 @@ fn rowFingerprint(item: rails.Item) i32 {
     h.number(item.depth);
     h.number(item.count);
     h.flag(item.urgent);
-    h.flag(item.icon != null);
-    if (item.icon) |which| h.number(@intFromEnum(which));
-    h.flag(item.glyph != null);
-    if (item.glyph) |picture| h.text(picture);
+    h.flag(item.mark != null);
+    if (item.mark) |which| h.text(which.bits());
     return h.done();
 }
 
@@ -2049,7 +2043,7 @@ pub const MenuItem = struct {
     /// the one in use. The column exists for the whole menu or for none of
     /// it, so rows without a picture still line up with the rows that have
     /// one.
-    mark: ?icons.Icon = null,
+    mark: ?icons.Mark = null,
     /// The run of `label` that matched what was typed, drawn in the accent.
     /// A list that reorders itself as letters arrive is only trustworthy if
     /// each row can say what in it was matched.
@@ -2194,7 +2188,7 @@ pub const Menu = struct {
             const ink = if (highlighted) t.accent_text else if (item.kind == .disabled) t.text_dim else t.text;
 
             if (item.mark) |which| {
-                clipped.icon(line.x + t.menu_padding, Surface.iconTopFor(baseline), which, ink);
+                clipped.mark(line.x + t.menu_padding, Surface.iconTopFor(baseline), which, ink);
             }
 
             const text_x = line.x + t.menu_padding + if (indented) markWidth() else 0;

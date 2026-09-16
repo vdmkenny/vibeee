@@ -45,16 +45,30 @@ pub fn directories(path: []const u8) Directories {
     return .{ .rest = path };
 }
 
+/// `dir` without the separators it ends with.
+fn trimmed(dir: []const u8) []const u8 {
+    return std.mem.trimEnd(u8, dir, "/");
+}
+
+/// Whether `dir` is one of the directories `path` names.
+pub fn onPath(path: []const u8, dir: []const u8) bool {
+    var walk = directories(path);
+    while (walk.next()) |one| {
+        if (std.mem.eql(u8, trimmed(one), trimmed(dir))) return true;
+    }
+    return false;
+}
+
 /// `dir` and `name` with exactly one separator between them, however many
 /// the directory ended with.
 pub fn joined(dir: []const u8, name: []const u8, buf: []u8) ?[]const u8 {
-    const trimmed = if (dir.len != 0 and dir[dir.len - 1] == '/') dir[0 .. dir.len - 1] else dir;
-    if (trimmed.len + 1 + name.len > buf.len) return null;
+    const trimmed_dir = trimmed(dir);
+    if (trimmed_dir.len + 1 + name.len > buf.len) return null;
 
-    @memcpy(buf[0..trimmed.len], trimmed);
-    buf[trimmed.len] = '/';
-    @memcpy(buf[trimmed.len + 1 ..][0..name.len], name);
-    return buf[0 .. trimmed.len + 1 + name.len];
+    @memcpy(buf[0..trimmed_dir.len], trimmed_dir);
+    buf[trimmed_dir.len] = '/';
+    @memcpy(buf[trimmed_dir.len + 1 ..][0..name.len], name);
+    return buf[0 .. trimmed_dir.len + 1 + name.len];
 }
 
 /// Whether `name` says where a program is rather than just naming one.
@@ -123,9 +137,20 @@ test "a directory and a name are joined with one separator" {
     var buf: [64]u8 = undefined;
     try testing.expectEqualStrings("/bin/ls", joined("/bin", "ls", &buf).?);
     try testing.expectEqualStrings("/bin/ls", joined("/bin/", "ls", &buf).?);
+    try testing.expectEqualStrings("/bin/ls", joined("/bin//", "ls", &buf).?);
+    try testing.expectEqualStrings("/ls", joined("/", "ls", &buf).?);
     // And refused rather than cut short when it will not fit.
     var small: [4]u8 = undefined;
     try testing.expectEqual(@as(?[]const u8, null), joined("/bin", "ls", &small));
+}
+
+test "a directory is on a search path however its end is written" {
+    try testing.expect(onPath(DEFAULT_PATH, "/bin"));
+    try testing.expect(onPath(DEFAULT_PATH, "/home/bin/"));
+    try testing.expect(onPath("/home/bin/:/bin", "/home/bin"));
+    try testing.expect(!onPath(DEFAULT_PATH, "/home"));
+    try testing.expect(!onPath(DEFAULT_PATH, "/bin/sub"));
+    try testing.expect(!onPath("", "/bin"));
 }
 
 test "a bare name comes from the first place on the path that has it" {

@@ -225,7 +225,7 @@ pub const Reading = struct {
             .bits64 => "64-bit ",
             else => "",
         };
-        const purpose = switch (ident.kind) {
+        const purpose = switch (ident.type) {
             .relocatable => " object",
             .executable => " executable",
             .shared => " shared object",
@@ -339,7 +339,7 @@ fn marked(bytes: []const u8, magic: []const u8, at: usize) bool {
 pub fn fromBytes(bytes: []const u8) Reading {
     if (bytes.len == 0) return .{ .kind = .empty };
 
-    if (elf.Header.identify(bytes)) |ident| {
+    if (elf.Ident.of(bytes)) |ident| {
         return .{ .kind = .program, .program = ident };
     }
 
@@ -456,14 +456,8 @@ pub fn fromName(name: []const u8) ?Kind {
 // Tests
 // ---------------------------------------------------------------------------
 
-fn elfBytes(class: elf.Class, machine: elf.Machine, kind: elf.Type) [elf.IDENT_LEN]u8 {
-    var image: [elf.IDENT_LEN]u8 = @splat(0);
-    @memcpy(image[0..4], "\x7fELF");
-    image[4] = @intFromEnum(class);
-    image[5] = @intFromEnum(elf.Data.little);
-    std.mem.writeInt(u16, image[16..18], @intFromEnum(kind), .little);
-    std.mem.writeInt(u16, image[18..20], @intFromEnum(machine), .little);
-    return image;
+fn elfBytes(class: elf.Class, machine: elf.Machine, kind: elf.Type) [@sizeOf(elf.Ident)]u8 {
+    return std.mem.toBytes(elf.Ident{ .class = class, .machine = machine, .type = kind });
 }
 
 test "a program says which machine it is for and what it is" {

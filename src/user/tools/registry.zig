@@ -23,6 +23,7 @@ const find_tool = @import("find.zig");
 const files = @import("files.zig");
 const grep = @import("grep.zig");
 const hotkeys = @import("hotkeys.zig");
+const icon_tool = @import("icon.zig");
 const display_tool = @import("display.zig");
 const edit_tool = @import("edit.zig");
 const irq_tool = @import("irq.zig");
@@ -64,6 +65,7 @@ pub const commands = [_]Command{
     .{ .name = "cp", .summary = manual.summaryOf("cp"), .run = &files.cp },
     .{ .name = "hexdump", .summary = manual.summaryOf("hexdump"), .run = &files.hexdump },
     .{ .name = "file", .summary = manual.summaryOf("file"), .run = &file_tool.run },
+    .{ .name = "icon", .summary = manual.summaryOf("icon"), .run = &icon_tool.run },
     .{ .name = "find", .summary = manual.summaryOf("find"), .run = &find_tool.run },
     .{ .name = "grep", .summary = manual.summaryOf("grep"), .run = &grep.run },
     .{ .name = "head", .summary = manual.summaryOf("head"), .run = &text.head },

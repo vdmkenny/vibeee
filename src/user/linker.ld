@@ -11,6 +11,9 @@ SECTIONS
 
     .text : { *(.text .text.*) }
     .rodata ALIGN(4K) : { *(.rodata .rodata.*) }
+    /* vibeee's ELF notes (a program's icon). Kept against section garbage
+     * collection, placed in the read-only segment, and located by PT_NOTE. */
+    .note.vibeee : { KEEP(*(.note.vibeee .note.vibeee.*)) }
     .data ALIGN(4K) : { *(.data .data.*) }
     .bss ALIGN(4K) : { *(COMMON) *(.bss .bss.*) }
 

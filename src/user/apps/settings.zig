@@ -53,6 +53,11 @@ var saved = true;
 var version_buf: [64]u8 = @splat(0);
 var version: []const u8 = "";
 
+// The icon the launcher shows for this program.
+comptime {
+    eui.icon.carry(eui.icon.of(.sliders).*);
+}
+
 export fn _start(frame: [*]const u32) callconv(.c) noreturn {
     // A section named on the command line opens there. One entry in the
     // launcher can then be about this computer rather than about settings.
@@ -411,7 +416,7 @@ var pane_scroll: [std.enums.values(Section).len]eui.scrollpane.State = @splat(.{
 fn drawRail(rail: eui.Rect) void {
     var rows: [std.enums.values(Section).len]eui.rail.Item = undefined;
     for (std.enums.values(Section), 0..) |which, i| {
-        rows[i] = .{ .label = which.title(), .icon = which.icon() };
+        rows[i] = .{ .label = which.title(), .mark = .icon(which.icon()) };
     }
 
     const chosen = ctx.rail(rail, &rows, @intFromEnum(section), version);

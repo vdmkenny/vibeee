@@ -354,14 +354,9 @@ fn iconTable(gpa: std.mem.Allocator, w: *std.ArrayList(u8)) !void {
     const icons = eui.icon;
     inline for (std.enums.values(icons.Icon)) |which| {
         try w.print(gpa, "{s}\n", .{@tagName(which)});
-        const bits = icons.rows(which);
-        for (0..icons.HEIGHT) |y| {
+        for (icons.unpack(icons.of(which))) |row| {
             try w.appendSlice(gpa, "  ");
-            for (0..icons.WIDTH) |x| {
-                const byte = bits[y * icons.ROW_BYTES + x / 8];
-                const lit = byte & (@as(u8, 0x80) >> @intCast(x % 8)) != 0;
-                try w.appendSlice(gpa, if (lit) "##" else "  ");
-            }
+            for (row) |cell| try w.appendSlice(gpa, if (cell == '#') "##" else "  ");
             try w.appendSlice(gpa, "\n");
         }
         try w.appendSlice(gpa, "\n");

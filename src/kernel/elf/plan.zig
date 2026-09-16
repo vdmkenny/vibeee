@@ -1,23 +1,13 @@
 //! What an ELF file asks for, worked out before anything acts on it.
 //!
-//! Every decision about a program image is here and nothing else is: no
-//! frames, no mappings, no address space. A file is turned into a list of
-//! "put these bytes there" or refused, and only then does the loader start
-//! taking memory. That order matters twice over. A file that is going to be
-//! refused is refused before a single frame is spent on it, and the whole of
-//! what the kernel believes an image is saying can be asked here, on a host,
-//! against files built by hand.
+//! No frames, no mappings, no address space: a file becomes a list of segments
+//! to copy, or is refused before the loader takes any memory.
 //!
-//! **Everything is worked out in 64 bits.** Addresses on this machine are 32,
-//! and every field of an ELF header is a number a program chose. A check
-//! written in the machine's own width is a check a file can walk past by
-//! naming an offset near the top and a length that carries the sum around to
-//! zero, and the guard then passes for a range that is nowhere near the file.
-//! Widening costs nothing here and is the difference between a bounds check
-//! and the appearance of one.
+//! Every field is a number the file chose. Sums of them are checked for
+//! overflow, so a range near the top of the address space cannot wrap past a
+//! bounds check.
 //!
-//! The limits come in as an argument rather than from the architecture, which
-//! is what lets this file have no architecture in it.
+//! The limits are an argument, so nothing here depends on the architecture.
 
 const std = @import("std");
 const elf = @import("lib").elf;
@@ -25,17 +15,11 @@ const elf = @import("lib").elf;
 pub const Header = elf.Header;
 pub const ProgramHeader = elf.ProgramHeader;
 
-/// Most loadable segments an image may have.
-///
-/// A statically linked program has three or four: text, read-only data, data
-/// and the zeroed part after it. Eight is room for a linker that splits them
-/// differently, and a bound rather than a list is what lets the plan be a
-/// value on the stack.
+/// Most loadable segments an image may have. A statically linked program has
+/// three or four.
 pub const MAX_SEGMENTS = 8;
 
-pub const Error = error{
-    NotElf,
-    WrongClass,
+pub const Error = elf.Header.Error || error{
     WrongMachine,
     NotExecutable,
     Malformed,
@@ -44,58 +28,51 @@ pub const Error = error{
 
 /// What the machine will not let a program have.
 pub const Limits = struct {
-    /// Where the kernel's half begins. Nothing a program asks for may reach it.
-    kernel_base: u64,
-    page_size: usize,
+    /// Where the kernel's half begins. No segment may reach it.
+    kernel_base: u32,
+    page_size: u32,
 };
 
 /// One piece of the file, and where it goes.
 pub const Segment = struct {
-    /// Where the bytes come from in the file, and how many there are.
-    from: u64 = 0,
-    bytes: u64 = 0,
-    /// Where they go, and how much room the segment takes once the part with
-    /// no bytes behind it is counted. That tail is `.bss`, which is why the
-    /// span is the larger of the two.
-    at: u64 = 0,
-    span: u64 = 0,
+    /// Where the bytes are in the file, and how many.
+    from: u32 = 0,
+    bytes: u32 = 0,
+    /// Where they go, and the room the segment takes with its `.bss`.
+    at: u32 = 0,
+    span: u32 = 0,
     writable: bool = false,
     executable: bool = false,
 
-    /// The pages this segment occupies. A segment starts and ends wherever the
-    /// linker put it; the pages around it belong to it entirely, because a
-    /// page is the smallest thing that can be given its own permissions.
-    pub fn first(self: Segment, page_size: usize) u64 {
-        return std.mem.alignBackward(u64, self.at, page_size);
+    /// The first page this segment occupies.
+    pub fn first(self: Segment, page_size: u32) u32 {
+        return std.mem.alignBackward(u32, self.at, page_size);
     }
 
-    pub fn last(self: Segment, page_size: usize) u64 {
-        return std.mem.alignForward(u64, self.at + self.span, page_size);
+    /// The page after the last one this segment occupies.
+    pub fn last(self: Segment, page_size: u32) u32 {
+        return std.mem.alignForward(u32, self.at + self.span, page_size);
     }
 
-    /// Whether two segments want any of the same page.
-    ///
-    /// Pages rather than bytes, because a page is what gets a frame and a set
-    /// of permissions: two segments merely adjacent in memory still collide if
-    /// they share one, and the one loaded second would zero the first one's
-    /// bytes and impose its own permissions on them.
-    pub fn collidesWith(self: Segment, other: Segment, page_size: usize) bool {
+    /// Whether two segments want any of the same page. Pages, not bytes: the
+    /// segment loaded second would zero the other's bytes on a shared page
+    /// and give them its own permissions.
+    pub fn collidesWith(self: Segment, other: Segment, page_size: u32) bool {
         return self.first(page_size) < other.last(page_size) and
             other.first(page_size) < self.last(page_size);
     }
 
     /// Whether an address falls inside this segment.
-    pub fn holds(self: Segment, addr: u64) bool {
-        return addr >= self.at and addr < self.at + self.span;
+    pub fn holds(self: Segment, addr: u32) bool {
+        return addr >= self.at and addr - self.at < self.span;
     }
 };
 
 /// Everything an image asks for, once it has been believed.
 pub const Plan = struct {
-    entry: u64 = 0,
-    /// Where the heap starts: past everything the image asked for, rounded up
-    /// to a page so the first allocation does not share one with `.bss`.
-    brk: u64 = 0,
+    entry: u32 = 0,
+    /// Where the heap starts: past every segment, on a page of its own.
+    brk: u32 = 0,
     segments: [MAX_SEGMENTS]Segment = @splat(.{}),
     count: usize = 0,
 
@@ -106,53 +83,28 @@ pub const Plan = struct {
 
 /// What `image` asks for, or why it cannot be believed.
 pub fn of(image: []const u8, limits: Limits) Error!Plan {
-    if (image.len < @sizeOf(Header)) return error.NotElf;
+    const header = try Header.of(image);
+    if (header.ident.machine != .x86) return error.WrongMachine;
+    if (header.ident.type != .executable) return error.NotExecutable;
+    const table = header.programs(image) orelse return error.Malformed;
 
-    const hdr: *align(1) const Header = @ptrCast(image.ptr);
-    if (!Header.identifies(image)) return error.NotElf;
-    if (hdr.class != .bits32 or hdr.data != .little) return error.WrongClass;
-    if (hdr.machine != .x86) return error.WrongMachine;
-    if (hdr.type != .executable) return error.NotExecutable;
-    if (hdr.phentsize != @sizeOf(ProgramHeader)) return error.Malformed;
+    var plan = Plan{ .entry = header.entry };
+    for (table) |program| {
+        if (program.type != .load or program.memsz == 0) continue;
+        const segment = try believe(program, image.len, limits);
 
-    // The whole table at once, so a file naming an offset near the top of the
-    // address space is refused here rather than one entry at a time by a sum
-    // that wraps.
-    const table_bytes = @as(u64, hdr.phnum) * @sizeOf(ProgramHeader);
-    const table_end = @as(u64, hdr.phoff) + table_bytes;
-    if (table_end > image.len) return error.Malformed;
-
-    var plan = Plan{ .entry = hdr.entry };
-
-    for (0..hdr.phnum) |i| {
-        const off = @as(u64, hdr.phoff) + i * @sizeOf(ProgramHeader);
-        const ph: *align(1) const ProgramHeader = @ptrCast(image.ptr + @as(usize, @intCast(off)));
-        if (ph.type != .load or ph.memsz == 0) continue;
-
-        const segment = try believe(ph, image.len, limits);
-
-        // Two segments wanting the same page is a file that cannot be loaded
-        // as it asks: whichever went second would zero the other's bytes and
-        // put its own permissions on them, which is how a writable page ends
-        // up holding code.
         for (plan.list()) |already| {
             if (segment.collidesWith(already, limits.page_size)) return error.Malformed;
         }
-
         if (plan.count == plan.segments.len) return error.TooManySegments;
         plan.segments[plan.count] = segment;
         plan.count += 1;
-
-        const end = segment.last(limits.page_size);
-        if (end > plan.brk) plan.brk = end;
+        plan.brk = @max(plan.brk, segment.last(limits.page_size));
     }
 
     if (plan.count == 0) return error.Malformed;
 
-    // An entry point that is not in anything this file loads would fault on
-    // its first instruction. Refusing it here means a program that cannot run
-    // never runs rather than dying the moment it starts, and it costs one
-    // walk over a list that is at most eight long.
+    // The first instruction must be in code this file loads.
     for (plan.list()) |segment| {
         if (segment.executable and segment.holds(plan.entry)) return plan;
     }
@@ -160,32 +112,27 @@ pub fn of(image: []const u8, limits: Limits) Error!Plan {
 }
 
 /// One program header, checked.
-fn believe(ph: *align(1) const ProgramHeader, image_len: usize, limits: Limits) Error!Segment {
-    const offset: u64 = ph.offset;
-    const filesz: u64 = ph.filesz;
-    const memsz: u64 = ph.memsz;
-    const vaddr: u64 = ph.vaddr;
+fn believe(program: ProgramHeader, image_len: usize, limits: Limits) Error!Segment {
+    // No more bytes from the file than the segment has room for, and all of
+    // them inside the file.
+    if (program.filesz > program.memsz) return error.Malformed;
+    const file_end = std.math.add(u32, program.offset, program.filesz) catch return error.Malformed;
+    if (file_end > image_len) return error.Malformed;
 
-    // A segment claiming more file bytes than it has room for is a file
-    // asking the kernel to copy past what it gave it.
-    if (filesz > memsz) return error.Malformed;
-    if (offset + filesz > image_len) return error.Malformed;
-
-    // Nothing may reach the kernel's half, and nothing may take the page at
-    // zero: a program with page zero mapped has no null pointer left, and
-    // every mistake that would have faulted quietly succeeds instead.
-    if (vaddr + memsz > limits.kernel_base) return error.Malformed;
+    // Nothing in the kernel's half.
+    const end = std.math.add(u32, program.vaddr, program.memsz) catch return error.Malformed;
+    if (end > limits.kernel_base) return error.Malformed;
 
     const segment = Segment{
-        .from = offset,
-        .bytes = filesz,
-        .at = vaddr,
-        .span = memsz,
-        .writable = ph.flags.writable,
-        .executable = ph.flags.executable,
+        .from = program.offset,
+        .bytes = program.filesz,
+        .at = program.vaddr,
+        .span = program.memsz,
+        .writable = program.flags.writable,
+        .executable = program.flags.executable,
     };
+    // Page zero stays unmapped, so a null pointer faults.
     if (segment.first(limits.page_size) == 0) return error.Malformed;
-
     return segment;
 }
 
@@ -201,53 +148,30 @@ const testing = std.testing;
 const PAGE = 4096;
 const LIMITS = Limits{ .kernel_base = 0xC000_0000, .page_size = PAGE };
 
-/// An image with a header and a program table, laid out the way a linker
-/// would, so a test can change one field and leave the rest right.
+/// An image with a header and a program header table, laid out as a linker
+/// would, for a test to change one field of.
 const Image = struct {
     bytes: [4096]u8 = @splat(0),
 
-    const TABLE_AT = @sizeOf(Header);
-
-    fn holding(headers: []const ProgramHeader, entry: u32) Image {
+    fn holding(programs: []const ProgramHeader, entry: u32) Image {
         var self = Image{};
-        const hdr: *align(1) Header = @ptrCast(&self.bytes);
-        hdr.* = .{
-            .magic = elf.MAGIC.*,
-            .class = .bits32,
-            .data = .little,
-            .version = 1,
-            .abi = 0,
-            .abi_version = 0,
-            ._pad = @splat(0),
-            .type = .executable,
-            .machine = .x86,
-            .object_version = 1,
-            .entry = entry,
-            .phoff = TABLE_AT,
-            .shoff = 0,
-            .flags = 0,
-            .ehsize = @sizeOf(Header),
-            .phentsize = @sizeOf(ProgramHeader),
-            .phnum = @intCast(headers.len),
-            .shentsize = 0,
-            .shnum = 0,
-            .shstrndx = 0,
-        };
-        for (headers, 0..) |ph, i| {
-            const at = TABLE_AT + i * @sizeOf(ProgramHeader);
-            const slot: *align(1) ProgramHeader = @ptrCast(self.bytes[at..].ptr);
-            slot.* = ph;
-        }
+        self.header().* = .{ .entry = entry, .phnum = @intCast(programs.len) };
+        @memcpy(self.table()[0..programs.len], programs);
         return self;
     }
 
     fn header(self: *Image) *align(1) Header {
-        return @ptrCast(&self.bytes);
+        return std.mem.bytesAsValue(Header, self.bytes[0..@sizeOf(Header)]);
+    }
+
+    /// Room for the program header table, after the header.
+    fn table(self: *Image) []align(1) ProgramHeader {
+        const size = (MAX_SEGMENTS + 2) * @sizeOf(ProgramHeader);
+        return std.mem.bytesAsSlice(ProgramHeader, self.bytes[@sizeOf(Header)..][0..size]);
     }
 
     fn program(self: *Image, i: usize) *align(1) ProgramHeader {
-        const at = TABLE_AT + i * @sizeOf(ProgramHeader);
-        return @ptrCast(self.bytes[at..].ptr);
+        return &self.table()[i];
     }
 
     fn plan(self: *const Image) Error!Plan {
@@ -264,7 +188,7 @@ fn code(at: u32, from: u32, bytes: u32) ProgramHeader {
         .paddr = at,
         .filesz = bytes,
         .memsz = bytes,
-        .flags = .{ .executable = true, .writable = false, .readable = true },
+        .flags = .{ .executable = true, .readable = true },
         .alignment = PAGE,
     };
 }
@@ -274,32 +198,30 @@ test "a well formed image says where its pieces go" {
     const plan = try image.plan();
 
     try testing.expectEqual(@as(usize, 1), plan.count);
-    try testing.expectEqual(@as(u64, 0x1020), plan.entry);
+    try testing.expectEqual(@as(u32, 0x1020), plan.entry);
 
     const segment = plan.list()[0];
-    try testing.expectEqual(@as(u64, 0x200), segment.from);
-    try testing.expectEqual(@as(u64, 0x100), segment.bytes);
-    try testing.expectEqual(@as(u64, 0x1000), segment.at);
+    try testing.expectEqual(@as(u32, 0x200), segment.from);
+    try testing.expectEqual(@as(u32, 0x100), segment.bytes);
+    try testing.expectEqual(@as(u32, 0x1000), segment.at);
     try testing.expect(segment.executable);
     try testing.expect(!segment.writable);
 
     // The heap starts past everything, on a page of its own.
-    try testing.expectEqual(@as(u64, 0x2000), plan.brk);
+    try testing.expectEqual(@as(u32, 0x2000), plan.brk);
 }
 
 test "a file offset that wraps the address space is refused" {
-    // The check that matters. An offset near the top and a length that carries
-    // the sum past it: worked out in the machine's own width the sum comes back
-    // to nothing, the bounds check passes, and the loader copies from wherever
-    // that offset lands into a page the program can read.
+    // An offset near the top and a length whose sum wraps past zero. Unchecked,
+    // the bounds check passes and the loader copies from wherever the offset
+    // lands into the program's memory.
     var image = Image.holding(&.{code(0x1000, 0x200, 0x100)}, 0x1020);
     image.program(0).offset = 0xFFFF_F000;
     image.program(0).filesz = 0x1000;
     image.program(0).memsz = 0x1000;
     try testing.expectError(error.Malformed, image.plan());
 
-    // And the plain case of running off the end, which is the same check
-    // arriving by the front door.
+    // Running off the end.
     image = Image.holding(&.{code(0x1000, 0x200, 0x100)}, 0x1020);
     image.program(0).filesz = 0x8000;
     image.program(0).memsz = 0x8000;
@@ -387,18 +309,18 @@ test "two segments may not want the same page" {
     }, 0x1020);
     const plan = try image.plan();
     try testing.expectEqual(@as(usize, 2), plan.count);
-    try testing.expectEqual(@as(u64, 0x3000), plan.brk);
+    try testing.expectEqual(@as(u32, 0x3000), plan.brk);
 }
 
 test "a segment's own pages are where it says and no wider" {
     const segment = Segment{ .at = 0x1800, .span = 0x900 };
-    try testing.expectEqual(@as(u64, 0x1000), segment.first(PAGE));
-    try testing.expectEqual(@as(u64, 0x3000), segment.last(PAGE));
+    try testing.expectEqual(@as(u32, 0x1000), segment.first(PAGE));
+    try testing.expectEqual(@as(u32, 0x3000), segment.last(PAGE));
 
     // Exactly a page, exactly aligned: no page is claimed that is not used.
     const tidy = Segment{ .at = 0x1000, .span = 0x1000 };
-    try testing.expectEqual(@as(u64, 0x1000), tidy.first(PAGE));
-    try testing.expectEqual(@as(u64, 0x2000), tidy.last(PAGE));
+    try testing.expectEqual(@as(u32, 0x1000), tidy.first(PAGE));
+    try testing.expectEqual(@as(u32, 0x2000), tidy.last(PAGE));
     try testing.expect(!tidy.collidesWith(.{ .at = 0x2000, .span = 0x1000 }, PAGE));
     try testing.expect(tidy.collidesWith(.{ .at = 0x1FFF, .span = 1 }, PAGE));
 }
@@ -442,15 +364,15 @@ test "an image with nothing to load is not a program" {
 
 test "a file that is not this machine's program is refused for saying so" {
     var image = Image.holding(&.{code(0x1000, 0x200, 0x100)}, 0x1020);
-    image.header().machine = .arm;
+    image.header().ident.machine = .arm;
     try testing.expectError(error.WrongMachine, image.plan());
 
     image = Image.holding(&.{code(0x1000, 0x200, 0x100)}, 0x1020);
-    image.header().type = .relocatable;
+    image.header().ident.type = .relocatable;
     try testing.expectError(error.NotExecutable, image.plan());
 
     image = Image.holding(&.{code(0x1000, 0x200, 0x100)}, 0x1020);
-    image.header().class = .bits64;
+    image.header().ident.class = .bits64;
     try testing.expectError(error.WrongClass, image.plan());
 
     // An entry the right size for a different layout: believing it would walk
@@ -460,7 +382,7 @@ test "a file that is not this machine's program is refused for saying so" {
     try testing.expectError(error.Malformed, image.plan());
 
     image = Image.holding(&.{code(0x1000, 0x200, 0x100)}, 0x1020);
-    image.bytes[1] = 'F';
+    image.header().ident.magic[1] = 'F';
     try testing.expectError(error.NotElf, image.plan());
 
     // Too short to hold a header at all.
@@ -565,11 +487,11 @@ const Move = union(enum) {
             },
             .entry => |e| image.header().entry = e,
             .identity => |which| switch (which) {
-                .magic => image.header().magic[0] +%= 1,
-                .class => image.header().class = .bits64,
-                .data => image.header().data = .big,
-                .machine => image.header().machine = .arm,
-                .kind => image.header().type = .relocatable,
+                .magic => image.header().ident.magic[0] +%= 1,
+                .class => image.header().ident.class = .bits64,
+                .data => image.header().ident.data = .big,
+                .machine => image.header().ident.machine = .arm,
+                .kind => image.header().ident.type = .relocatable,
             },
         }
     }

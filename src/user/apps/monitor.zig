@@ -28,6 +28,11 @@ const ctx = &proto.app.ctx;
 /// live and slow enough that watching it is not itself the load.
 const REFRESH_US: u32 = 500_000;
 
+// The icon the launcher shows for this program.
+comptime {
+    eui.icon.carry(eui.icon.of(.chart).*);
+}
+
 export fn _start() callconv(.c) noreturn {
     sample();
     proto.app.run("monitor", "Monitor", 420, 300, .{

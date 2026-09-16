@@ -115,6 +115,11 @@ comptime {
 }
 var status: []const u8 = "";
 
+// The icon the launcher shows for this program.
+comptime {
+    eui.icon.carry(eui.icon.of(.document).*);
+}
+
 export fn _start(frame: [*]usize) callconv(.c) noreturn {
     document = .{ .bytes = &storage };
 

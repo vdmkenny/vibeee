@@ -13,6 +13,7 @@ pub const device = @import("device.zig");
 pub const display = @import("display.zig");
 pub const env = @import("env.zig");
 pub const file = @import("file.zig");
+pub const notes = @import("notes.zig");
 pub const table = @import("table.zig");
 pub const tree = @import("tree.zig");
 pub const bindings = @import("bindings.zig");

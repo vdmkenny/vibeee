@@ -95,6 +95,11 @@ var path_len: usize = 0;
 var file_size: usize = 0;
 var file_mtime: i64 = 0;
 
+// The icon the launcher shows for this program.
+comptime {
+    eui.icon.carry(eui.icon.of(.picture).*);
+}
+
 export fn _start(frame: [*]usize) callconv(.c) noreturn {
     if (env.argument(frame)) |wanted| {
         setPath(wanted);

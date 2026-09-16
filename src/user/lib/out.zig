@@ -81,7 +81,6 @@ pub fn glyph(cp: u21) void {
     text(encoded[0..n]);
 }
 
-/// Write `s` padded to `width`, for aligned columns.
 /// `mv: notes.txt: cannot move`, which is how every command says that
 /// something it was given did not work.
 ///
@@ -101,6 +100,7 @@ pub fn fault(tool: []const u8, what: []const u8, why: []const u8) void {
     troubles.writeByte('\n');
 }
 
+/// Write `s` padded to `width`, for aligned columns.
 pub fn pad(s: []const u8, width: usize) void {
     text(s);
     var n = s.len;

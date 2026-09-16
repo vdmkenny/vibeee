@@ -47,7 +47,7 @@ pub const Row = struct {
     marked: bool = false,
     /// A picture before the first cell. The column is indented for it when
     /// any row in the table has one, so names still line up under each other.
-    icon: ?icons.Icon = null,
+    mark: ?icons.Mark = null,
 };
 
 /// What the control remembers between passes.
@@ -260,7 +260,7 @@ pub fn rowRect(area: Rect, state: *const State, index: usize, rows: usize) ?Rect
 /// column for every row.
 fn anyPictured(rows: []const Row) bool {
     for (rows) |row| {
-        if (row.icon != null) return true;
+        if (row.mark != null) return true;
     }
     return false;
 }
@@ -317,7 +317,8 @@ fn fingerprint(
         // mark to another row without changing a word left the old row
         // accented and the new one plain.
         h.flag(row.marked);
-        h.number(if (row.icon) |picture| @intFromEnum(picture) + 1 else 0);
+        h.flag(row.mark != null);
+        if (row.mark) |which| h.text(which.bits());
     }
     // The first column is indented when any row in the table has a picture,
     // so a picture arriving anywhere moves every row's text.
@@ -402,8 +403,8 @@ fn paint(
         else
             t.text;
 
-        if (row.icon) |which| {
-            surface.icon(line.x + 3, Surface.iconTopFor(y + 2), which, ink);
+        if (row.mark) |which| {
+            surface.mark(line.x + 3, Surface.iconTopFor(y + 2), which, ink);
         }
 
         var cx = line.x + 2;

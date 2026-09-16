@@ -596,11 +596,11 @@ pub const CHORDS = [_]struct { chord: []const u8, says: []const u8 }{
 /// The rows the other mouse button opens, in the order every system puts
 /// them, each with the chord that does the same thing.
 const MENU_ROWS = [_]eui_context_menu.Row{
-    .{ .command = .{ .label = "Cut", .mark = .cut, .detail = "Ctrl+X" } },
-    .{ .command = .{ .label = "Copy", .mark = .copy, .detail = "Ctrl+C" } },
-    .{ .command = .{ .label = "Paste", .mark = .paste, .detail = "Ctrl+V" } },
+    .{ .command = .{ .label = "Cut", .mark = .icon(.cut), .detail = "Ctrl+X" } },
+    .{ .command = .{ .label = "Copy", .mark = .icon(.copy), .detail = "Ctrl+C" } },
+    .{ .command = .{ .label = "Paste", .mark = .icon(.paste), .detail = "Ctrl+V" } },
     .rule,
-    .{ .command = .{ .label = "Select all", .mark = .select_all, .detail = "Ctrl+A" } },
+    .{ .command = .{ .label = "Select all", .mark = .icon(.select_all), .detail = "Ctrl+A" } },
 };
 
 fn commandOf(row: usize) ?Command {

@@ -179,7 +179,7 @@ pub fn railItems(model: *const rooms.Model, into: []eui.rail.Item) []const eui.r
         const tab = network.tab;
         into[count] = .{
             .label = network.called(),
-            .glyph = &server_glyph,
+            .mark = .picture(&server_glyph),
             .count = if (tab < model.rooms.len) model.rooms.items[tab].unread else 0,
             .urgent = tab < model.rooms.len and model.rooms.items[tab].urgent,
         };
@@ -190,7 +190,7 @@ pub fn railItems(model: *const rooms.Model, into: []eui.rail.Item) []const eui.r
             if (count == into.len) break;
             into[count] = .{
                 .label = room.called(),
-                .glyph = if (room.sort == .channel) &channel_glyph else &person_glyph,
+                .mark = .picture(if (room.sort == .channel) &channel_glyph else &person_glyph),
                 .depth = 1,
                 .count = room.unread,
                 .urgent = room.urgent,
