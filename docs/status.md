@@ -223,7 +223,9 @@ driven. Modesetting belongs to the kernel; `firmware-set` keeps the firmware's m
   transfer made for any event may have taken the interrupt that finished one.
 - `ehci.zig`: high speed. Takes the controller from firmware by the specification
   handshake; asynchronous ring for control and bulk, periodic list for interrupt
-  endpoints.
+  endpoints. What a finished chain of transfer descriptors came to is in
+  [`ehci/transfer.zig`](../src/user/usbd/ehci/transfer.zig), fuzzed against a model of
+  the controller.
 - `uhci.zig`: full and low speed companions. I/O-space registers; the chipset's four
   companions are one driver over four comptime-bound units (`hc.unitOps`).
 - `ohci.zig`: the full and low speed controller of AMD, SiS, ALi, NVIDIA and OPTi
@@ -253,6 +255,9 @@ driven. Modesetting belongs to the kernel; `firmware-set` keeps the firmware's m
 
 - Drivers in a compile-time registry, each declaring its interface class: `e1000`,
   `rtl8139`, `e100`, `atl2` (701 wired), `atl1e` (1000 wired), `ar5212` (701 radio).
+- `e1000` keeps its two descriptor rings in [`e1000/rings.zig`](../src/user/netd/e1000/rings.zig)
+  and `rtl8139` its receive ring in [`rtl8139/ring.zig`](../src/user/netd/rtl8139/ring.zig),
+  each fuzzed against a model of the part.
 - `e100`: Intel PRO/100 (82557 to 82551) and the LAN controller in ICH2 to ICH7 and
   NM10. Receives into a descriptor ring behind a moving fence; configuration and frames
   share one command block ring. The PHY is read one register per management cycle, each
@@ -399,7 +404,8 @@ every build. Code used by one driver only stays with that driver, for example
   x86-64 Linux as well as the build machine.
 - Pure logic is kept in files with no I/O so it can be tested directly: page-table
   walk, program-image plan, FAT long-name assembly, volume check decisions, volume
-  geometry, receive-page walk, PRO/100 rings, OHCI endpoint queue.
+  geometry, receive-page walk, PRO/100 rings, 82540 rings, RTL8139 receive ring, OHCI
+  endpoint queue, EHCI transfer accounting.
 - A new test file runs only if `src/tests.zig`, `src/quirks/tests.zig` or the test
   block in `lib.zig` names it; a re-export is not enough. Confirm by making one of its
   tests fail.
@@ -437,6 +443,18 @@ every build. Code used by one driver only stays with that driver, for example
   - OHCI endpoint queue, [`usbd/ohci/queue.zig`](../src/user/usbd/ohci/queue.zig): the
     controller model only ever processes what the host has finished writing, and each
     transfer settles to what the model made of it.
+  - 82540 rings, [`netd/e1000/rings.zig`](../src/user/netd/e1000/rings.zig): against a
+    model of the part stepping at every barrier and register write, the part is given
+    only cleared descriptors and sends only filled ones; each frame is taken and each
+    send made once and in order.
+  - RTL8139 receive ring, [`netd/rtl8139/ring.zig`](../src/user/netd/rtl8139/ring.zig):
+    against a model of the chip stepping at every barrier and register access, each
+    record is taken once and in order with the bytes written, never before CBR passed
+    it; CAPR moves only to the end of a record taken.
+  - EHCI transfer accounting, [`usbd/ehci/transfer.zig`](../src/user/usbd/ehci/transfer.zig):
+    against a model of the controller stepping at every barrier, a chain is counted only
+    once finished without a failure, at what the controller moved and never more than
+    was asked.
   - Page table, [`arch/x86/pagetable.zig`](../src/arch/x86/pagetable.zig): agrees with a
     walk without shortcuts.
 - `make check-all` is the gate. It runs `zig fmt` check, `zig build check`,
@@ -534,7 +552,7 @@ syscalls, Ring 3, IPC, ramfs, VESA console, i8042 keyboard, `vsh`. Exercised eve
 |---|---|
 | Persistent settings and home | The boot medium carries the system, `/cfg` and `/home`. Settings read from `/etc` then `/cfg`. The loader records the medium's partition signature so the right disk is used. On the 701, `/cfg` and `/home` mount when `usbd` brings up the card reader. Verified in the emulator across shutdowns and reboots. |
 | Volume check, format, grow | Clean-unmount flag, check at mount, `check`, `format`, `grow`. Verified in the emulator by the gate. |
-| Fuzz targets | Twelve targets with seeded counterparts in `make test`. See [Testing](#testing). |
+| Fuzz targets | Fifteen targets with seeded counterparts in `make test`. See [Testing](#testing). |
 | Bus rebuild | A disk behind a hub keeps its mount across `usb rebuild`. Verified in the emulator. |
 | Serial console | The log reaches a USB serial port. Verified in the emulator; not tried on the machine. |
 | Serial adapters | FTDI verified in the emulator: enumeration, `ser`, typed data both ways, settings, unplug. `acm` not run against a device. |

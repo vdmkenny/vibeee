@@ -24,7 +24,13 @@ const out = @import("ulib").out;
 const pci = @import("ulib").pci;
 const sys = @import("sys");
 const ehci = lib.ehci;
+const transfer = @import("ehci/transfer.zig");
 const usb = lib.usb;
+
+const Barrier = sys.barrier;
+const Link = transfer.Link;
+const Pid = transfer.Pid;
+const Transfer = transfer.Transfer;
 
 pub const name = "ehci";
 
@@ -198,86 +204,6 @@ comptime {
 // The schedule's own structures
 // ---------------------------------------------------------------------------
 
-/// What a link pointer points at, which the controller reads from the
-/// pointer's own low bits.
-const LinkKind = enum(u2) {
-    isochronous = 0,
-    queue_head = 1,
-    split_isochronous = 2,
-    frame_span = 3,
-};
-
-const Link = packed struct(u32) {
-    /// Nothing follows: the end of a chain.
-    terminate: bool = true,
-    kind: LinkKind = .queue_head,
-    _3: u2 = 0,
-    /// The address, which is why everything in a schedule is aligned to
-    /// thirty-two bytes.
-    address: u27 = 0,
-
-    fn to(physical: u32, kind: LinkKind) Link {
-        return .{ .terminate = false, .kind = kind, .address = @intCast(physical >> 5) };
-    }
-
-    const none = Link{};
-};
-
-/// What a transfer descriptor is doing, and what became of it.
-const TransferStatus = packed struct(u8) {
-    ping: bool = false,
-    split_state: bool = false,
-    missed_microframe: bool = false,
-    transaction_error: bool = false,
-    babble: bool = false,
-    buffer_error: bool = false,
-    /// The device said no, or the controller gave up on it.
-    halted: bool = false,
-    /// The controller still has work to do here.
-    active: bool = false,
-
-    fn failed(self: TransferStatus) bool {
-        return self.halted or self.transaction_error or self.babble or self.buffer_error;
-    }
-};
-
-const Pid = enum(u2) {
-    out = 0,
-    in = 1,
-    setup = 2,
-    _,
-};
-
-const Token = packed struct(u32) {
-    status: TransferStatus = .{},
-    pid: Pid = .out,
-    error_limit: u2 = 3,
-    page: u3 = 0,
-    /// Interrupt when this descriptor completes.
-    interrupt: bool = false,
-    bytes: u15 = 0,
-    /// The toggle, which the device and the host must agree on.
-    toggle: bool = false,
-};
-
-/// A transfer descriptor: one stage of one transfer, in the extended
-/// form. A controller that addresses sixty-four bits always reads the
-/// extended descriptor, whatever the segment register holds, so the upper
-/// halves of the buffer pointers must exist and must be zero; a
-/// thirty-two bit part never looks at them. Without them the controller
-/// reads the neighbouring descriptor's words as upper address halves, and
-/// every buffer lands beyond anything that answers.
-const Transfer = extern struct {
-    next: Link = Link.none,
-    alternate: Link = Link.none,
-    token: Token = .{},
-    pages: [5]u32 = @splat(0),
-    pages_high: [5]u32 = @splat(0),
-    /// Out to a whole cache line, so arrays of descriptors keep every
-    /// element on the thirty-two byte alignment the controller requires.
-    _pad: [3]u32 = @splat(0),
-};
-
 /// Where the controller keeps everything it knows about one endpoint.
 const EndpointInfo = packed struct(u32) {
     address: u7 = 0,
@@ -326,14 +252,7 @@ const QueueHead = extern struct {
 };
 
 comptime {
-    if (@sizeOf(Transfer) != 64) @compileError("an extended transfer descriptor fills a cache line");
     if (@sizeOf(QueueHead) != 96) @compileError("an extended queue head is ninety-six bytes");
-    if (@as(u32, @bitCast(Token{ .status = .{ .active = true }, .error_limit = 0 })) != 0x80) {
-        @compileError("the transfer token's status drifted");
-    }
-    if (@as(u32, @bitCast(Token{ .pid = .setup, .error_limit = 0 })) != 0x200) {
-        @compileError("the transfer token's packet identifier drifted");
-    }
     if (@as(u32, @bitCast(EndpointInfo{ .head_of_list = true })) != 0x8000 or
         @as(u32, @bitCast(EndpointInfo{ .speed = .high })) != 0x2000 or
         @as(u32, @bitCast(EndpointInfo{ .max_packet = 64 })) != 0x0040_0000)
@@ -583,19 +502,16 @@ fn chain() void {
 fn collect(index: u8, into: []u8) ?usize {
     if (index >= watches.len or !watches[index].live) return null;
     const arena = controller.arena.at;
-    const token = arena.watch_tds[index].token;
-
-    if (token.status.active) return null;
 
     // A halted endpoint has stopped answering and will keep not
     // answering: re-arming it would poll a dead pipe forever, so it is
     // left alone until whoever owns it clears the halt.
-    if (token.status.failed()) return null;
+    const moved = switch (transfer.result(Barrier, (&arena.watch_tds[index])[0..1], .{ .asked = watches[index].wanted })) {
+        .moved => |bytes| bytes,
+        .unfinished, .failed => return null,
+    };
 
-    // Saturating, and then bounded by both sides: what the watch armed and
-    // who is asking. A count the hardware made larger than either would
-    // otherwise be a copy out of the arena and into a caller's buffer.
-    const moved = @as(usize, watches[index].wanted) -| @as(usize, token.bytes);
+    // Bounded by who is asking as well as by what the watch armed.
     const wanted = @min(moved, into.len);
     if (wanted != 0) {
         const from: [*]const u8 = @ptrCast(@volatileCast(&arena.reports[index]));
@@ -699,30 +615,25 @@ fn bulk(pipe: *usb.Pipe, data: []u8) hc.Error!usize {
 /// interrupt rather than on the clock.
 fn awaitPayload(asked: usize) hc.Error!usize {
     const arena = controller.arena.at;
+    const payload = (&arena.payload)[0..1];
 
     var waited_us: u32 = 0;
     const DEADLINE_US: u32 = 5_000_000;
     while (waited_us < DEADLINE_US) {
         rest();
         waited_us += REST_US;
-
-        const token = arena.payload.token;
-        if (!token.status.active or token.status.failed()) break;
+        if (transfer.settled(Barrier, payload)) break;
     }
 
-    const token = arena.payload.token;
-    if (token.status.failed()) return hc.Error.Stalled;
-    if (token.status.active) {
-        sayUnfinished("the bulk transfer", &arena.bulk, (&arena.payload)[0..1]);
-        reclaim(&arena.bulk);
-        return hc.Error.Timeout;
-    }
-    // The controller counts down what it did not carry, so a short
-    // answer shows up as bytes left over. The count is the hardware's, so it
-    // is bounded rather than subtracted: one that claims more than was asked
-    // for would wrap into a length that runs off the end of `data`.
-    const left = @as(usize, token.bytes);
-    return if (left >= asked) 0 else asked - left;
+    return switch (transfer.result(Barrier, payload, .{ .asked = asked })) {
+        .moved => |bytes| bytes,
+        .failed => hc.Error.Stalled,
+        .unfinished => {
+            sayUnfinished("the bulk transfer", &arena.bulk, payload);
+            reclaim(&arena.bulk);
+            return hc.Error.Timeout;
+        },
+    };
 }
 
 pub const ops = hc.HcOps{
@@ -1357,6 +1268,7 @@ fn sayUnfinished(
 
 fn awaitStages(stages: usize, data: []u8, reading: bool, wants_data: bool) hc.Error!usize {
     const arena = controller.arena.at;
+    const descriptors = arena.stages[0..stages];
 
     // The deadline is generous: a device answering a descriptor request
     // is fast, and a device that has gone away is what the deadline is
@@ -1367,39 +1279,27 @@ fn awaitStages(stages: usize, data: []u8, reading: bool, wants_data: bool) hc.Er
     while (waited_us < DEADLINE_US) {
         rest();
         waited_us += REST_US;
-
-        const last = arena.stages[stages - 1].token;
-        if (!last.status.active) break;
-        if (last.status.failed()) break;
+        if (transfer.settled(Barrier, descriptors)) break;
     }
 
-    // Whatever the outcome, it is the descriptors that say so. A failure
-    // is narrated stage by stage: which were served, which the controller
-    // still owes, and what the wire said, which is the difference between
-    // a schedule nobody walks and a device nobody hears.
-    for (0..stages) |i| {
-        const token = arena.stages[i].token;
-        if (token.status.failed() or token.status.active) {
-            sayUnfinished("the transfer's stages", &arena.control, arena.stages[0..stages]);
-            if (token.status.failed()) return hc.Error.Stalled;
+    // A failure is narrated stage by stage: which were served, which the
+    // controller still owes, and what the wire said, which tells a schedule
+    // nobody walks from a device nobody hears.
+    const counted: ?transfer.Counted = if (wants_data) .{ .stage = 1, .asked = data.len } else null;
+    const moved = switch (transfer.result(Barrier, descriptors, counted)) {
+        .moved => |bytes| bytes,
+        .failed => {
+            sayUnfinished("the transfer's stages", &arena.control, descriptors);
+            return hc.Error.Stalled;
+        },
+        .unfinished => {
+            sayUnfinished("the transfer's stages", &arena.control, descriptors);
             // A halted head has been let go; a chain still active is
             // still the controller's, and is taken back before reuse.
             reclaim(&arena.control);
             return hc.Error.Timeout;
-        }
-    }
-
-    if (!wants_data) return 0;
-
-    // The controller counts down what it did not transfer, so what
-    // moved is what was asked for less what is left.
-    const asked = arena.stages[1].token.bytes;
-    const requested: usize = data.len;
-    // What moved is what was asked for less what is left, and it is a
-    // hardware count, so it is clamped to what was asked for at all: a
-    // controller that reports more than it was given must not turn into a
-    // copy off the end of either buffer.
-    const moved = requested -| @as(usize, asked);
+        },
+    };
 
     if (reading and moved != 0) {
         const from: [*]const u8 = @ptrCast(@volatileCast(&arena.buffer));

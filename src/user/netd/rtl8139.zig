@@ -18,6 +18,7 @@ const cursor = @import("cursor.zig");
 const log = @import("ulib").log;
 const pci = @import("ulib").pci;
 const ports = @import("ulib").ports;
+const ring = @import("rtl8139/ring.zig");
 const std = @import("std");
 const sys = @import("sys");
 
@@ -122,13 +123,6 @@ const DmaBurst = enum(u3) {
     maximum,
 };
 
-const RxBufferLen = enum(u2) {
-    kib_8,
-    kib_16,
-    kib_32,
-    kib_64,
-};
-
 const RxFifoThreshold = enum(u3) {
     bytes_16,
     bytes_32,
@@ -152,7 +146,7 @@ const RxConfig = packed struct(u32) {
     /// Keep a packet contiguous past the nominal end of a sub-64 KiB ring.
     no_wrap: bool = false,
     dma_burst: DmaBurst = .bytes_16,
-    buffer_len: RxBufferLen = .kib_8,
+    buffer_len: ring.Size = .kib_8,
     fifo_threshold: RxFifoThreshold = .bytes_16,
     _16: u8 = 0,
     early_threshold: u4 = 0,
@@ -216,31 +210,6 @@ const TxStatus = packed struct(u32) {
     }
 };
 
-/// The status word and wire length ahead of every received frame.
-const RxHeader = packed struct(u32) {
-    ok: bool = false,
-    frame_align: bool = false,
-    crc_error: bool = false,
-    long_frame: bool = false,
-    runt_frame: bool = false,
-    bad_symbol: bool = false,
-    _6: u7 = 0,
-    broadcast: bool = false,
-    physical: bool = false,
-    multicast: bool = false,
-    length: u16 = 0,
-
-    /// What this driver judges: the hardware's own verdict, and whether the
-    /// length it reported is one the copy below has room for. Whether a frame
-    /// of that length is one this system carries is `dev`'s, so every adapter
-    /// answers it the same way.
-    fn good(self: RxHeader, frame_len: usize) bool {
-        return self.ok and !self.frame_align and !self.crc_error and
-            !self.long_frame and !self.runt_frame and !self.bad_symbol and
-            frame_len <= ETH_MAX_FRAME;
-    }
-};
-
 const EventsUp = Events{
     .rx_ok = true,
     .rx_error = true,
@@ -258,33 +227,22 @@ comptime {
     if (@sizeOf(MediaStatus) != 1) @compileError("the media status register is one byte");
     if (@sizeOf(Events) != 2) @compileError("the interrupt register is one word");
     if (@sizeOf(RxConfig) != 4 or @sizeOf(TxConfig) != 4) @compileError("a transfer config is one dword");
-    if (@sizeOf(TxStatus) != 4 or @sizeOf(RxHeader) != 4) @compileError("a packet status is one dword");
+    if (@sizeOf(TxStatus) != 4) @compileError("a packet status is one dword");
 }
 
 // ---------------------------------------------------------------------------
 // The rings
 // ---------------------------------------------------------------------------
 
-/// A 64 KiB ring is known to lock some revisions. In no-wrap mode the chip
-/// keeps a packet contiguous beyond a 32 KiB boundary, so the DMA allocation
-/// includes the documented pad and enough room for the largest spill.
-const RX_RING = 32 * 1024;
-const RX_PAD = 16;
-const RX_WRAP_PAD = 2048;
+/// A 64 KiB ring is known to lock some revisions. How the ring is read is
+/// `rtl8139/ring.zig`.
+const RX_SIZE: ring.Size = .kib_32;
+const Receiver = ring.Receiver(RX_SIZE, dma);
 const TX_SLOTS = 4;
 const TX_BUFFER = 2048;
 const ETH_HEADER = lib.eth.HEADER;
-const ETH_MAX_FRAME = 1518;
-const ETH_FCS = 4;
-const RX_UNFINISHED = 0xFFF0;
-/// The longest record the receive area can hold whole: the ring, its pad
-/// and its no-wrap spill, which is as far as the chip may write one
-/// contiguous record. A length past this was not written anywhere this
-/// driver can read, so what the read pointer would land on is not the
-/// next record's header and the ring has to be rebuilt.
-const RX_MAX_RECORD = RX_RING + RX_PAD + RX_WRAP_PAD;
 const IO_PORTS = 0x100;
-const PORT_SPACE: u32 = @as(u32, 1) << @bitSizeOf(u16);
+const PORT_SPACE: u32 = std.math.maxInt(u16) + 1;
 const RESET_ATTEMPTS = 1000;
 
 /// What the receiver takes: frames addressed to this station, which it
@@ -300,7 +258,7 @@ const RxUp = RxConfig{
     .accept_broadcast = true,
     .no_wrap = true,
     .dma_burst = .maximum,
-    .buffer_len = .kib_32,
+    .buffer_len = RX_SIZE,
     .fifo_threshold = .none,
 };
 
@@ -322,8 +280,7 @@ const Device = struct {
     rx_phys: lib.Phys = .none,
     tx_phys: [TX_SLOTS]u32 = @splat(0),
 
-    /// Where the host reads next in the receive ring, derived from CAPR.
-    rx_at: cursor.Cursor(RX_RING) = .{},
+    receiver: Receiver = .{ .area = undefined },
     /// Which descriptor is up next, and which are still out on the wire.
     /// Tracked here rather than read back from TSD: the hardware's idea of
     /// "own" at reset is its own, and this process's is the truth it acts on.
@@ -335,23 +292,14 @@ const Device = struct {
 var device: Device = .{};
 var attached = false;
 
-/// The receive ring, read the way it has to be: the chip is writing into it
-/// while this code walks it, so every load must really happen, which is a
-/// plain array read does not promise.
-fn rxArea() *volatile [RX_RING + RX_PAD + RX_WRAP_PAD]u8 {
-    return @ptrCast(&device.arena.body().rx);
-}
-
-/// What one DMA segment holds: the receive ring with its guard and spill,
+/// What one DMA segment holds: the receive ring with its pad and spill,
 /// and the four transmit buffers behind it.
 const Rings = struct {
-    rx: [RX_RING + RX_PAD + RX_WRAP_PAD]u8 align(4) = @splat(0),
+    rx: [Receiver.AREA]u8 align(4) = @splat(0),
     tx: [TX_SLOTS][TX_BUFFER]u8 align(4) = @splat(@splat(0)),
 };
 
 comptime {
-    const largest_record = std.mem.alignForward(usize, @sizeOf(RxHeader) + ETH_MAX_FRAME + ETH_FCS, 4);
-    if (RX_PAD + RX_WRAP_PAD < largest_record) @compileError("the receive spill area cannot hold a frame");
     if (@offsetOf(Rings, "tx") % 4 != 0) @compileError("transmit buffers must be dword aligned");
 }
 
@@ -395,7 +343,7 @@ pub fn open(loc: pci.Location, dev: *NicDev) bool {
         device.tx_phys[i] = (device.arena.physOf(at) orelse return refuseArena()).addr();
     }
 
-    device.rx_at = .{};
+    device.receiver = .{ .area = &device.arena.body().rx };
     device.tx_at = .{};
     device.pending = @splat(false);
     device.started = false;
@@ -456,7 +404,7 @@ pub fn start(_: *NicDev) bool {
     const stale = device.ports.read(u16, .isr);
     if (stale != std.math.maxInt(u16)) device.ports.write(.isr, @as(u16, stale));
 
-    device.rx_at = .{};
+    device.receiver.restart();
     device.tx_at = .{};
     device.pending = @splat(false);
     device.ports.write(.rbstart, device.rx_phys.addr());
@@ -505,7 +453,7 @@ pub fn stop(nic: *NicDev) void {
     const pending = device.ports.read(u16, .isr);
     if (pending != std.math.maxInt(u16)) device.ports.write(.isr, @as(u16, pending));
     device.started = false;
-    device.rx_at = .{};
+    device.receiver.restart();
     device.tx_at = .{};
     device.pending = @splat(false);
 
@@ -595,78 +543,27 @@ pub fn poll(nic: *NicDev) bool {
 }
 
 fn reapRx(nic: *NicDev) void {
-    const command = device.ports.read(Cmd, .cmd);
-    if (command.buffer_empty) return;
+    if (device.receiver.take(dev_mod.RX_REAP_BUDGET, Part{}, nic, delivered) == .lost) recoverRx(nic);
+}
 
-    // CBR is only the end of the snapshot, not the next packet. Consume at
-    // most that finite snapshot so a busy wire cannot make one IRQ unbounded.
-    const write_at = cursor.wrapped(@as(usize, device.ports.read(u16, .cbr)), RX_RING);
-    var remaining = cursor.usedBetween(write_at, device.rx_at.at, RX_RING);
-    if (remaining == 0) remaining = RX_RING; // BUFE distinguished full from empty
-    dma.consume();
+fn delivered(nic: *NicDev, frame: ?[]const u8) void {
+    dev_mod.deliverRx(nic, if (frame) |whole| .{ .ok = true, .frame = whole } else .{});
+}
 
-    var reaped: usize = 0;
-    while (remaining >= @sizeOf(RxHeader) and reaped < dev_mod.RX_REAP_BUDGET) : (reaped += 1) {
-        const header_at = device.rx_at.at;
-        const header = readRxHeader(header_at);
-        if (header.length == RX_UNFINISHED) return;
-
-        const wire_len = @as(usize, header.length);
-        // Only a length that makes the record boundary unknowable earns
-        // the reset. Too short to hold the check sequence means there is
-        // no frame length to subtract it from, and longer than the ring
-        // and its spill together means what the hardware wrote is not
-        // what this pointer would read; either way the next record is not
-        // at `rx_at + record`, and walking there is a tour of the arena
-        // chosen by whoever sent the frame.
-        if (wire_len < ETH_FCS or @sizeOf(RxHeader) + wire_len > RX_MAX_RECORD) {
-            recoverRx(nic);
-            return;
-        }
-        const record_len = std.mem.alignForward(usize, @sizeOf(RxHeader) + wire_len, 4);
-        if (record_len > remaining) return; // the writer has not published the full frame yet
-
-        // Anything else is a frame this pass can step over, however wrong
-        // it is on the wire: an oversized one fails `good` below, counts
-        // as a drop and is left behind, and the ring keeps going. A
-        // length between the 1518 a large frame may be and a few
-        // kilobytes arrives with a clean status often enough that taking
-        // the receiver down for it threw away everything in the ring too.
-        const frame_len = wire_len - ETH_FCS;
-        const frame_at = header_at + @sizeOf(RxHeader);
-        var frame: [ETH_MAX_FRAME]u8 = undefined;
-        if (header.good(frame_len)) {
-            const area = rxArea();
-            for (0..frame_len) |got| frame[got] = area[frame_at + got];
-            dev_mod.deliverRx(nic, .{ .ok = true, .frame = frame[0..frame_len] });
-        } else {
-            dev_mod.deliverRx(nic, .{});
-        }
-
-        device.rx_at.advance(record_len);
-        remaining -= record_len;
-        // CAPR is sixteen bytes behind the actual consumer. Publishing before
-        // the write ensures all CPU reads finish before the device may reuse it.
-        dma.publish();
-        device.ports.write(.capr, @as(u16, @truncate(device.rx_at.at -% 16)));
+/// The receive registers, as the ring reads and writes them.
+const Part = struct {
+    pub fn empty(_: Part) bool {
+        return device.ports.read(Cmd, .cmd).buffer_empty;
     }
-}
 
-fn readRxHeader(at: usize) RxHeader {
-    const low = rxWord(at);
-    const high = rxWord(at + 2);
-    return @bitCast(@as(u32, low) | (@as(u32, high) << 16));
-}
+    pub fn written(_: Part) u16 {
+        return device.ports.read(u16, .cbr);
+    }
 
-/// One little-endian word from the ring, byte by byte: the ring is DMA
-/// memory and every load must really happen, which is what keeps a plain
-/// `readInt` out of this function.
-fn rxWord(at: usize) u16 {
-    const area = rxArea();
-    const low: u16 = area[at];
-    const high: u16 = area[at + 1];
-    return low | (high << 8);
-}
+    pub fn readTo(_: Part, mark: u16) void {
+        device.ports.write(.capr, mark);
+    }
+};
 
 /// A malformed length loses packet boundaries. Reset only the receive side,
 /// preserving a live transmitter, rather than walking attacker-controlled
@@ -689,13 +586,12 @@ fn recoverRx(nic: *NicDev) void {
     }
     if (!off) log.warn("rtl8139", "the receiver did not stop for its reset");
 
-    device.rx_at = .{};
+    device.receiver.restart();
     device.ports.write(.rbstart, device.rx_phys.addr());
-    // CAPR is the hardware's own account of where the host has read to,
-    // and reprogramming it is what made this a reset: with RBSTART back
-    // at zero and CAPR left where it was, the two disagree and the
-    // receiver fetches from one while the host drains the other.
-    device.ports.write(.capr, @as(u16, @truncate(device.rx_at.at -% 16)));
+    // CAPR is the hardware's own account of where the host has read to.
+    // With RBSTART back at zero and CAPR left where it was, the receiver
+    // fetches from one place while the host drains another.
+    device.ports.write(.capr, device.receiver.mark());
     device.ports.write(.cmd, Cmd{
         .tx_enable = command.tx_enable,
         .rx_enable = command.rx_enable,
@@ -725,7 +621,7 @@ fn reapTx(nic: *NicDev) void {
 }
 
 pub fn transmit(nic: *NicDev, frame: []const u8) bool {
-    if (!device.started or frame.len < ETH_HEADER or frame.len > ETH_MAX_FRAME) {
+    if (!device.started or frame.len < ETH_HEADER or frame.len > ring.MAX_FRAME) {
         nic.stats.tx_failed += 1;
         return false;
     }

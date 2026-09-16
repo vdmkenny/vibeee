@@ -14,14 +14,13 @@ const dev_mod = @import("dev.zig");
 const lib = @import("lib");
 const std = @import("std");
 const dma = @import("dma.zig");
-const cursor = @import("cursor.zig");
 const log = @import("ulib").log;
 const pci = @import("ulib").pci;
+const rings = @import("e1000/rings.zig");
 const sys = @import("sys");
 
 const NicDev = dev_mod.NicDev;
 const RingSlots = 64;
-const Slab = 2048;
 const MMIO_BYTES: u32 = 128 * 1024;
 const AllCauses: u32 = 0xFFFF_FFFF;
 const ResetSpins = 10_000;
@@ -225,107 +224,22 @@ comptime {
 // The rings, one DMA segment
 // ---------------------------------------------------------------------------
 
-const RxStatus = packed struct(u8) {
-    done: bool = false,
-    end_of_packet: bool = false,
-    ignore_checksum: bool = false,
-    vlan: bool = false,
-    udp_checksum: bool = false,
-    tcp_checksum: bool = false,
-    ip_checksum: bool = false,
-    passed_inexact: bool = false,
-};
-
-const RxErrors = packed struct(u8) {
-    crc: bool = false,
-    symbol: bool = false,
-    sequence: bool = false,
-    _3: u1 = 0,
-    carrier_extension: bool = false,
-    transport_checksum: bool = false,
-    ip_checksum: bool = false,
-    data: bool = false,
-
-    fn any(self: RxErrors) bool {
-        return self.crc or self.symbol or self.sequence or self.carrier_extension or
-            self.transport_checksum or self.ip_checksum or self.data;
-    }
-};
-
-const TxCommand = packed struct(u8) {
-    end_of_packet: bool = false,
-    insert_fcs: bool = false,
-    insert_checksum: bool = false,
-    report_status: bool = false,
-    report_packet_sent: bool = false,
-    extended: bool = false,
-    vlan: bool = false,
-    interrupt_delay: bool = false,
-};
-
-const TxStatus = packed struct(u8) {
-    done: bool = false,
-    excessive_collisions: bool = false,
-    late_collision: bool = false,
-    underrun: bool = false,
-    _4: u4 = 0,
-
-    fn failed(self: TxStatus) bool {
-        return self.excessive_collisions or self.late_collision or self.underrun;
-    }
-};
-
-const SendCommand = TxCommand{
-    .end_of_packet = true,
-    .insert_fcs = true,
-    .report_status = true,
-};
-
-/// The legacy receive descriptor, sixteen bytes, the manual's layout.
-const RxDesc = extern struct {
-    addr_low: u32 = 0,
-    addr_high: u32 = 0,
-    length: u16 = 0,
-    checksum: u16 = 0,
-    status: RxStatus = .{},
-    errors: RxErrors = .{},
-    special: u16 = 0,
-};
-
-/// The legacy transmit descriptor, including its byte-wide command and
-/// writeback fields rather than treating them as unrelated dwords.
-const TxDesc = extern struct {
-    addr_low: u32 = 0,
-    addr_high: u32 = 0,
-    length: u16 = 0,
-    checksum_offset: u8 = 0,
-    command: TxCommand = .{},
-    status: TxStatus = .{},
-    checksum_start: u8 = 0,
-    special: u16 = 0,
-};
-
-comptime {
-    if (@sizeOf(RxDesc) != 16 or @sizeOf(TxDesc) != 16) {
-        @compileError("an 82540 descriptor is sixteen bytes, whichever way");
-    }
-    if (@offsetOf(RxDesc, "status") != 12 or @offsetOf(TxDesc, "status") != 12) {
-        @compileError("descriptor writeback status must begin at byte twelve");
-    }
-}
-
 /// Receive descriptors, then the buffers they point at. One DMA segment, so
-/// every address in it is DMA-visible from the start.
+/// every address in it is DMA-visible from the start. How the host keeps the
+/// rings is `e1000/rings.zig`.
 const Rings = struct {
-    rx_desc: [RingSlots]RxDesc align(128) = @splat(.{}),
-    rx_buffer: [RingSlots][Slab]u8 = @splat(@splat(0)),
-    tx_desc: [RingSlots]TxDesc align(128) = @splat(.{}),
-    tx_buffer: [RingSlots][Slab]u8 = @splat(@splat(0)),
+    rx_desc: [RingSlots]rings.RxDesc align(128) = @splat(.{}),
+    rx_buffer: [RingSlots][rings.BUFFER_BYTES]u8 = @splat(@splat(0)),
+    tx_desc: [RingSlots]rings.TxDesc align(128) = @splat(.{}),
+    tx_buffer: [RingSlots][rings.BUFFER_BYTES]u8 = @splat(@splat(0)),
 };
 
+const Receiver = rings.Receiver(RingSlots, dma);
+const Transmitter = rings.Transmitter(RingSlots, dma);
+
 comptime {
-    if (RingSlots < 8 or RingSlots * @sizeOf(RxDesc) % 128 != 0 or
-        RingSlots * @sizeOf(TxDesc) % 128 != 0)
+    if (RingSlots < 8 or RingSlots * @sizeOf(rings.RxDesc) % 128 != 0 or
+        RingSlots * @sizeOf(rings.TxDesc) % 128 != 0)
     {
         @compileError("descriptor rings must be at least eight entries and a multiple of 128 bytes");
     }
@@ -347,13 +261,8 @@ const Device = struct {
     /// a few times then runs the machine out of contiguous memory without
     /// ever having allocated twice.
     arena: dma.Arena(Rings) = .{},
-    /// Where each end of a ring stands. Cursors rather than plain indices
-    /// because the arithmetic that matters — how much is outstanding, how
-    /// much room is left — is measured the way a lap is, and every lap but
-    /// the first has the writing end behind the reading one.
-    rx_next: cursor.Cursor(RingSlots) = .{}, // next completed receive descriptor
-    tx_next: cursor.Cursor(RingSlots) = .{}, // next transmit descriptor to publish
-    tx_clean: cursor.Cursor(RingSlots) = .{}, // oldest transmit descriptor still owned by hardware
+    receiver: Receiver = .{ .descriptors = undefined, .buffers = undefined },
+    transmitter: Transmitter = .{ .descriptors = undefined, .buffers = undefined },
     opened: bool = false,
     started: bool = false,
 };
@@ -434,22 +343,21 @@ pub fn open(loc: pci.Location, dev: *NicDev) bool {
     const rx_desc_at = device.arena.physOf(@offsetOf(Rings, "rx_desc")) orelse return false;
     const tx_desc_at = device.arena.physOf(@offsetOf(Rings, "tx_desc")) orelse return false;
 
-    device.rx_next = .{};
-    device.tx_next = .{};
-    device.tx_clean = .{};
-    const rings = device.arena.body();
+    const body = device.arena.body();
+    device.receiver = .{ .descriptors = &body.rx_desc, .buffers = &body.rx_buffer };
+    device.transmitter = .{ .descriptors = &body.tx_desc, .buffers = &body.tx_buffer };
 
     // Every receive descriptor names its buffer before the ring is handed
     // over: a descriptor left at zero is an invitation to scribble the
     // frame over the real mode vector table.
-    for (&rings.rx_desc, 0..) |*desc, i| {
+    for (&body.rx_desc, 0..) |*desc, i| {
         desc.* = .{
-            .addr_low = (device.arena.physOf(@offsetOf(Rings, "rx_buffer") + i * Slab) orelse return false).addr(),
+            .addr_low = (device.arena.physOf(@offsetOf(Rings, "rx_buffer") + i * rings.BUFFER_BYTES) orelse return false).addr(),
         };
     }
-    for (&rings.tx_desc, 0..) |*desc, i| {
+    for (&body.tx_desc, 0..) |*desc, i| {
         desc.* = .{
-            .addr_low = (device.arena.physOf(@offsetOf(Rings, "tx_buffer") + i * Slab) orelse return false).addr(),
+            .addr_low = (device.arena.physOf(@offsetOf(Rings, "tx_buffer") + i * rings.BUFFER_BYTES) orelse return false).addr(),
             .status = .{ .done = true },
         };
     }
@@ -461,16 +369,14 @@ pub fn open(loc: pci.Location, dev: *NicDev) bool {
     // Receive path: the descriptor ring and its buffers are one run.
     device.regs.write(.rdbal, rx_desc_at.addr());
     device.regs.write(.rdbah, 0);
-    device.regs.write(.rdlen, RingSlots * @sizeOf(RxDesc));
+    device.regs.write(.rdlen, RingSlots * @sizeOf(rings.RxDesc));
     device.regs.write(.rdh, 0);
-    // Head equal to tail means empty. Descriptor 63 stays as the sentinel;
-    // descriptors 0 through 62 are initially available to the receiver.
-    device.regs.write(.rdt, RingSlots - 1);
+    device.regs.write(.rdt, Receiver.TAIL);
 
     // Transmit path.
     device.regs.write(.tdbal, tx_desc_at.addr());
     device.regs.write(.tdbah, 0);
-    device.regs.write(.tdlen, RingSlots * @sizeOf(TxDesc));
+    device.regs.write(.tdlen, RingSlots * @sizeOf(rings.TxDesc));
     device.regs.write(.tdh, 0);
     device.regs.write(.tdt, 0);
 
@@ -641,9 +547,8 @@ pub fn stop(nic: *NicDev) void {
     // that no register names memory either side of it.
     sys.shmUnmap(@volatileCast(device.regs.base));
     device.regs = .{ .base = undefined };
-    device.rx_next = .{};
-    device.tx_next = .{};
-    device.tx_clean = .{};
+    device.receiver = .{ .descriptors = undefined, .buffers = undefined };
+    device.transmitter = .{ .descriptors = undefined, .buffers = undefined };
     device.opened = false;
     dev_mod.deliverLink(nic, .{});
 }
@@ -712,118 +617,49 @@ pub fn poll(dev: *NicDev) bool {
     return true;
 }
 
-/// How many frames one pass of the receiver takes, however many the wire
-/// has for it.
+/// Take what the receiver has finished, one lap of the ring at most.
 ///
-/// Each descriptor is handed straight back to the hardware as it is
-/// drained, so at line rate the ring refills underneath the loop as fast
-/// as the loop empties it and a pass that ran until the ring was quiet
-/// would never end: this service is one thread, and everything else it
-/// does — the stack's timers, the other interfaces on the line, the
-/// channel it answers requests on — stops for as long as the wire keeps
-/// talking. One lap of the ring is the most one pass takes; what is still
-/// there when it stops is the next pass's to take.
+/// Each descriptor goes straight back to the part as it is taken, so at line
+/// rate the ring refills as fast as it empties. A pass bounded only by the
+/// ring going quiet holds this single-threaded service for as long as the
+/// wire keeps talking; what is left is the next pass's.
 fn reapRx(dev: *NicDev) void {
-    const rings = device.arena.body();
-    var reaped: usize = 0;
-    while (reaped < dev_mod.RX_REAP_BUDGET) : (reaped += 1) {
-        const slot = device.rx_next.at;
-        const desc = &rings.rx_desc[slot];
-        const ownership = @as(*const volatile RxStatus, &desc.status).*;
-        if (!ownership.done) break;
-        dma.consume();
+    device.receiver.take(dev_mod.RX_REAP_BUDGET, Part{}, dev, delivered);
+}
 
-        const status = @as(*const volatile RxStatus, &desc.status).*;
-        const length = @as(*const volatile u16, &desc.length).*;
-        const errors = @as(*const volatile RxErrors, &desc.errors).*;
-        // What this driver judges: the hardware's own verdict, and whether
-        // the length it reported is one a slice of the slab may be formed
-        // from. Whether a frame of that length is one this system carries is
-        // `dev`'s, so every adapter answers it the same way.
-        const good = status.end_of_packet and !errors.any() and length <= Slab;
-
-        if (good) {
-            dev_mod.deliverRx(dev, .{
-                .ok = true,
-                .frame = rings.rx_buffer[slot][0..length],
-            });
-        } else {
-            // Never form a slice from a device-provided length until it has
-            // been bounded against the actual DMA slab.
-            dev_mod.deliverRx(dev, .{});
-        }
-
-        desc.length = 0;
-        desc.checksum = 0;
-        desc.errors = .{};
-        desc.special = 0;
-        desc.status = .{};
-        dma.publish();
-        device.rx_next.next();
-        // RDT names the last descriptor returned to hardware, not the next
-        // descriptor software expects to consume: writing the cursor as it
-        // stands now would hand the engine a descriptor this pass has not
-        // refilled, and hardware and software would be one apart for the
-        // rest of the run.
-        device.regs.write(.rdt, @intCast(slot));
-    }
+fn delivered(dev: *NicDev, frame: ?[]const u8) void {
+    dev_mod.deliverRx(dev, if (frame) |whole| .{ .ok = true, .frame = whole } else .{});
 }
 
 fn reapTx(nic: *NicDev) void {
-    const rings = device.arena.body();
-    // How much is still the hardware's: from the oldest descriptor not yet
-    // reclaimed up to the one the next send will take, measured the way a
-    // lap is, because after the first the writing end is behind the
-    // reading one and a plain subtraction goes below zero.
-    var outstanding = device.tx_next.used(device.tx_clean.at);
-    while (outstanding > 0) : (outstanding -= 1) {
-        const desc = &rings.tx_desc[device.tx_clean.at];
-        const ownership = @as(*const volatile TxStatus, &desc.status).*;
-        if (!ownership.done) break;
-        dma.consume();
-        const status = @as(*const volatile TxStatus, &desc.status).*;
-        if (status.failed()) nic.stats.tx_failed += 1;
-        device.tx_clean.next();
-    }
+    device.transmitter.reap(nic, failed);
 }
 
+fn failed(nic: *NicDev) void {
+    nic.stats.tx_failed += 1;
+}
+
+/// The ring registers, as the rings write them.
+const Part = struct {
+    pub fn handBack(_: Part, slot: usize) void {
+        device.regs.write(.rdt, @intCast(slot));
+    }
+
+    pub fn send(_: Part, tail: usize) void {
+        device.regs.write(.tdt, @intCast(tail));
+    }
+};
+
 pub fn transmit(nic: *NicDev, frame: []const u8) bool {
-    if (!device.opened or !device.started or frame.len < 14 or frame.len > Slab) return false;
+    if (!device.opened or !device.started or frame.len < 14 or frame.len > rings.BUFFER_BYTES) return false;
 
     // Completion interrupts are advisory for reclaim: checking writebacks
     // here prevents backpressure when the event is delayed or coalesced.
     reapTx(nic);
-    // One slot stays unused because TDH == TDT is the hardware's empty
-    // state: what is asked for is the room the ring has, which is one
-    // short of its size for exactly that reason.
-    if (device.tx_next.room(device.tx_clean.at) == 0) {
+    if (!device.transmitter.append(frame, Part{})) {
         nic.stats.tx_failed += 1;
         return false;
     }
-    const slot = device.tx_next.at;
-
-    const rings = device.arena.body();
-    const desc = &rings.tx_desc[slot];
-    const ownership = @as(*const volatile TxStatus, &desc.status).*;
-    if (!ownership.done) {
-        nic.stats.tx_failed += 1;
-        return false;
-    }
-
-    @memcpy(rings.tx_buffer[slot][0..frame.len], frame);
-    const address = desc.addr_low;
-    desc.* = .{
-        .addr_low = address,
-        .length = @intCast(frame.len),
-        .command = SendCommand,
-    };
-
-    dma.publish();
-    device.tx_next.next();
-    // TDT, unlike RDT, is one past the last descriptor the engine may
-    // send, which is the cursor as it now stands.
-    device.regs.write(.tdt, @intCast(device.tx_next.at));
-
     dev_mod.deliverTx(nic, frame.len);
     return true;
 }

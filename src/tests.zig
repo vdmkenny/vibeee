@@ -51,17 +51,24 @@ test {
     _ = @import("user/sndd/es1370/regs.zig");
     // Which manifests the device manager keeps.
     _ = @import("user/devmgd/book.zig");
+    // What a finished chain of EHCI transfer descriptors came to, against a
+    // model of the controller.
+    _ = @import("user/usbd/ehci/transfer.zig");
     _ = @import("user/netd/attansic.zig");
     _ = @import("user/netd/cursor.zig");
     // The PRO/100's shapes, its configure block and its EEPROM's protocol,
     // and both its rings against a model of the part.
     _ = @import("user/netd/e100/regs.zig");
     _ = @import("user/netd/e100/rings.zig");
+    // The 82540's two descriptor rings against a model of the part.
+    _ = @import("user/netd/e1000/rings.zig");
     _ = @import("user/netd/mii.zig");
     // The page an L1E receives into, which is the only part of that
     // driver that can be run anywhere but on the machine that has one.
     _ = @import("user/netd/rxpage.zig");
     _ = @import("user/netd/route.zig");
+    // The RTL8139's receive ring against a model of the chip.
+    _ = @import("user/netd/rtl8139/ring.zig");
     _ = @import("user/lib/time.zig");
     _ = @import("user/lib/paths.zig");
     _ = @import("user/lib/console.zig");
