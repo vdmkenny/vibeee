@@ -197,6 +197,8 @@ manually.
 
 - [Status](docs/status.md): component inventory, tests and known gaps.
 - [Master design](design/00-vibeee.md): goals, architecture and roadmap.
+- [Coding standards](docs/coding-standards.md): rules for code, tests, documentation and
+  commits.
 - [Extra applications](apps/README.md): programs outside the system image.
 - [System calls](docs/syscalls.md): generated ABI reference.
 - [Settings](docs/settings.md): generated configuration reference.
