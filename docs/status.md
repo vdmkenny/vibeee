@@ -226,6 +226,11 @@ driven. Modesetting belongs to the kernel; `firmware-set` keeps the firmware's m
 - One event loop over the service channel, controller interrupts and volume doorbells.
   No polling. Class drivers look at their watched endpoints after every event, since a
   transfer made for any event may have taken the interrupt that finished one.
+- A transfer's wait acknowledges transfer and failure causes only. A root port change
+  stays latched: EHCI and OHCI disable its interrupt until the transfer ends; UHCI, which
+  has none, marks the controller due and the loop services it after the event. A
+  controller rebuilt during a wait ends the transfer. Interrupt passes read the status
+  until no cause they take is latched ([`causes.zig`](../src/user/usbd/causes.zig)).
 - `ehci.zig`: high speed. Takes the controller from firmware by the specification
   handshake; asynchronous ring for control and bulk, periodic list for interrupt
   endpoints. What a finished chain of transfer descriptors came to is in
@@ -412,7 +417,7 @@ every build. Code used by one driver only stays with that driver, for example
 - Pure logic is kept in files with no I/O so it can be tested directly: page-table
   walk, program-image plan, FAT long-name assembly, volume check decisions, volume
   geometry, receive-page walk, PRO/100 rings, 82540 rings, RTL8139 receive ring, OHCI
-  endpoint queue, EHCI transfer accounting, netd's line serving.
+  endpoint queue, EHCI transfer accounting, USB interrupt causes, netd's line serving.
 - A new test file runs only if `src/tests.zig`, `src/quirks/tests.zig` or the test
   block in `lib.zig` names it; a re-export is not enough. Confirm by making one of its
   tests fail.
@@ -480,8 +485,9 @@ every build. Code used by one driver only stays with that driver, for example
   8. Serial console: the log reaches the port, including lines written after it opened.
   9. Hub and bus rebuild: a disk behind a hub keeps its mount across `usb rebuild`, and
      a disk and keyboard on an OHCI controller are read, written and typed on across it.
-  10. USB copies: a 256 KiB copy on a UHCI stick and on an EHCI stick matches its
-      source.
+  10. USB copies and plugging: a 256 KiB copy on a UHCI stick and on an EHCI stick
+      matches its source; a stick plugged into the idle UHCI controller and one plugged
+      in during the EHCI copy are both found.
   11. Suspend and resume: display, keyboard, disk and network work after waking.
   12. Card reader boot: the volumes arrive through USB.
 - Boot self-tests: heap, syscall ABI, clock advance, IPC. Failures print `fail` in the
@@ -586,6 +592,9 @@ syscalls, Ring 3, IPC, ramfs, VESA console, i8042 keyboard, `vsh`. Exercised eve
 - Full or low speed devices behind a hub on the EHCI controller need split
   transactions. The arithmetic is written and untested: the emulator does not put a
   full speed hub on EHCI, and the 701's own hubs are on the companions.
+- A device plugged into a UHCI controller is found at the controller's next interrupt,
+  transfer or bus walk: UHCI raises no interrupt for a port change. On the 701 a
+  connection reaches the EHCI controller first.
 - `usbd` acknowledges a controller's interrupt only when it services that controller. On
   a level-triggered line, a delivery it has not acknowledged holds back every line in
   the same interrupt priority class, and transfers on another controller fall back to

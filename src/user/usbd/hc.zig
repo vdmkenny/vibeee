@@ -44,6 +44,19 @@ pub const Service = enum {
     reborn,
 };
 
+/// Outcome of one wait step during a transfer.
+///
+/// A wait acknowledges transfer and failure causes only. A root port change
+/// stays latched and a rebuild is recorded, and `serviceIrq` reports both:
+/// after the transfer the controller interrupts again, or, on a controller
+/// with no interrupt for them, `serviceDue` says so.
+pub const Rest = enum {
+    waited,
+    /// The controller failed and was rebuilt or closed. The transfer's
+    /// schedule no longer exists.
+    reborn,
+};
+
 /// What a controller must provide.
 pub const HcOps = struct {
     /// Map registers, take the controller from the firmware, and start
@@ -103,6 +116,11 @@ pub const HcOps = struct {
     /// its ports the caller's to walk afresh, as at the first open.
     /// Answering false leaves the controller closed.
     rebuild: *const fn () bool,
+    /// Whether a transfer's wait left a port change or a rebuild for
+    /// `serviceIrq` that raises no interrupt. Null for a controller whose
+    /// waits disable such an interrupt and enable it again after the
+    /// transfer.
+    serviceDue: ?*const fn () bool = null,
 };
 
 /// A control transfer that carries no data: a request goes out and only
@@ -120,7 +138,7 @@ pub fn command(ops: HcOps, pipe: usb.Pipe, setup: usb.Setup) Error!void {
 /// functions. `Driver` keeps them in `units` and takes one first in each of
 /// `open`, `portCount`, `portState`, `resetPort`, `serviceIrq`, `control`,
 /// `bulk`, `bulkLimit`, `watch`, `collect`, `watchLimit`, `unwatch`,
-/// `quiesce`, `rebuild` and `listen`.
+/// `quiesce`, `rebuild` and `listen`, and in `serviceDue` if it declares one.
 pub fn unitOps(comptime Driver: type, comptime unit: usize) HcOps {
     const bound = Bound(Driver, unit);
     return .{
@@ -138,6 +156,7 @@ pub fn unitOps(comptime Driver: type, comptime unit: usize) HcOps {
         .unwatch = bound.unwatch,
         .quiesce = bound.quiesce,
         .rebuild = bound.rebuild,
+        .serviceDue = if (@hasDecl(Driver, "serviceDue")) bound.serviceDue else null,
     };
 }
 
@@ -191,6 +210,9 @@ fn Bound(comptime Driver: type, comptime unit: usize) type {
         }
         fn rebuild() bool {
             return Driver.rebuild(self);
+        }
+        fn serviceDue() bool {
+            return Driver.serviceDue(self);
         }
         fn listen(irq: u32) void {
             Driver.listen(self, irq);

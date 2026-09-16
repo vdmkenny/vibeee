@@ -47,6 +47,8 @@ test {
     _ = @import("user/usbd/ftdi/regs.zig");
     // One OHCI endpoint's queue, against a model of the controller.
     _ = @import("user/usbd/ohci/queue.zig");
+    // Which latched status flags a USB controller's interrupt pass takes.
+    _ = @import("user/usbd/causes.zig");
     // The AudioPCI's registers, its clock and its codec's setup.
     _ = @import("user/sndd/es1370/regs.zig");
     // Which manifests the device manager keeps.

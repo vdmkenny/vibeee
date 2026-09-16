@@ -353,14 +353,19 @@ mcopy -o -i "$OPEN_STICK" ::/copied.txt "$BUILD/check-stick-ohci.out" 2>/dev/nul
     fail "what was written to the open controller's disk is not on it (see $LOGBUS)"
 echo "the bus went down and came back; both disks kept their mounts, and a copy reached the disk"
 
-step "copies on UHCI and EHCI sticks"
+step "copies on UHCI and EHCI sticks, with sticks plugged in during them"
 # Each controller on its own interrupt line. A 256 KiB copy on each; on UHCI
-# its 4 KiB requests exceed one bulk transfer and go as several commands.
+# its 4 KiB requests exceed one bulk transfer and go as several commands. A
+# stick is plugged into the idle UHCI controller, which raises no interrupt
+# for it, and is found after the copy's first transfer. Another is plugged
+# into the EHCI controller as its copy starts, while its transfers wait.
 COPY_DATA=$BUILD/check-copy.bin
 head -c 262144 /dev/urandom > "$COPY_DATA"
 for which in uhci ehci; do
-    dd if=/dev/zero of="$BUILD/check-copy-$which-disk.img" bs=1m count=16 >/dev/null 2>&1
-    mformat -i "$BUILD/check-copy-$which-disk.img" -F :: || fail "cannot make a stick to test with"
+    for role in disk plugged; do
+        dd if=/dev/zero of="$BUILD/check-copy-$which-$role.img" bs=1m count=16 >/dev/null 2>&1
+        mformat -i "$BUILD/check-copy-$which-$role.img" -F :: || fail "cannot make a stick to test with"
+    done
     mcopy -i "$BUILD/check-copy-$which-disk.img" "$COPY_DATA" ::/data.bin || fail "cannot write to the test stick"
 done
 
@@ -368,19 +373,27 @@ LOGCOPY=$BUILD/check-copy.log
 QEMU_CPU="$QEMU_CPU" tools/qemu-shot.sh "$BUILD/check-copy.png" -w 30 -s 1 \
     -m "wait-for /media/usb0 on usb0
 wait-for /media/usb1 on usb1
+device_add usb-storage,bus=uh.0,port=2,drive=up
 type cp /media/usb0/data.bin /media/usb0/copy.bin
 type echo first-done
 wait-for 2005lfirst-done
 type cp /media/usb1/data.bin /media/usb1/copy.bin
+device_add usb-storage,bus=eh.0,port=2,drive=ep
 type echo second-done
-wait-for 2005lsecond-done" \
+wait-for 2005lsecond-done
+wait-for port 2: 46f4:0001 storage, high speed
+type usb ports
+type echo ports-listed
+wait-for 2005lports-listed" \
     -- -drive if=ide,format=raw,file="$DEV_IMAGE" -nic none \
     -device piix3-usb-uhci,id=uh,addr=4 \
     -drive if=none,id=ud,format=raw,file="$BUILD/check-copy-uhci-disk.img" \
     -device usb-storage,bus=uh.0,port=1,drive=ud \
+    -drive if=none,id=up,format=raw,file="$BUILD/check-copy-uhci-plugged.img" \
     -device ich9-usb-ehci1,id=eh,addr=6 \
     -drive if=none,id=ed,format=raw,file="$BUILD/check-copy-ehci-disk.img" \
-    -device usb-storage,bus=eh.0,port=1,drive=ed >/dev/null \
+    -device usb-storage,bus=eh.0,port=1,drive=ed \
+    -drive if=none,id=ep,format=raw,file="$BUILD/check-copy-ehci-plugged.img" >/dev/null \
     || fail "the emulator did not run (see $LOGCOPY)"
 plain "$LOGCOPY" > "$LOGCOPY.txt"
 ! grep -qi "panic" "$LOGCOPY.txt" || fail "the kernel panicked (see $LOGCOPY)"
@@ -389,7 +402,16 @@ for which in uhci ehci; do
         cmp -s "$COPY_DATA" "$BUILD/check-copy-$which.out" ||
         fail "the copy on the $which stick does not match its source (see $LOGCOPY)"
 done
-echo "both copies match their source"
+grep -q "port 2: 46f4:0001 storage, full speed" "$LOGCOPY.txt" ||
+    fail "the stick plugged into the idle UHCI controller was not found (see $LOGCOPY)"
+# The listing tells a stick the emulator never attached (the port reads
+# empty) from one usbd did not enumerate.
+if ! grep -q "port 2: 46f4:0001 storage, high speed" "$LOGCOPY.txt"; then
+    grep -Eq "^1-2 +empty" "$LOGCOPY.txt" &&
+        fail "the emulator did not attach the stick plugged into the EHCI controller (see $LOGCOPY)"
+    fail "the stick plugged in during the EHCI copy was not found (see $LOGCOPY)"
+fi
+echo "both copies match, and both sticks plugged in were found"
 
 step "the machine asleep and awake again, with its screen, its keys and its disk"
 # The whole suspend path, which the emulator can run because its display

@@ -17,6 +17,7 @@
 
 const device = @import("ulib").device;
 const table = @import("ulib").table;
+const causes = @import("causes.zig");
 const hc = @import("hc.zig");
 const lib = @import("lib");
 const log = @import("ulib").log;
@@ -127,6 +128,24 @@ const Interrupts = packed struct(u32) {
     host_error: bool = false,
     async_advance: bool = false,
     _6: u26 = 0,
+
+    /// Interrupts this driver enables. Frame list rollover is off: nothing
+    /// here counts frames.
+    const TAKEN = Interrupts{
+        .transfer = true,
+        .transfer_error = true,
+        .port_change = true,
+        .host_error = true,
+        .async_advance = true,
+    };
+
+    /// `TAKEN` without port change, while a transfer waits with a port
+    /// change latched.
+    const HOLDING = holding: {
+        var taken = TAKEN;
+        taken.port_change = false;
+        break :holding taken;
+    };
 };
 
 /// What the line between a port and a device currently is. The two line
@@ -327,6 +346,12 @@ const Device = struct {
     rebuilt: bool = false,
     /// The interrupt this controller's transfers wait on.
     irq: u32 = 0,
+    /// A port change latched during a transfer's wait. Its interrupt is
+    /// disabled until the transfer ends.
+    ports_held: bool = false,
+    /// A transfer's wait found the controller failed and rebuilt or closed
+    /// it. Reported by the next `serviceIrq`.
+    reborn: bool = false,
 };
 
 var controller: Device = .{};
@@ -614,13 +639,15 @@ fn bulk(pipe: *usb.Pipe, data: []u8) hc.Error!usize {
 /// Wait for the one descriptor a bulk transfer uses, on the controller's
 /// interrupt rather than on the clock.
 fn awaitPayload(asked: usize) hc.Error!usize {
+    defer releasePorts();
     const arena = controller.arena.at;
     const payload = (&arena.payload)[0..1];
 
     var waited_us: u32 = 0;
     const DEADLINE_US: u32 = 5_000_000;
     while (waited_us < DEADLINE_US) {
-        rest();
+        // A rebuild discards the schedule the payload was on.
+        if (rest() == .reborn) return hc.Error.Refused;
         waited_us += REST_US;
         if (transfer.settled(Barrier, payload)) break;
     }
@@ -838,17 +865,8 @@ fn startSchedule() void {
     opWrite(.periodic_base, controller.arena.physOf("frames"));
     opWrite(.async_base, anchor_physical);
 
-    // Every interrupt this driver acts on. The frame-list rollover is
-    // left out: nothing here counts frames, and a controller that
-    // interrupts a thousand times a second for nobody is a machine
-    // spending its life in an interrupt handler.
-    opWrite(.interrupts, @bitCast(Interrupts{
-        .transfer = true,
-        .transfer_error = true,
-        .port_change = true,
-        .host_error = true,
-        .async_advance = true,
-    }));
+    opWrite(.interrupts, @bitCast(Interrupts.TAKEN));
+    controller.ports_held = false;
 
     opWrite(.command, @bitCast(Command{
         .running = true,
@@ -952,23 +970,28 @@ fn release(index: u8, speed: usb.Speed) hc.PortState {
     return .{ .connected = true, .released = true, .speed = speed };
 }
 
-/// Acknowledge the controller's interrupt. Returns whether a port
-/// changed, which is the only thing the bus above needs to be told.
+/// Acknowledge the controller's causes until none is latched. Reports a
+/// port change, or a rebuild in this pass or in a transfer's wait.
 fn serviceIrq() hc.Service {
-    if (!controller.opened) return .quiet;
+    const reborn = controller.reborn;
+    controller.reborn = false;
+    if (!controller.opened) return if (reborn) .reborn else .quiet;
 
-    const status: Status = @bitCast(opRead(.status));
-
-    // Write-one-to-clear, and only the bits that were actually set: a
-    // blanket acknowledgement would swallow a change that arrived
-    // between the read and the write.
-    opWrite(.status, @bitCast(status));
-
-    if (status.host_error) {
-        hostError();
-        return .reborn;
+    var ports_changed = false;
+    for (0..causes.ROUNDS) |_| {
+        const taken = causes.intersect(@as(Status, @bitCast(opRead(.status))), Interrupts.TAKEN);
+        if (taken == Status{}) break;
+        // Write-one-to-clear, the causes read only: one latched after the
+        // read stays for the next round.
+        opWrite(.status, @bitCast(taken));
+        if (taken.host_error) {
+            hostError();
+            return .reborn;
+        }
+        if (taken.port_change) ports_changed = true;
     }
-    return if (status.port_change) .ports_changed else .quiet;
+    if (reborn) return .reborn;
+    return if (ports_changed) .ports_changed else .quiet;
 }
 
 /// A host system error is the controller saying the bus refused one of its
@@ -1195,24 +1218,60 @@ fn describe(pid: Pid, toggle: bool, page: u32, bytes: u15, interrupt: bool) Tran
     return stage;
 }
 
-/// Wait for the controller to finish, on its own interrupt, and read
-/// what happened out of the descriptors.
 /// How long one wait step lasts. Long enough that a transfer nobody
 /// answers costs a handful of wakes, short enough that a deadline is
 /// still measured in the units it is written in.
 const REST_US: u32 = 50_000;
 
-/// One step of waiting for the controller. The wait is on its interrupt,
-/// so a machine with nothing to carry does nothing; before the line is
-/// routed, during the first moments of bring-up, there is nothing to
-/// wait on but the clock.
-fn rest() void {
-    if (controller.irq != 0) {
-        sys.eventWait(controller.irq, REST_US) catch {};
-        sys.irqAck(controller.irq, serviceIrq() != .quiet);
-    } else {
+/// One wait step: on the controller's interrupt, or on the clock before the
+/// line is routed.
+fn rest() hc.Rest {
+    if (controller.irq == 0) {
         sys.sleepMicros(REST_US);
+        return .waited;
     }
+
+    sys.eventWait(controller.irq, REST_US) catch {};
+    const outcome = takeTransferCauses();
+    sys.irqAck(controller.irq, outcome == .reborn);
+    return outcome;
+}
+
+/// Acknowledge transfer and failure causes until none is latched. A port
+/// change stays latched, with its interrupt disabled until the transfer
+/// ends.
+fn takeTransferCauses() hc.Rest {
+    for (0..causes.ROUNDS) |_| {
+        const latched: Status = @bitCast(opRead(.status));
+        if (latched.port_change and !controller.ports_held) {
+            enable(Interrupts.HOLDING);
+            controller.ports_held = true;
+        }
+        const taken = causes.intersect(latched, Interrupts.HOLDING);
+        if (taken == Status{}) return .waited;
+        opWrite(.status, @bitCast(taken));
+        if (taken.host_error) {
+            hostError();
+            controller.reborn = true;
+            return .reborn;
+        }
+    }
+    return .waited;
+}
+
+/// After a transfer: enable a held port change interrupt again. The change
+/// is still latched, so the controller interrupts for `serviceIrq`.
+fn releasePorts() void {
+    if (!controller.ports_held) return;
+    controller.ports_held = false;
+    if (controller.opened) enable(Interrupts.TAKEN);
+}
+
+/// Write the interrupt enables, then a status write that clears nothing:
+/// QEMU's controller updates its interrupt line only on a status write.
+fn enable(interrupts: Interrupts) void {
+    opWrite(.interrupts, @bitCast(interrupts));
+    opWrite(.status, @bitCast(Status{}));
 }
 
 /// What became of a transfer that did not finish: every descriptor's
@@ -1267,6 +1326,7 @@ fn sayUnfinished(
 }
 
 fn awaitStages(stages: usize, data: []u8, reading: bool, wants_data: bool) hc.Error!usize {
+    defer releasePorts();
     const arena = controller.arena.at;
     const descriptors = arena.stages[0..stages];
 
@@ -1277,7 +1337,8 @@ fn awaitStages(stages: usize, data: []u8, reading: bool, wants_data: bool) hc.Er
     var waited_us: u32 = 0;
     const DEADLINE_US: u32 = 1_000_000;
     while (waited_us < DEADLINE_US) {
-        rest();
+        // A rebuild discards the schedule the stages were on.
+        if (rest() == .reborn) return hc.Error.Refused;
         waited_us += REST_US;
         if (transfer.settled(Barrier, descriptors)) break;
     }

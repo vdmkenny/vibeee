@@ -386,11 +386,29 @@ watched endpoint, all hung from every slot of the interrupt table, so each is vi
 every frame and costs nothing until the device answers. A transfer fills the tail
 descriptor and those after it, links a fresh tail, and moves the tail pointer last
 (`ohci/queue.zig`). The last descriptor asks for an interrupt; a failure raises one
-and halts the endpoint, whose head the driver then moves to the tail. A transfer's
-wait takes only the done and unrecoverable interrupts; a root hub change is disabled
-for the rest of the wait and re-enabled after, so the loop hears it. OUT data goes 32
-packets at a time: some controllers, QEMU's among them, stop past about that many
-packets of one endpoint in a pass.
+and halts the endpoint, whose head the driver then moves to the tail. Transfer waits:
+§5.6.2. OUT data goes 32 packets at a time: some controllers, QEMU's among them, stop
+past about that many packets of one endpoint in a pass.
+
+### 5.6.2 Transfer waits and interrupt passes
+
+All three controller drivers:
+
+- A transfer waits in 50 ms steps on the controller's interrupt. A step acknowledges
+  transfer and failure causes only.
+- `serviceIrq` and each wait step read the status register until no cause they take is
+  latched, at most 8 reads (`usbd/causes.zig`). A cause latched after a read raises no
+  new edge on an edge-triggered line.
+- A root port change stays latched through a transfer:
+  - EHCI: port change interrupt disabled for the rest of the transfer, enabled after it.
+    Each enable write is followed by a status write that clears nothing: QEMU updates
+    its interrupt line only on status writes.
+  - OHCI: root hub change interrupt, the same.
+  - UHCI: no port change interrupt. A wait step does not read the ports. After the
+    transfer the driver marks itself due if a port change is latched, and the event
+    loop services due controllers after each event (`HcOps.serviceDue`).
+- A controller rebuilt or closed during a wait ends the transfer with `Refused`, and the
+  next `serviceIrq` returns `reborn`.
 
 ### 5.7 Enumeration state machine (core, speed-independent)
 

@@ -264,6 +264,10 @@ fn serve() noreturn {
             if (driver.ops.woke) |look| look();
         }
 
+        // After the transfers this event caused: a UHCI controller raises no
+        // interrupt for a port change or a rebuild seen during one.
+        serviceDueControllers();
+
         // After the drivers, not only after a root port changed. A hub's
         // ports are the hub driver's to watch, and what it finds arrives
         // here two calls away from the walk: a disk plugged into a hub was
@@ -281,30 +285,7 @@ fn dispatch(index: usize, woke_on: u32) void {
     }
     if (index == 0) return drain();
 
-    if (index <= controller_count) {
-        const which = index - 1;
-        const controller = &controllers[which];
-        // The controller says what its interrupt amounted to; the bus is
-        // walked only when something moved, and a rebuilt controller's
-        // book is swept before the walk.
-        const outcome = controller.ops.serviceIrq();
-        switch (outcome) {
-            .quiet => {},
-            .ports_changed => {
-                if (core.scan(@intCast(which), controller.ops) > 0) scanAll();
-            },
-            .reborn => {
-                // The reborn controller's book is swept, and every
-                // controller is walked rather than just this one: a
-                // surrendered controller's ports fall to the companions,
-                // and only a walk of theirs picks the devices back up.
-                core.forgetController(@intCast(which));
-                scanAll();
-            },
-        }
-        sys.irqAck(controller.irq, outcome != .quiet);
-        return;
-    }
+    if (index <= controller_count) return serviceController(index - 1);
 
     // A program asking about a serial port, or saying it has written
     // something to one.
@@ -314,6 +295,44 @@ fn dispatch(index: usize, woke_on: u32) void {
     // A volume's doorbell: the kernel wants blocks.
     if (volume.forDoorbell(woke_on)) |offered| volume.serve(offered);
 }
+
+/// Service one controller: walk its ports when one changed, and sweep its
+/// devices and walk every controller when it was rebuilt.
+fn serviceController(which: usize) void {
+    const controller = &controllers[which];
+    const outcome = controller.ops.serviceIrq();
+    switch (outcome) {
+        .quiet => {},
+        .ports_changed => {
+            if (core.scan(@intCast(which), controller.ops) > 0) scanAll();
+        },
+        .reborn => {
+            // Every controller is walked, not just this one: a surrendered
+            // controller's ports fall to the companions.
+            core.forgetController(@intCast(which));
+            scanAll();
+        },
+    }
+    sys.irqAck(controller.irq, outcome != .quiet);
+}
+
+/// Service the controllers whose transfer waits left a port change or a
+/// rebuild. A service's own transfers can leave more, so this repeats,
+/// up to `DUE_ROUNDS` times, until none is due.
+fn serviceDueControllers() void {
+    for (0..DUE_ROUNDS) |_| {
+        var serviced = false;
+        for (controllers[0..controller_count], 0..) |controller, which| {
+            const due = controller.ops.serviceDue orelse continue;
+            if (!due()) continue;
+            serviceController(which);
+            serviced = true;
+        }
+        if (!serviced) return;
+    }
+}
+
+const DUE_ROUNDS = 4;
 
 /// The request to go, or zero when the kernel gave none.
 var quit_event: u32 = 0;

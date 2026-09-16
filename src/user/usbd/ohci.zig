@@ -13,6 +13,7 @@
 //! The seam above is `HcOps`, bound per unit by `hc.unitOps`: a chipset
 //! carries its OHCI controllers as separate functions.
 
+const causes = @import("causes.zig");
 const device = @import("ulib").device;
 const hc = @import("hc.zig");
 const lib = @import("lib");
@@ -71,6 +72,10 @@ const TAKEN = ohci.Interrupts{
     .hub_changed = true,
     .master = true,
 };
+
+/// The causes a transfer's wait acknowledges. A hub change stays latched for
+/// `serviceIrq`.
+const WAIT_TAKES = ohci.Interrupts{ .done = true, .unrecoverable = true };
 
 // Timing, from the specifications. A sleep lasts at least one scheduler tick.
 
@@ -314,18 +319,25 @@ pub fn serviceIrq(self: *Unit) hc.Service {
     self.reborn = false;
     if (!self.opened) return if (reborn) .reborn else .quiet;
 
-    const latched: ohci.Interrupts = @bitCast(self.regs.read(.interrupt_status));
-    if (latched == ohci.Interrupts.ALL) return gone(self);
-    if (latched.done) self.arena.at.hcca.done_head = 0;
-    self.regs.write(.interrupt_status, @bitCast(ohci.Interrupts{
-        .done = latched.done,
-        .unrecoverable = latched.unrecoverable,
-        .hub_changed = latched.hub_changed,
-    }));
-    if (latched.unrecoverable) return stopped(self);
+    var moved = false;
+    for (0..causes.ROUNDS) |_| {
+        const latched: ohci.Interrupts = @bitCast(self.regs.read(.interrupt_status));
+        if (latched == ohci.Interrupts.ALL) return gone(self);
+        const taken = causes.intersect(latched, TAKEN);
+        if (taken == ohci.Interrupts{}) break;
+        if (taken.done) self.arena.at.hcca.done_head = 0;
+        // The ports before the status: on some controllers the hub change
+        // stays asserted while any port's change is set.
+        if (taken.hub_changed and acknowledgePorts(self)) moved = true;
+        self.regs.write(.interrupt_status, @bitCast(taken));
+        if (taken.unrecoverable) return stopped(self);
+    }
+    if (reborn) return .reborn;
+    return if (moved) .ports_changed else .quiet;
+}
 
-    // Every port's changes are cleared together: on some controllers the
-    // hub interrupt stays asserted while any of them is set.
+/// Acknowledge every port's changes. Returns whether any port had one.
+fn acknowledgePorts(self: *Unit) bool {
     var moved = false;
     for (0..self.ports) |index| {
         const status = portRead(self, @intCast(index));
@@ -333,34 +345,49 @@ pub fn serviceIrq(self: *Unit) hc.Service {
         portWrite(self, @intCast(index), .acknowledging(status));
         moved = true;
     }
-    if (reborn) return .reborn;
-    return if (moved) .ports_changed else .quiet;
+    return moved;
 }
 
-/// Wait for the controller while a transfer is under way. Only what the
-/// transfer needs is taken here: a finished descriptor, and a controller
-/// that has failed. A hub change is held back for the bus to hear after.
-fn rest(self: *Unit) void {
-    if (self.irq == 0) return sys.sleepMicros(REST_US);
+/// One wait step during a transfer: on the controller's interrupt, or on the
+/// clock before the line is routed.
+fn rest(self: *Unit) hc.Rest {
+    if (self.irq == 0) {
+        sys.sleepMicros(REST_US);
+        return .waited;
+    }
 
     sys.eventWait(self.irq, REST_US) catch {};
-    const latched: ohci.Interrupts = @bitCast(self.regs.read(.interrupt_status));
-    if (latched == ohci.Interrupts.ALL) {
-        _ = gone(self);
-        self.reborn = true;
-    } else {
-        if (latched.done) self.arena.at.hcca.done_head = 0;
-        self.regs.write(.interrupt_status, @bitCast(ohci.Interrupts{ .done = latched.done, .unrecoverable = latched.unrecoverable }));
+    const outcome = takeTransferCauses(self);
+    sys.irqAck(self.irq, true);
+    return outcome;
+}
+
+/// Acknowledge finished descriptors and failures until none is latched. A
+/// hub change stays latched, with its interrupt disabled until the transfer
+/// ends.
+fn takeTransferCauses(self: *Unit) hc.Rest {
+    for (0..causes.ROUNDS) |_| {
+        const latched: ohci.Interrupts = @bitCast(self.regs.read(.interrupt_status));
+        if (latched == ohci.Interrupts.ALL) {
+            _ = gone(self);
+            self.reborn = true;
+            return .reborn;
+        }
         if (latched.hub_changed and !self.hub_held) {
             self.regs.write(.interrupt_disable, @bitCast(ohci.Interrupts{ .hub_changed = true }));
             self.hub_held = true;
         }
-        if (latched.unrecoverable) {
+        const taken = causes.intersect(latched, WAIT_TAKES);
+        if (taken == ohci.Interrupts{}) return .waited;
+        if (taken.done) self.arena.at.hcca.done_head = 0;
+        self.regs.write(.interrupt_status, @bitCast(taken));
+        if (taken.unrecoverable) {
             _ = stopped(self);
             self.reborn = true;
+            return .reborn;
         }
     }
-    sys.irqAck(self.irq, true);
+    return .waited;
 }
 
 /// Let a held hub change through: its status is still latched, so the
@@ -537,7 +564,6 @@ fn finish(
 
     var waited: u32 = 0;
     while (!pending.settled()) : (waited += REST_US) {
-        if (!self.opened) return hc.Error.Refused;
         if (waited >= patience_us) {
             endpoint.control.skip = true;
             sys.sleepMicros(FRAME_US);
@@ -545,7 +571,8 @@ fn finish(
             endpoint.control.skip = false;
             return hc.Error.Timeout;
         }
-        rest(self);
+        // A rebuild discards the queues the transfer was on.
+        if (rest(self) == .reborn) return hc.Error.Refused;
     }
 
     return switch (pending.result(counted)) {

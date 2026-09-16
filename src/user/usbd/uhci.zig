@@ -15,6 +15,7 @@
 //! time by `hc.unitOps`.
 
 const device = @import("ulib").device;
+const causes = @import("causes.zig");
 const hc = @import("hc.zig");
 const log = @import("ulib").log;
 const out = @import("ulib").out;
@@ -82,6 +83,12 @@ const Status = packed struct(u16) {
         .host_system_error = true,
         .process_error = true,
     };
+
+    /// The controller stopped itself: the bus refused one of its accesses,
+    /// or its schedule was malformed.
+    fn failed(self: Status) bool {
+        return self.host_system_error or self.process_error;
+    }
 };
 
 const Interrupts = packed struct(u16) {
@@ -335,6 +342,12 @@ const Device = struct {
     /// The one clean rebuild a stop is answered with.
     rebuilt: bool = false,
     irq: u32 = 0,
+    /// A transfer's wait found the controller failed and rebuilt or closed
+    /// it. Reported by the next `serviceIrq`.
+    reborn: bool = false,
+    /// A transfer ended with a port change latched or the controller
+    /// rebuilt. Cleared by `serviceIrq`.
+    service_due: bool = false,
 };
 
 const Watch = struct {
@@ -597,24 +610,29 @@ pub fn rebuild(self: *Unit) bool {
     return true;
 }
 
+/// Acknowledge the controller's causes until none is latched, then the
+/// ports. Reports a port change, or a rebuild in this pass or in a
+/// transfer's wait.
 pub fn serviceIrq(self: *Unit) hc.Service {
-    if (!self.controller.opened) return .quiet;
+    const reborn = self.controller.reborn;
+    self.controller.reborn = false;
+    self.controller.service_due = false;
+    if (!self.controller.opened) return if (reborn) .reborn else .quiet;
 
-    const status = self.controller.window.read(Status, .status);
-
-    // Write back only the bits that were set: a blanket acknowledgement
-    // would swallow something that arrived between the read and the write.
-    self.controller.window.write(.status, status);
-
-    if (status.host_system_error or status.process_error) {
-        stopped(self, status);
-        return .reborn;
+    for (0..causes.ROUNDS) |_| {
+        const taken = causes.intersect(self.controller.window.read(Status, .status), Status.ACK);
+        if (taken == Status{}) break;
+        // Write-one-to-clear, the causes read only: one latched after the
+        // read stays for the next round.
+        self.controller.window.write(.status, taken);
+        if (taken.failed()) {
+            stopped(self, taken);
+            return .reborn;
+        }
     }
 
-    // This controller has no interrupt of its own for a port changing, so
-    // the ports are read whenever it interrupts for anything, and once
-    // more each time the bus asks. A change is rare and the read is two
-    // I/O cycles.
+    // No port change interrupt on this controller: the ports are read on
+    // every service pass and at every scan.
     var index: u8 = 0;
     var moved = false;
     while (index < PORTS) : (index += 1) {
@@ -623,6 +641,7 @@ pub fn serviceIrq(self: *Unit) hc.Service {
         portWrite(self, index, acknowledge(port));
         moved = true;
     }
+    if (reborn) return .reborn;
     return if (moved) .ports_changed else .quiet;
 }
 
@@ -838,11 +857,13 @@ pub fn bulk(self: *Unit, pipe: *usb.Pipe, data: []u8) hc.Error!usize {
 /// Wait for a queued chain, on the controller's interrupt rather than on
 /// the clock, and say what became of it.
 fn settle(self: *Unit, count: usize, patience_us: u32) hc.Error!void {
+    defer requestService(self);
     const arena = self.controller.arena.at;
 
     var waited: u32 = 0;
     while (waited < patience_us) {
-        rest(self);
+        // A rebuild discards the schedule the chain was on.
+        if (rest(self) == .reborn) return hc.Error.Refused;
         waited += REST_US;
         if (!arena.chain[count - 1].control.active) break;
         if (failedAnywhere(self, count)) break;
@@ -873,13 +894,54 @@ fn failedAnywhere(self: *Unit, count: usize) bool {
 
 const REST_US: u32 = 50_000;
 
-fn rest(self: *Unit) void {
-    if (self.controller.irq != 0) {
-        sys.eventWait(self.controller.irq, REST_US) catch {};
-        sys.irqAck(self.controller.irq, serviceIrq(self) != .quiet);
-    } else {
+/// One wait step: on the controller's interrupt, or on the clock before the
+/// line is routed.
+fn rest(self: *Unit) hc.Rest {
+    if (self.controller.irq == 0) {
         sys.sleepMicros(REST_US);
+        return .waited;
     }
+
+    sys.eventWait(self.controller.irq, REST_US) catch {};
+    const outcome = takeTransferCauses(self);
+    sys.irqAck(self.controller.irq, outcome == .reborn);
+    return outcome;
+}
+
+/// Acknowledge status causes until none is latched. The ports are not
+/// read: their change bits stay latched for `serviceIrq`.
+fn takeTransferCauses(self: *Unit) hc.Rest {
+    for (0..causes.ROUNDS) |_| {
+        const taken = causes.intersect(self.controller.window.read(Status, .status), Status.ACK);
+        if (taken == Status{}) return .waited;
+        self.controller.window.write(.status, taken);
+        if (taken.failed()) {
+            stopped(self, taken);
+            self.controller.reborn = true;
+            return .reborn;
+        }
+    }
+    return .waited;
+}
+
+/// After a transfer: mark `serviceIrq` due if a port change is latched or
+/// the controller was rebuilt. This controller raises no interrupt for
+/// either.
+fn requestService(self: *Unit) void {
+    if (self.controller.reborn or (self.controller.opened and portsChanged(self))) {
+        self.controller.service_due = true;
+    }
+}
+
+pub fn serviceDue(self: *Unit) bool {
+    return self.controller.service_due;
+}
+
+fn portsChanged(self: *Unit) bool {
+    for (0..PORTS) |index| {
+        if (portRead(self, @intCast(index)).changed()) return true;
+    }
+    return false;
 }
 
 // ---------------------------------------------------------------------------
