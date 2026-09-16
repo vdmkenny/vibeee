@@ -1,10 +1,7 @@
-//! check: compare a volume against itself, and repair what can be.
+//! check: check a mounted volume and repair it. See `fat/check.zig`.
 //!
-//! The command behind what `mount` does by itself on a volume that was not
-//! unmounted cleanly. See `fat/check.zig` for what is compared.
-//!
-//!   check /home        repair what can be repaired
-//!   check -n /home     say what is wrong and change nothing
+//!   check /home        check and repair
+//!   check -n /home     report only
 
 const std = @import("std");
 const abi = @import("lib").syscalls;
@@ -33,7 +30,7 @@ pub fn run(args: []const []const u8) void {
 
     if (report.quiet()) {
         out.text(path);
-        out.text(": nothing to put right\n");
+        out.text(": clean\n");
         out.flush();
         return;
     }
@@ -41,20 +38,20 @@ pub fn run(args: []const []const u8) void {
     out.text(path);
     out.text(":\n");
 
-    say(report.lost, "clusters nothing pointed at");
-    say(report.reclaimed, "of those given back");
-    say(report.trimmed, "chains cut back to their record");
-    say(report.resized, "records brought down to their chain");
-    say(report.broken, "chains that left the volume or looped");
-    say(report.mirrored, "table sectors brought back into step");
-    say(report.crossed, "clusters claimed twice, which were left alone");
-    say(report.too_deep, "directories too deeply nested to walk");
+    say(report.lost, "lost clusters");
+    say(report.reclaimed, "clusters freed");
+    say(report.trimmed, "chains trimmed");
+    say(report.resized, "sizes corrected");
+    say(report.broken, "broken chains");
+    say(report.mirrored, "FAT sectors resynchronised");
+    say(report.crossed, "cross-linked clusters, not repaired");
+    say(report.too_deep, "directories too deep to check");
 
     if (!report.sound()) {
         out.text(path);
-        out.text(" is mounted read-only: repair it on another machine\n");
+        out.text(": read-only until repaired on another system\n");
     } else if (flags.report_only) {
-        out.text("nothing was changed\n");
+        out.text("no changes made\n");
     }
     out.flush();
 }

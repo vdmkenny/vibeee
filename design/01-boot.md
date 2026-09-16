@@ -5,14 +5,13 @@
 > Built and working ([`boot/stage1.asm`](../boot/stage1.asm), [`boot/stage2.asm`](../boot/stage2.asm),
 > [`tools/mkimage.zig`](../tools/mkimage.zig)): MBR stage1 loading stage2 over INT 13h EDD;
 > stage2 doing A20, E820 capture, RSDP scan, kernel load to 1 MiB through unreal mode, and
-> protected-mode handoff via the `BootInfo` struct; the medium's own partition signature
-> recorded so the kernel can find the disk it booted from; a two-second window in which the
-> boot line can be typed at; a dd-able image of three partitions, the second and third
-> mounted as /cfg and /home.
+> protected-mode handoff via `BootInfo`; the boot medium's partition signature recorded
+> for the kernel; a two-second window to edit the command line; a dd-able image of three
+> partitions, the second and third mounted as /cfg and /home.
 >
-> Designed but not built: FAT16 boot partition, zstd rootfs container, A/B copies with the
-> boot journal and 3-strike fallback, the full boot menu, and the recovery TUI. The kernel
-> is currently loaded as a flat binary from a fixed LBA run instead.
+> Not built: FAT16 boot partition, zstd rootfs container, A/B copies with boot journal and
+> 3-strike fallback, full boot menu, recovery TUI. The kernel is loaded as a flat binary
+> from a fixed LBA range.
 >
 > Where this document and [`00-vibeee.md`](00-vibeee.md) disagree, the master design wins.
 

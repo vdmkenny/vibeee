@@ -1,11 +1,10 @@
 //! Writing a new filesystem onto a volume.
 //!
 //! Chooses a geometry with `fat/layout.zig`, then writes the boot sector, the
-//! allocation tables and an empty root directory. Nothing else is touched:
-//! the data area past the root keeps whatever was there, since no chain
-//! reaches it.
+//! allocation tables and an empty root directory. The data area past the root
+//! is not cleared; no chain reaches it.
 //!
-//! The volume is left marked clean, so the first mount does not check it.
+//! The volume is left marked clean.
 
 const std = @import("std");
 const block = @import("../block.zig");
@@ -18,8 +17,7 @@ pub const Error = layout.Error || table.Error || bulk.Error;
 pub const Wanted = layout.Wanted;
 pub const Geometry = layout.Geometry;
 
-/// The media descriptor a fixed disk gets, which the first table entry
-/// carries in its low byte.
+/// Media descriptor for a fixed disk. Stored in the low byte of FAT entry 0.
 const MEDIA_FIXED: u8 = 0xF8;
 
 /// Make a filesystem on `dev` covering the whole of it.
@@ -56,8 +54,8 @@ fn writeBootSector(dev: *const block.Device, geometry: Geometry, at: u32) Error!
     dev.write(at, &sector) catch return error.Io;
 }
 
-/// FAT32's free-cluster hint. Advisory: this driver counts the table instead,
-/// and writes this so that systems which trust it are not misled.
+/// FAT32's free-cluster hint. This driver counts the table instead; the hint is
+/// written for other systems.
 fn writeFsInfo(dev: *const block.Device, geometry: Geometry) Error!void {
     var sector: [block.SECTOR_SIZE]u8 = @splat(0);
     const info: *align(1) FsInfo = @ptrCast(&sector);
@@ -70,8 +68,7 @@ fn writeFsInfo(dev: *const block.Device, geometry: Geometry) Error!void {
     dev.write(layout.FSINFO_SECTOR, &sector) catch return error.Io;
 }
 
-/// The hint sector's fields, at the offsets the format gives them. The gap
-/// between the two signatures is reserved and stays zero.
+/// FSInfo sector layout. The gap between the signatures is reserved and zero.
 const FsInfo = extern struct {
     lead_signature: u32 align(1) = 0x4161_5252,
     reserved: [480]u8 = @splat(0),
@@ -88,12 +85,11 @@ fn clearTables(dev: *const block.Device, geometry: Geometry) Error!void {
     }
 }
 
-/// The entries the format reserves at the front of every table.
+/// The reserved entries at the front of every table.
 ///
-/// Entry zero carries the media descriptor in its low byte and ones above it.
-/// Entry one carries the clean and hard-error flags, and all ones means both
-/// are set, so a volume is clean the moment it is made. On FAT32 the root
-/// directory is a chain of one cluster, which is entry two.
+/// Entry 0: media descriptor in the low byte, ones above. Entry 1: all ones,
+/// which sets the clean and no-error flags. FAT32 entry 2: end of chain, for the
+/// one-cluster root directory.
 fn writeFirstEntries(dev: *const block.Device, geometry: Geometry) Error!void {
     var entries = tableOf(dev, geometry);
     const ends = table.sentinels(geometry.kind).terminator;
@@ -105,9 +101,9 @@ fn writeFirstEntries(dev: *const block.Device, geometry: Geometry) Error!void {
 
 fn clearRoot(dev: *const block.Device, geometry: Geometry) Error!void {
     return switch (geometry.kind) {
-        // A fixed run of sectors before the data area.
+        // Fixed sectors before the data area.
         .fat12, .fat16 => bulk.clear(dev, geometry.root_dir_sector, geometry.root_dir_sectors),
-        // One cluster of the data area, which the entry above allocated.
+        // One cluster, allocated by `writeFirstEntries`.
         .fat32 => bulk.clear(
             dev,
             geometry.sectorOf(geometry.root_cluster),
@@ -116,7 +112,7 @@ fn clearRoot(dev: *const block.Device, geometry: Geometry) Error!void {
     };
 }
 
-/// A table over a device, for the few entries written here.
+/// A table over `dev`, for writing the reserved entries.
 fn tableOf(dev: *const block.Device, geometry: Geometry) table.Table {
     return .{
         .dev = dev,
@@ -144,8 +140,8 @@ const Blank = struct {
     fn init(gpa: std.mem.Allocator, sectors: u32) !*Blank {
         const self = try gpa.create(Blank);
         self.* = .{ .gpa = gpa, .bytes = try gpa.alloc(u8, sectors * block.SECTOR_SIZE) };
-        // Not zeroed: a medium being formatted holds whatever was on it, and
-        // a formatter that only works on a blank one is not one.
+        // Filled with a pattern, not zeros, so the formatter is tested against
+        // old contents.
         @memset(self.bytes, 0xA5);
         self.medium = .{ .bytes = self.bytes };
         self.dev = self.medium.device("blank");
@@ -192,12 +188,11 @@ test "a volume just formatted is empty, clean, and has nothing wrong with it" {
         const used: u32 = if (written.kind == .fat32) 1 else 0;
         try testing.expectEqual(written.cluster_count - used, try fat.freeClusters(&volume));
 
-        // Made clean, so the first mount does not check it. FAT12 has
-        // nowhere to record that and is checked every mount instead.
+        // Clean on FAT16 and FAT32. FAT12 records nothing.
         const expected: clean.State = if (written.kind == .fat12) .unrecorded else .clean;
         try testing.expectEqual(expected, try clean.state(&volume.fat));
 
-        // And the check agrees there is nothing to do.
+        // The check finds nothing.
         const found = try check.run(&volume, testing.allocator, .{});
         try testing.expect(found.quiet());
     }
@@ -229,8 +224,7 @@ test "a volume just formatted holds files, and still checks out" {
 }
 
 test "each kind can be asked for, and is what comes back" {
-    // A caller that wants a particular width gets it or is told the volume
-    // cannot hold one, never a different width without being told.
+    // A named width is honoured or refused, never substituted.
     const cases = [_]struct { kind: layout.Kind, sectors: u32 }{
         .{ .kind = .fat12, .sectors = 2048 },
         .{ .kind = .fat16, .sectors = 70_000 },

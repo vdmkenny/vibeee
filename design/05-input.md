@@ -6,12 +6,12 @@
 >
 > Also built: the PS/2 pointing device on the controller's second port ([`drv/input/ps2mouse.zig`](../src/drv/input/ps2mouse.zig)), with the Synaptics and Elantech probe ladder, three buttons, wheel negotiation and a pointer event queue that distinguishes a click from a drag.
 >
-> Not yet: absolute mode for either pad, so no tap zones, edge scrolling or multi-finger gestures; `/dev/input`; and the ATKD hotkeys.
+> Not yet: absolute mode for either pad (no tap zones, edge scrolling or gestures); `/dev/input`. ATKD hotkey decoding is written in `platd`; its notifications are gated off on the 701.
 >
 > Where this document and [`00-vibeee.md`](00-vibeee.md) disagree, the master design
 > wins: it carries later decisions this document predates.
 
-Status: implementation-ready design. Target: ASUS Eee PC 701 4G only.
+Target: ASUS Eee PC 701 4G.
 Scope: i8042 controller, PS/2 keyboard (set-2 decode, keycodes), touchpad
 (Synaptics/Elantech/bare-PS/2 probe ladder), kernel input core + /dev/input,
 ACPI hotkey injection, USB HID injection from usbd, and the layered keymap

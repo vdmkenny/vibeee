@@ -2,9 +2,8 @@
 
 > Where this document and [`00-vibeee.md`](00-vibeee.md) disagree, the master design wins.
 
-Status: implemented for the AC'97 controller, verified end to end in QEMU (a tone
-reaches the wav backend at the right frequency, mixing and volume proven). The
-HDA/ALC662 path for the real machine's hardware is designed and not yet written.
+Status: implemented for AC'97 and HDA. AC'97 verified in QEMU against the wav backend
+(frequency, mixing, volume). HDA verified in QEMU and by ear on the 701's ALC662.
 
 **The architecture is a routing graph, not a fixed mixer.** The rest of this
 document predates that decision and describes the fixed-path mixer it replaced;

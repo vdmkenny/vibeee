@@ -3,13 +3,11 @@
 > Where this document and [`00-vibeee.md`](00-vibeee.md) disagree, the master design wins:
 > it carries later decisions this document predates.
 
-Status: implemented through N2, except where a line says otherwise. The driver
-layer, the lwIP stack, interface management with matcher slots, DHCP, ICMP with
-`ping`, the loopback interface, the socket bridge with `nc`, and resolution with
-the hosts table and `resolve` all run, verified in QEMU end to end and on the
-machine for everything the machine can carry. WiFi (§5) is partly done: on the machine the
-radio comes up, scans, joins a protected network and takes a DHCP lease, but carrying
-traffic over it is not confirmed. `docs/status.md` records what each run showed.
+Status: implemented through N2 unless noted. Driver layer, lwIP, interface matcher
+slots, DHCP, ICMP and `ping`, loopback, the socket bridge and `nc`, hosts-table and DNS
+resolution: verified in QEMU and on the 701's wired port. Wi-Fi (§5): the radio scans,
+joins a WPA2 network and takes a DHCP lease on the 701; traffic is not confirmed. See
+`docs/status.md`.
 
 Scope: lwIP-based TCP/IP stack inside netd, interface lifecycle and configuration
 through cfgd, DHCP for unconfigured interfaces, ICMP with `ping`, a stream tool `nc`,

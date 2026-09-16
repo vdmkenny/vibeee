@@ -4,7 +4,7 @@
 >
 > Built and working: the block layer with partition parsing ([`block.zig`](../src/kernel/block.zig)), the block cache ([`bcache.zig`](../src/kernel/bcache.zig)), FAT12/16/32 with VFAT long names ([`fat.zig`](../src/kernel/fat.zig)), the mount table and longest-prefix path resolution ([`vfs.zig`](../src/kernel/vfs.zig)), reads and writes through ATA PIO ([`drv/block/ata.zig`](../src/drv/block/ata.zig)), removable media through usbd, and the boot ramdisk.
 >
-> Also built: the clean-unmount flag and the volume check it gates ([`fat/clean.zig`](../src/kernel/fat/clean.zig), [`fat/check.zig`](../src/kernel/fat/check.zig)). A volume not unmounted cleanly is checked at mount; `check` runs the same on demand. And §12's `mkfs.fat`, as [`fat/format.zig`](../src/kernel/fat/format.zig) behind the `format` command, with [`fat/grow.zig`](../src/kernel/fat/grow.zig) behind `grow` to extend a partition and its filesystem over a card larger than the image written to it. The installer of §12 itself is not built.
+> Also built: the clean-unmount flag and the volume check ([`fat/clean.zig`](../src/kernel/fat/clean.zig), [`fat/check.zig`](../src/kernel/fat/check.zig)); a dirty volume is checked at mount, and `check` runs the same on demand. Formatting ([`fat/format.zig`](../src/kernel/fat/format.zig), `format`) and growing a partition and its filesystem into free space after it ([`fat/grow.zig`](../src/kernel/fat/grow.zig), `grow`), both in the kernel. The §12 installer is not built.
 >
 > Not yet: bus-master DMA (§3, designed and not built), the page cache, and the request queue of §4. There is no swap and there will not be one.
 >
@@ -724,18 +724,21 @@ mounts asynchronously).
 **Kernel ELF share (~70 KB of 1.5 MB):** pata 6 + block and partitions 10 +
 cache 10 + fatfs 25 + ramdisk 2 + ublk bridge 6 + glue 10 (KB, ReleaseSmall
 estimates).
-**Root image share:** `mkfs.fat` and the installer, ~40 KB.
+**Kernel share, formatting and growing:** in the kernel beside the FAT driver, since
+both need raw access to an unmounted volume.
+**Root image share:** the installer, ~40 KB.
 **Idle RAM share (of 48 MiB):** the root image ~12 MiB (pinned) + FAT and driver
 state ~0.2 MiB + dirty and pinned cache ≤2 MiB ≈ **14.2 MiB pinned**. Clean
 cache above that is reclaimable and uncounted.
 
 ## 12. Install to a volume
 
-Installing means giving the system somewhere to keep `/etc` and `/home` across
-a boot. The target is a partition, and which medium holds it is not something
-the rest of the system knows: the remaining space on the SD card the machine
-booted from is as valid a target as the internal SSD, and is the safer one on a
-machine whose SSD holds something else.
+Installing gives the system a persistent place for `/etc` and `/home`. The target
+is a partition on any medium: free space on the boot SD card is as valid as the
+internal SSD, and safer on a machine whose SSD holds another system.
+
+Using the rest of the boot card without installing is already possible: `grow`
+extends the card's `/home` partition and filesystem over free space after it.
 
 The installer runs from the booted system:
 
@@ -749,17 +752,17 @@ The installer runs from the booted system:
    FAT32 across the rest. An optional `0xEF` partition at the end is left empty
    for AMI BootBooster, which caches POST into it and takes seconds off the
    boot; the BIOS owns its contents.
-3. `mkfs.fat` both, copy the bootloader stages, kernel and root image, and write
-   01-boot's 440 B MBR code, preserving the partition table and disk signature.
+3. Format both with `format`, copy the bootloader stages, kernel and root image, and
+   write 01-boot's 440 B MBR code, preserving the partition table and disk signature.
 4. Seed the persistent volume from the root image's `/etc` and `/home`, and
    write `/etc/fstab` naming it by disk signature and partition index rather
    than by enumeration order, so plugging in a second card does not move it.
 5. Verify: FLUSH CACHE, then read back and compare CRC32s of the MBR, the boot
    files and the seeded tree. Only then report success.
 
-Failure before the MBR write is a no-op. The MBR is written last, into a staging
-sector and verified before being written to LBA 0, so a yank mid-install leaves
-either the old table or the new one and never a mixture.
+Failure before the MBR write changes nothing. The MBR is written last: to a staging
+sector, verified, then to LBA 0, so an interrupted install leaves either the old table
+or the new one.
 
 ## 13. Risks & open questions
 

@@ -1,23 +1,18 @@
 # Status
 
-What exists, file by file. Kept plain on purpose: the design documents say what the system
-is *for*, this says what has actually been written.
+What exists, by file. The design documents describe intent; this describes what is
+written. Nothing here has been audited; see the README.
 
-The inventory is accurate about what exists; it is not a claim that any of it has been
-audited. See the README for the honest warning.
-
-No counts here: lines, syscalls and tests all change faster than a document can
-follow, and a number that is wrong is worse than one that was never given. Git
-knows when this was last true, and the tree knows how big it is.
+No counts: they go stale. Git records when this was last true.
 
 ## Boot
 
 | Component | File | State |
 |---|---|---|
 | MBR, 440 bytes | [`boot/stage1.asm`](../boot/stage1.asm) | Done. INT 13h EDD only. |
-| Real-mode loader | [`boot/stage2.asm`](../boot/stage2.asm) | A20, E820, RSDP scan, unreal-mode kernel load, VBE mode set, font copy, cmdline, log ring. |
+| Real-mode loader | [`boot/stage2.asm`](../boot/stage2.asm) | A20, E820, RSDP scan, unreal-mode kernel load, VBE mode set, font copy, cmdline, log ring. Shows the command line and waits two seconds for a key to edit it; the edit lasts one boot and is never written to the medium. |
 | Image builder | [`tools/mkimage.zig`](../tools/mkimage.zig) | Partition table, stage placement, rootfs append. |
-| Higher-half entry | [`src/arch/x86/boot.zig`](../src/arch/x86/boot.zig), `flatboot.zig`, `multiboot.zig` | Both boot paths converge on one `BootInfo`. |
+| Higher-half entry | [`src/arch/x86/boot.zig`](../src/arch/x86/boot.zig), `flatboot.zig`, `multiboot.zig` | Both boot paths produce one `BootInfo`. |
 
 ## Kernel core
 
@@ -26,515 +21,538 @@ knows when this was last true, and the tree knows how big it is.
 | Physical memory | [`pmm.zig`](../src/kernel/pmm.zig) | Bitmap allocator over E820. |
 | Paging | [`arch/x86/paging.zig`](../src/arch/x86/paging.zig) | 2-level non-PAE, 4 MiB linear map, MMIO window, per-process spaces. |
 | Heap | [`heap.zig`](../src/kernel/heap.zig) | Slab, exposed as `std.mem.Allocator`. Self-tests at boot. |
-| Scheduler | [`sched.zig`](../src/kernel/sched.zig), [`sched/queue.zig`](../src/kernel/sched/queue.zig), [`sched/thread.zig`](../src/kernel/sched/thread.zig) | O(1), 32 priority levels, preemptive. Queues are unit-tested on the host. |
-| Blocking | [`wait.zig`](../src/kernel/wait.zig) | One mechanism. Waiter nodes on the blocking thread's stack; no allocation. |
-| User stacks | [`arch/x86/usermode.zig`](../src/arch/x86/usermode.zig), [`lib/stack.zig`](../src/lib/stack.zig) | A process starts with sixteen pages and may reach two hundred and fifty-six, which is a megabyte. A fault below what is mapped adds a chunk and runs the instruction again; leaving a syscall hands back what the stack pointer has climbed away from, keeping a chunk under it so a program that dips again does not fault at once. So a shallow program costs sixteen pages and a TLS handshake costs what it reaches, without either being told about the other. Which pages to add and which to return is arithmetic rather than mapping, so it lives in `lib` and is tested on the host. |
+| Scheduler | [`sched.zig`](../src/kernel/sched.zig), [`sched/queue.zig`](../src/kernel/sched/queue.zig), [`sched/thread.zig`](../src/kernel/sched/thread.zig) | O(1), 32 priority levels, preemptive. Queues host-tested. Kernel thread stacks are 8 to 16 KiB. |
+| Blocking | [`wait.zig`](../src/kernel/wait.zig) | Waiter nodes on the blocked thread's stack; no allocation. |
+| User stacks | [`arch/x86/usermode.zig`](../src/arch/x86/usermode.zig), [`lib/stack.zig`](../src/lib/stack.zig) | Start at 16 pages, grow on fault to 256 (1 MiB). Leaving a syscall releases pages above the stack pointer, keeping one chunk below it. The page arithmetic is in `lib` and host-tested. |
 | Events | [`event.zig`](../src/kernel/event.zig) | Counting, with `waitMany`. |
 | Channels | [`channel.zig`](../src/kernel/channel.zig) | Synchronous call/reply, 64-byte payload, generation-tagged reply tokens. |
-| Service registry | [`svc.zig`](../src/kernel/svc.zig) | Name → channel. |
-| Shared memory | [`shm.zig`](../src/kernel/shm.zig), [`lib/ring.zig`](../src/lib/ring.zig) | Segments, refcounted, mapped into a per-process window. Ring layout tested on the host. Frames survive one mapper exiting. |
-| Handles | [`handle.zig`](../src/kernel/handle.zig) | Per-process table, rights bits, console/file/directory/event/channel/shm. Up to four travel with a channel message. |
-| ELF loading | [`elf.zig`](../src/kernel/elf.zig), [`exec.zig`](../src/kernel/exec.zig) | Static ELF32, sync and detached spawn. |
-| Panic record | [`kernel/panicring.zig`](../src/kernel/panicring.zig) | One page of low memory holding the last panic across a warm reboot, magic and checksum guarded so a page firmware clobbered reads as no record rather than a garbled one. The next boot reports it, puts it in the kernel log and clears it. |
-| Kernel log | [`kernel/klog.zig`](../src/kernel/klog.zig) | A 16 KiB ring of everything said: kernel lines recorded whether or not they were printed, and the services' own lines teed into the same ring through the `log` syscall. `verbose` and `debug` are separate command-line gates (see below); a quiet boot can still be read back in full with `log`, and a `debug` line that was never asked for was never recorded. |
-| Capabilities | [`lib/syscalls.zig`](../src/lib/syscalls.zig) | What a process may do, intersected at every spawn so an authority only ever shrinks down the tree. Declared per service in `/etc/services`. `service` covers the names the system's own services answer to ([`lib/services.zig`](../src/lib/services.zig)): every other name is anybody's, so an ordinary program can still be a service, but a program that took `cfg` or `gui` would be asked every settings question on the machine or handed every key its owner types. The session holds none of it, which is why the desktop is started with `svc start eeewm`. |
-| The kernel's own boundary | [`arch/x86/pagetable.zig`](../src/arch/x86/pagetable.zig), [`syscall/context.zig`](../src/kernel/syscall/context.zig), [`kernel/elf/plan.zig`](../src/kernel/elf/plan.zig) | Every buffer a syscall reads or writes is checked page by page against the caller's own mappings: present, reachable from user code, and writable where the kernel is going to write. `userRead` and `userWrite` put the direction in the type, so a handler given somewhere to read cannot write there. A program image is believed whole before a frame is spent on it, in sixty-four bits throughout, and so is every device aperture: the kernel's own MMIO window and the `map_device` call a driver makes, whose span is added in sixty-four bits so that an aperture near the top of addressing cannot carry its end around past zero. `map_device` maps any physical range the page allocator does not own, on the driver's word; that is the contract rather than a bounded window, and the trust is the `driver` capability's, held by the first-party drivers in `etc/services` and nothing else. All of it is host-tested against tables and files built by hand; [`probe`](../src/user/tools/probe.zig) asks the running kernel the same questions from Ring 3. |
-| Driver capabilities | [`kernel/irqevent.zig`](../src/kernel/irqevent.zig), [`syscall/driver.zig`](../src/kernel/syscall/driver.zig) | `irq_attach` hands a device line to userspace as something `wait_many` accepts: the kernel's handler masks and signals, the driver services the device and acknowledges. `ioport_grant` opens ports through the CPU's own permission bitmap, copied into the TSS only when the process holding it changes. `map_device` maps a register aperture uncached, marked as belonging elsewhere so teardown does not hand device memory to the page allocator. `pci_read`/`pci_write` answer configuration space with the kernel as its one owner: the two config ports are one shared index pair, and no driver server reaches them itself. All need the driver capability. |
-| Interrupts | [`kernel/irq.zig`](../src/kernel/irq.zig), [`arch/x86/lapic.zig`](../src/arch/x86/lapic.zig), [`arch/x86/ioapic.zig`](../src/arch/x86/ioapic.zig) | LAPIC and IOAPIC, routed from the MADT with the firmware's polarity and trigger per line. The 8259s remain the fallback for a machine that describes no controller. PCI interrupts take the firmware's `_PRT` routing rather than the legacy pin. The PIRQ pins ride the falling edge of their active-low wires: a level entry owes the controller a completion to drop its remote-IRR, this machine's firmware traps every runtime word said to the controller, the dedicated completion doorbell included, and an edge entry holds no such state. What makes edge lossless is the drivers' own discipline: each services until its status reads quiet, so the wire is released on exit and every later cause is a fresh edge. The SCI alone keeps level semantics with completion deferred until its owner clears the source, and occupies the lowest priority class. IOAPIC entries are established at boot because the firmware co-owns the controller from system management mode, and the runtime never reaches the controller at all, reads and completions included: runtime questions are answered from the boot record of every entry. SCI activation is a separate protocol: uACPI loads without automatic mode entry, explicitly retains legacy mode by default, finalizes handlers, registers the service, claims the line, and only then may perform the FADT-defined ACPI-mode transition. There is no raw SCI_EN syscall bypass. |
-| Syscalls | [`syscall.zig`](../src/kernel/syscall.zig) + [`syscall/`](../src/kernel/syscall/) | Bound to the table at comptime in both directions. SYSENTER where the CPU has it, `int 0x80` otherwise, same register convention either way; userspace asks the kernel which was armed rather than trusting CPUID. |
-| Timekeeping | [`clock.zig`](../src/kernel/clock.zig) | Monotonic + wall clock as offset plus uptime. |
-| Randomness | [`random.zig`](../src/kernel/random.zig) | The machine has no hardware random source, so the kernel takes the gap between interrupts from the common IDT entry and hashes a batch of 32 into a pool, which seeds `std.Random.DefaultCsprng`. The pool wants 256 estimated bits, one an interrupt, so it is ready inside three seconds at the timer rate alone. `random` fills a buffer and says whether enough has been heard for the bytes to be unguessable rather than only unrepeatable; `random_stir` lets a driver holding a source the kernel cannot see, a radio hearing a room, add to the same pool, and needs `Caps.driver`. |
-| Boot watchdog | [`watchdog.zig`](../src/kernel/watchdog.zig) | Armed once interrupts are on, stood down by `boot_ok`. A boot that stops making progress ends in the panic screen, QR and all; an `init` that reports late (see `netlate` below) keeps it armed through the suspect's grace period. |
-| NMI watchdog | [`arch/x86/nmiwatch.zig`](../src/arch/x86/nmiwatch.zig) | The dead man's switch, armed for the machine's whole life on real hardware: a performance counter delivers NMI every couple of seconds, the one delivery no `cli` silences, and each firing asks whether the timer tick advanced. A frozen machine becomes a panic screen naming the interrupted instruction instead of a still photograph; a freeze that leaves no panic behind is thereby convicted of a hung bus transaction or a firmware seizure, the two classes even NMI cannot pierce. Not armed under emulation, whose counters count nothing. The `wedge` boot flag seizes the machine on purpose ten seconds in, to prove the whole path end to end on hardware. |
-| Platform quirks | [`quirks/`](../src/quirks/) | One module per machine family, one registry, evaluated in the early probe against the DMI identity. Rules match vendor, a whole product family (exact names plus prefixes) or a board name; corrections (the EC port pair, the battery percent mislabel) are read by kernel code directly and by `platd` through `sysinfo` (`quirks`, `quirks.ec`, `quirks.battery`, `acpi.pm`). The whole registry is data in, corrections out: no driver imports it, and the layering check enforces that. |
-| Shutdown | [`shutdown.zig`](../src/kernel/shutdown.zig) | Orderly, in one call: `stop_all` ends every other process and waits for their exits to release IRQ lines, device claims and DMA, then flush, unmount, ACPI off. `platd` runs the same sequence before `_PTS`. Busy-wait free: the keyboard-controller reset poll and the sleep-write pause sleep on the scheduler. |
-| Panic | [`panic.zig`](../src/kernel/panic.zig), [`qr.zig`](../src/kernel/qr.zig) | QR-encoded crash dump, verified against libqrencode. |
+| Service registry | [`svc.zig`](../src/kernel/svc.zig) | Name to channel. |
+| Shared memory | [`shm.zig`](../src/kernel/shm.zig), [`lib/ring.zig`](../src/lib/ring.zig) | Refcounted segments mapped into a per-process window. Frames survive one mapper exiting. Ring layout host-tested. |
+| Handles | [`handle.zig`](../src/kernel/handle.zig) | Per-process table with rights bits: console, file, directory, event, channel, shm. Up to four per channel message. |
+| ELF loading | [`elf.zig`](../src/kernel/elf.zig), [`exec.zig`](../src/kernel/exec.zig) | Static ELF32, synchronous and detached spawn. |
+| Panic record | [`kernel/panicring.zig`](../src/kernel/panicring.zig) | One low-memory page holding the last panic across a warm reboot, magic and checksum guarded. The next boot reports it, logs it and clears it. |
+| Kernel log | [`kernel/klog.zig`](../src/kernel/klog.zig) | 16 KiB ring of kernel lines and service lines (via the `log` syscall). Lines are recorded whether or not printed. `debug` lines are recorded only when `debug` is on the command line. |
+| Capabilities | [`lib/syscalls.zig`](../src/lib/syscalls.zig) | Intersected at every spawn, so authority only narrows down the process tree. Declared per service in `/etc/services`. `Caps.service` guards the names the system's own services use ([`lib/services.zig`](../src/lib/services.zig)); other names are open to any program. The session holds no capabilities; the desktop is started with `svc start eeewm`. |
+| User buffer checks | [`arch/x86/pagetable.zig`](../src/arch/x86/pagetable.zig), [`syscall/context.zig`](../src/kernel/syscall/context.zig), [`kernel/elf/plan.zig`](../src/kernel/elf/plan.zig) | Every syscall buffer is checked page by page against the caller's mappings: present, user-accessible, and writable where the kernel writes. `userRead` and `userWrite` encode the direction in the type. Program images and device apertures are validated in 64 bits. `map_device` maps any physical range the page allocator does not own, on the driver's word; the trust is the `driver` capability, held only by first-party drivers. Host-tested and fuzzed; [`probe`](../src/user/tools/probe.zig) exercises the same checks from Ring 3. |
+| Driver capabilities | [`kernel/irqevent.zig`](../src/kernel/irqevent.zig), [`syscall/driver.zig`](../src/kernel/syscall/driver.zig) | `irq_attach` hands a device interrupt to userspace as a waitable event: the kernel masks and signals, the driver services and acknowledges. `ioport_grant` sets the TSS I/O bitmap, copied on process switch. `map_device` maps an aperture uncached and excluded from the page allocator. `pci_read`/`pci_write` serialise config space through the kernel. All need `Caps.driver`. |
+| Interrupts | [`kernel/irq.zig`](../src/kernel/irq.zig), [`arch/x86/lapic.zig`](../src/arch/x86/lapic.zig), [`arch/x86/ioapic.zig`](../src/arch/x86/ioapic.zig) | LAPIC and IOAPIC routed from the MADT with per-line polarity and trigger; 8259s as fallback. PCI interrupts use `_PRT` routing. See [Interrupt model](#interrupt-model). |
+| Syscalls | [`syscall.zig`](../src/kernel/syscall.zig) + [`syscall/`](../src/kernel/syscall/) | Bound to the table at comptime in both directions. SYSENTER where available, `int 0x80` otherwise, same register convention. Userspace asks which is armed rather than reading CPUID. |
+| Timekeeping | [`clock.zig`](../src/kernel/clock.zig) | Monotonic clock, and wall clock as offset plus uptime. |
+| Randomness | [`random.zig`](../src/kernel/random.zig) | No hardware source. Inter-interrupt timing is hashed in batches of 32 into a pool seeding `std.Random.DefaultCsprng`. Ready at 256 estimated bits, within 3 s at the timer rate alone. `random` fills a buffer and reports whether the pool is ready. `random_stir` lets a driver add its own source (the radio adds received noise); needs `Caps.driver`. |
+| Boot watchdog | [`watchdog.zig`](../src/kernel/watchdog.zig) | Armed once interrupts are on, disarmed by `boot_ok`. A stalled boot ends in the panic screen. `netlate` keeps it armed through the late service's grace period. |
+| NMI watchdog | [`arch/x86/nmiwatch.zig`](../src/arch/x86/nmiwatch.zig) | On real hardware, a performance counter raises an NMI every few seconds and checks the timer tick advanced; a frozen machine panics and names the interrupted instruction. A freeze with no panic is a hung bus transaction or firmware stall. Not armed under emulation. The `wedge` boot flag freezes the machine after ten seconds to test the path. |
+| Platform quirks | [`quirks/`](../src/quirks/) | One module per machine family, one registry, matched against DMI in the early probe by vendor, product family or board name. Corrections (EC port pair, battery percent mislabel) are read by kernel code and by `platd` through `sysinfo` (`quirks`, `quirks.ec`, `quirks.battery`, `acpi.pm`). No driver imports the registry; the layering check enforces it. |
+| Shutdown | [`shutdown.zig`](../src/kernel/shutdown.zig) | `stop_all` ends every other process and waits for IRQ lines, device claims and DMA to be released, then flushes, unmounts and powers off. `platd` runs the same sequence before `_PTS`. No busy waits. |
+| Panic | [`panic.zig`](../src/kernel/panic.zig), [`qr.zig`](../src/kernel/qr.zig) | Panic screen with a QR-encoded register dump, verified against libqrencode. |
+
+### Interrupt model
+
+- PIRQ lines use falling-edge entries. This firmware traps runtime writes to the
+  IOAPIC, including the EOI doorbell, so level entries cannot be completed. Edge is
+  lossless because each driver services its device until status reads quiet before
+  returning.
+- This is a quirk of this firmware. A generic board keeps level lines with deferred
+  completion. Each acknowledgement reports whether it found work, so a shared edge line
+  held low across a neighbour's assertion is serviced again.
+- The SCI keeps level semantics, completes only after its owner clears the source, and
+  sits in the lowest priority class.
+- IOAPIC entries are programmed at boot; the runtime never touches the controller.
+  Runtime queries are answered from the boot record.
+- SCI activation: uACPI loads without entering ACPI mode, finalises handlers, registers
+  the service and claims the line before the FADT-defined transition. There is no raw
+  `SCI_EN` syscall.
 
 ## Storage
 
 | Component | File | State |
 |---|---|---|
-| Block layer | [`block.zig`](../src/kernel/block.zig) | Device registry, MBR partition parsing. |
+| Block layer | [`block.zig`](../src/kernel/block.zig) | Device registry and MBR partition parsing. Extends the last partition on a disk over free space after it (`grow`). `block.Memory` is a memory-backed device for tests. |
 | Block cache | [`bcache.zig`](../src/kernel/bcache.zig) | Read cache with hit reporting. |
-| FAT | [`fat.zig`](../src/kernel/fat.zig), [`fat/alloc.zig`](../src/kernel/fat/alloc.zig) | FAT12/16/32, VFAT long names, timestamps. Read and write: cluster allocation across all FAT copies, chain extension, create, append, truncate to a length, unlink, and rename. Renaming moves the record, never the content: replacing repoints the entry already carrying the name in one sector write. |
-| Clean unmount | [`fat/clean.zig`](../src/kernel/fat/clean.zig) | The flag saying a volume was unmounted cleanly. Cleared before a mount's first write, set after its last write reaches the medium. Written in both places systems read it: the specification's bits at the top of the second table entry, and the boot-sector byte. Either one clear counts as dirty. FAT12 has neither and is checked every mount. |
-| Volume geometry | [`fat/layout.zig`](../src/kernel/fat/layout.zig) | Where a volume's tables, root and data area sit. One description of the relationship between a boot sector's fields and the addresses derived from them: `read` is what mounting does, `toBpb` what formatting does, `plan` chooses a geometry for a volume of a given size, and `grown` chooses one for the same filesystem on a larger volume. Round-tripped in tests, so a formatter and the driver cannot disagree about where the data area starts. All of it in 64 bits, narrowed once known to fit. |
-| Format | [`fat/format.zig`](../src/kernel/fat/format.zig) | `format`. Writes the boot sector, its backup and hint sector on FAT32, the tables, the reserved entries and an empty root. The width is chosen from the volume's size unless one is named. The data area is not touched: no chain reaches it. The volume is left marked clean. Refused on a mounted volume. |
-| Grow | [`fat/grow.zig`](../src/kernel/fat/grow.zig) | `grow`. A card written from the image carries a 16 MiB `/home` whatever its size, so the partition is extended over the free space after it and then the filesystem over the partition. A larger volume needs a larger table, and the table sits in front of the data, so the data moves forward by as much as the table grows; cluster numbers do not change, so no chain and no record is rewritten. Highest cluster first, since the place a cluster is going may be one another still occupies. Order is data, then tables, then boot sector: losing power during the move leaves the volume unreadable, which FAT has no way to avoid. Refused on a mounted volume, on one already filling its partition, and when the larger volume would need a wider FAT than it has. |
-| Bulk sector moves | [`fat/bulk.zig`](../src/kernel/fat/bulk.zig) | Clearing, copying and shifting runs of sectors, for formatting and growing. One static buffer, because a kernel thread's stack is eight to sixteen kilobytes and a filesystem that allocates to move a sector fails when memory is short. Callers hold the mount table's lock, which both operations need anyway. |
-| Volume check | [`fat/check.zig`](../src/kernel/fat/check.zig), [`fat/verdict.zig`](../src/kernel/fat/verdict.zig) | Runs at mount on a volume not unmounted cleanly, and on demand as `check`. Walks every chain reachable from the root marking clusters, then sweeps the table. Unreached clusters marked used are freed; a chain longer than its record is cut back; a size larger than its chain is reduced; a chain that leaves the volume or loops is ended at the last valid cluster; table copies that disagree are re-synchronised. Clusters two chains claim are reported and never repaired, since the medium does not record which is correct, and the volume is mounted read-only. `verdict.zig` decides which repair applies and does no I/O, so each case is a table entry rather than a volume damaged to reach it. Memory: one bit per cluster plus a fixed stack of open directories, every loop bounded by the cluster count. |
-| Mount table | [`vfs.zig`](../src/kernel/vfs.zig) | Longest-prefix resolution, open-file counting, read-only enforcement per mount and per device. Every write goes through here. Userspace attaches and detaches volumes with the `mount` capability. |
+| FAT | [`fat.zig`](../src/kernel/fat.zig), [`fat/alloc.zig`](../src/kernel/fat/alloc.zig) | FAT12/16/32, VFAT long names, timestamps. Cluster allocation across all FAT copies, chain extension, create, append, truncate, unlink, rename. Rename moves the directory record, never the data. |
+| Volume geometry | [`fat/layout.zig`](../src/kernel/fat/layout.zig) | Where tables, root and data area sit. `read` parses a boot sector (used by mount); `toBpb` writes one (used by format); `plan` chooses a geometry for a size; `grown` chooses one for the same filesystem on a larger volume. Round-trip tested. Computed in 64 bits. |
+| Clean unmount | [`fat/clean.zig`](../src/kernel/fat/clean.zig) | Clean flag cleared before a mount's first write, set after its last write reaches the medium. Written in both places systems read: the top bits of the second FAT entry and the boot-sector byte. Either clear means dirty. FAT12 has neither and is checked on every mount. |
+| Volume check | [`fat/check.zig`](../src/kernel/fat/check.zig), [`fat/verdict.zig`](../src/kernel/fat/verdict.zig) | Runs at mount on a dirty volume, and on demand as `check`. Walks every chain from the root, then sweeps the table. Frees unreached clusters; cuts chains longer than their record; reduces sizes larger than their chain; ends chains that leave the volume or loop; resynchronises FAT copies. Clusters claimed by two chains are reported, never repaired, and the volume is mounted read-only. `verdict.zig` decides the repair and does no I/O. Memory: one bit per cluster plus a fixed directory stack. |
+| Format | [`fat/format.zig`](../src/kernel/fat/format.zig) | `format`. Writes boot sector, FAT32 backup boot sector and FSInfo, the tables, reserved entries and an empty root. Width chosen from size unless named. Data area untouched. Leaves the volume clean. Refused on a mounted volume. |
+| Grow | [`fat/grow.zig`](../src/kernel/fat/grow.zig) | `grow`. Extends the partition over free space after it, then the filesystem over the partition. A larger FAT moves the data area forward; cluster numbers are unchanged, so no chain or record is rewritten. Moves highest cluster first. Order: data, tables, boot sector. Power loss during the move leaves the volume unreadable. Refused on a mounted volume, one already filling its partition, or one that would need a wider FAT. |
+| Bulk sector I/O | [`fat/bulk.zig`](../src/kernel/fat/bulk.zig) | Clear, copy and shift runs of sectors for format and grow. One static buffer, since kernel thread stacks are too small for it. Callers hold the mount table lock. |
+| Mount table | [`vfs.zig`](../src/kernel/vfs.zig) | Longest-prefix resolution, open-file counting, read-only enforcement per mount and per device. All writes go through here. `mount`, `unmount`, `check`, `format` and `grow` need `Caps.mount`. |
 | ATA | [`drv/block/ata.zig`](../src/drv/block/ata.zig) | PIO. No DMA. |
-| Ramdisk | [`drv/block/ramdisk.zig`](../src/drv/block/ramdisk.zig) | Backs the boot-to-RAM rootfs. |
+| Ramdisk | [`drv/block/ramdisk.zig`](../src/drv/block/ramdisk.zig) | Backs the boot-to-RAM root filesystem. |
 
 ## Drivers
 
 | Driver | File | State |
 |---|---|---|
-| PCI | [`drv/bus/pci.zig`](../src/drv/bus/pci.zig) | Enumeration, whether at boot or again afterwards, config space, single-owner config access for driver servers, and the boot-time USB handover: the firmware's input emulation is asked off before its periodic system management trap can share interrupt plumbing with an unmasked line. |
-| VGA text | [`drv/video/vgatext.zig`](../src/drv/video/vgatext.zig) | Done, including the hardware cursor and hiding it. |
-| Framebuffer console | [`drv/video/fbcon.zig`](../src/drv/video/fbcon.zig) | 32bpp, Spleen font, pixel rectangles for the panic QR, a drawn cursor, and a cell grid that carries content across a mode change. Writing changes the cell grid only. `present` then redraws the cells that differ from what is on screen; it runs once per write rather than once per line, so a page of text costs one screen of glyphs instead of one screen per row. One writer renders at a time: an interrupt landing inside another context's half-drawn line keeps the log record and the serial mirror but leaves the pixels alone. Debug boots keep two corner tells for reading a frozen photograph: the heartbeat glyph, which moves as long as timer interrupts arrive, and beside it the last interrupt vector taken, bright while its handler runs and dimmed when it completed, so a freeze names the context that died. |
-| i8042 | [`drv/input/i8042.zig`](../src/drv/input/i8042.zig) | Keyboard, scancode set 1. Owns the controller; the second port is below. |
-| PS/2 pointer | [`drv/input/ps2mouse.zig`](../src/drv/input/ps2mouse.zig) | Three buttons, motion, drag. IntelliMouse wheel negotiated and decoded but not verified against hardware. Synaptics and Elantech identified, both driven in relative mode. |
-| CMOS RTC | [`drv/rtc/cmos.zig`](../src/drv/rtc/cmos.zig) | Read at boot to seed the clock. |
-| ACPI tables | [`drv/acpi/tables.zig`](../src/drv/acpi/tables.zig) | RSDP/RSDT/FADT, `_S5_` pattern match. No AML interpreter. |
-| ACPI power | [`drv/acpi/power.zig`](../src/drv/acpi/power.zig) | Power off, reset, and the write that suspends the machine to memory. |
-| Suspend to memory | [`sleep.zig`](../src/kernel/sleep.zig), [`arch/x86/s3.zig`](../src/arch/x86/s3.zig), [`boot/s3wake.asm`](../../boot/s3wake.asm) | `suspend` at the shell, Sleep in the desktop's menu. `platd` evaluates `_PTS` and arms the wake; the kernel writes the filesystems out, stows what only memory will keep, lays a real-mode trampoline at 0x2000, puts its address in the FACS waking vector and writes PM1. Waking re-enters through the trampoline, which gets as far as protected mode with paging on and hands over to five instructions that restore the descriptor table and the stack the sleeping call left. What is put back, in this order: the MTRRs, the interrupt controllers' redirection entries, the SYSENTER registers, the timers, the PCI headers, the display's mode, the input controller's configuration, and the wall clock from the hardware clock. Then every service that drives hardware is woken by its own event and takes its devices again. A machine whose display cannot be set a mode refuses to suspend at all, since such a screen comes back dark. Proven end to end in the emulator by `make check-all`; unexercised on the machine, where the gen3 driver still has to save and restore the panel power delays and watermarks firmware set. |
+| PCI | [`drv/bus/pci.zig`](../src/drv/bus/pci.zig) | Enumeration at boot and on rescan, config space, single-owner config access for driver servers. Disables firmware USB legacy emulation at boot, before its SMM trap can share an interrupt line. |
+| VGA text | [`drv/video/vgatext.zig`](../src/drv/video/vgatext.zig) | Done, including the hardware cursor. |
+| Framebuffer console | [`drv/video/fbcon.zig`](../src/drv/video/fbcon.zig) | 32 bpp, Spleen font, QR rectangles for the panic screen, drawn cursor. Writes update a cell grid; `present` redraws changed cells once per write. One renderer at a time: an interrupt during another context's draw still records and mirrors the line but does not draw it. Debug boots show a heartbeat glyph and the last interrupt vector (bright while running, dim when done) in a corner. |
+| i8042 | [`drv/input/i8042.zig`](../src/drv/input/i8042.zig) | Keyboard, scancode set 1. Owns the controller. |
+| PS/2 pointer | [`drv/input/ps2mouse.zig`](../src/drv/input/ps2mouse.zig) | Three buttons, motion, drag. IntelliMouse wheel negotiated and decoded, not verified on hardware. Synaptics and Elantech identified; both in relative mode. |
+| CMOS RTC | [`drv/rtc/cmos.zig`](../src/drv/rtc/cmos.zig) | Read at boot to seed the clock, and on resume. |
+| ACPI tables | [`drv/acpi/tables.zig`](../src/drv/acpi/tables.zig) | RSDP, RSDT, FADT, MADT. Pattern-matches `_S5_` and `_S3_` in the DSDT. No AML interpretation in the kernel; `platd` runs uACPI. |
+| ACPI power | [`drv/acpi/power.zig`](../src/drv/acpi/power.zig) | Power off, reset, and the PM1 write that suspends to memory. |
+| Suspend to memory | [`sleep.zig`](../src/kernel/sleep.zig), [`arch/x86/s3.zig`](../src/arch/x86/s3.zig), [`boot/s3wake.asm`](../boot/s3wake.asm) | `suspend`, and Sleep in the desktop menu. See [Suspend](#suspend). |
 | SMBIOS | [`drv/platform/smbios.zig`](../src/drv/platform/smbios.zig) | DMI decoding for `smbios` and `eeefetch`. |
-| UART 16550 | [`drv/serial/uart16550.zig`](../src/drv/serial/uart16550.zig) | For machines that have one; the 701 does not. |
+| UART 16550 | [`drv/serial/uart16550.zig`](../src/drv/serial/uart16550.zig) | For machines that have one. The 701 does not. |
 
-The table holds the drivers a build has, so a device with nothing against it reads
-as unclaimed rather than as spoken for by something that will never come: the
-chipset's bridges and its SMBus controller are named by the class they report and
-driven by nobody, which is what they want. Modesetting is the kernel's rather than a
-driver of its own, and `firmware-set` is the entry that keeps whatever mode the
-firmware left.
+The driver table lists only drivers the build contains; a device with no entry is
+unclaimed. Chipset bridges and the SMBus controller are listed by class and not
+driven. Modesetting belongs to the kernel; `firmware-set` keeps the firmware's mode.
+
+### Suspend
+
+- `platd` evaluates `_PTS` and arms the wake. The kernel flushes filesystems, saves
+  CPU state, places a real-mode trampoline at 0x2000, writes its address to the FACS
+  waking vector, and writes PM1.
+- Wake enters the trampoline, which switches to protected mode with paging on and
+  restores the descriptor tables and the suspending thread's stack.
+- Restored in order: MTRRs, interrupt controller redirection entries, SYSENTER MSRs,
+  timers, PCI headers, display mode, i8042 configuration, wall clock from the RTC.
+- Each hardware service is then woken by its own event and re-claims its devices.
+- A machine whose display has no modeset backend refuses to suspend.
+- Verified in the emulator by `make check-all`. Not run on the 701: the gen3 driver
+  does not save and restore the panel power delays and watermarks.
 
 ## Graphics and the GUI
 
 | Component | File | State |
 |---|---|---|
-| Modesetting | [`drv/video/modeset/`](../src/drv/video/modeset/) | One interface, a backend per adapter family, chosen by the same probe that binds every other driver. Covers the netbook era by PCI id: gen3 (GMA 900/950/3150), gen4, gen5, GMA 500 named separately because it is PowerVR and shares only a vendor id, and `bochs` for the adapter emulators offer, over the dispi ports plus the plain VGA registers that decide whether anything is drawn at all. gen3 sets the panel's native mode at boot, read from the LVDS timing registers the firmware programmed, and reverts if the pipe reports an underrun. What firmware left is the fallback and always will be. |
-| Display owner | [`display.zig`](../src/kernel/display.zig) | Exclusive ownership, scanout buffer handed over as a shared segment. One buffer and no page flip or vblank, which is what a VESA framebuffer offers; what an adapter turns out to carry beyond that is said through the same capability field, whose shape lives with the protocol so the kernel and a compositor read one declaration. The pointer plane is the first thing in it that is ever set: held as a pair of calls the composition root hands over, since the kernel may not import a driver, and reachable only by whoever holds the screen. |
-| Pointer plane | [`drv/video/modeset/gen3cursor.zig`](../src/drv/video/modeset/gen3cursor.zig) | The display engine carries the pointer on gen3, composited as it reads the screen out, so moving it is a register write. What that saves is the one thing in the system that read the framebuffer back: a pointer drawn in pixels has to be lifted before anything under it is redrawn, and the framebuffer is write-combining memory, quick to write and slow to read. The picture goes in the page after the scanout buffer, in the memory firmware set aside for the graphics device, because this generation's plane reads a physical address itself and does not look in the processor's caches; it is taken only where the memory map says that page is not the allocator's, so a machine that laid its memory out differently keeps a pointer drawn in software rather than being handed a page something else is about to get. The registers are packed structs and the picture arithmetic is pure, so both are host-tested; the plane itself can only be judged on the machine, QEMU emulating no adapter that has one. |
-| Window manager | [`user/eeewm/`](../src/user/eeewm/) | Display server and tiling manager. Desktops exist while occupied or viewed, gaps allowed and numbers never shifting; one tiling arrangement with per-desktop maximise; floating windows; a focused window filling the whole display, bar included, on the manager's own key rather than a program's request; focus-follows-click. The bar carries named tabs with per-tab window menus and dim number chips while Super is held, a launcher summoned to the middle of the screen that narrows as you type, and status menus for network, sound and power, the last carrying the backlight. Bindings live in one table ([`user/lib/bindings.zig`](../src/user/lib/bindings.zig)) that the dispatch switches on exhaustively and the Settings help pane lists, so a chord that is documented is a chord that works. Compositing is the surface's own row-wise copy; a window owns its surface and damage, so reordering windows can never separate one from its pixels. The pointer is the display's where the adapter carries one and the manager's where it does not, decided once when the screen is taken; one description of what a pointer looks like serves both, walked into a picture for the plane or onto the screen. |
-| Window protocol | [`user/proto/`](../src/user/proto/) | Channel for control, shm ring for events, shm surface per window. Wire types and the client half; the server half is policy and lives with the manager. `FileDialog` puts `eui`'s chooser panel in a floating window, which is here rather than in the toolkit because opening one means talking to the manager. `opening.zig` answers what opens a file and starts it, which is here for the same reason: the answer needs the settings service. |
-| Control library | [`user/eui/`](../src/user/eui/) | Surface and primitives, swappable theme with a chosen highlight applied everywhere at once, buttons, toggles, checkboxes, swatch rows, theme-preview tiles, labels, progress bars, sliders, meters, menus with icons and multi-column layouts, a scrolling table with columns, icons and a tree column, a section rail, a window footer, a control strip, an editable soft-wrapped text area and one-line field, a menu bar with dropdowns and shortcut hints, draggable scrollbars, a status bar of fields, a file chooser panel, keyboard focus with Tab order, per-widget damage. Its reference, [`docs/libeui.md`](libeui.md), is generated from the toolkit on every build. |
-| Fonts | [`lib/font.zig`](../src/lib/font.zig) | Shared by kernel and userspace. Spleen 8x16 and 12x24 monospaced for the console, Ark Pixel 12 in two cuts for the desktop: proportional for interface text, monospaced for the terminal, so a shell and a button label speak in one voice. Subset covers Latin-1, punctuation, arrows, box drawing, blocks and shapes; the range table is shared with the generator so slots cannot disagree. The console's faces are linked into the kernel, which has no filesystem when it first draws. The desktop's three are not linked into anything: `make image` packs them into `/share/fonts.pack`, the window manager reads that once into a shared segment and hands the handle to every client in its `hello` reply, and clients map it read-only. So the glyphs are in memory once however many windows are open, and a GUI binary is about fifty kilobytes smaller than one carrying its own copy. |
+| Modesetting | [`drv/video/modeset/`](../src/drv/video/modeset/) | One interface, one backend per adapter family, bound by the device probe. PCI ids for gen3 (GMA 900/950/3150), gen4, gen5, GMA 500 (PowerVR, separate), and `bochs` for emulators (dispi ports plus VGA registers). gen3 sets the panel's native mode at boot from the LVDS timing firmware programmed, reverting on pipe underrun. The firmware mode is always the fallback. |
+| Display owner | [`display.zig`](../src/kernel/display.zig) | Exclusive ownership; the scanout buffer is handed over as a shared segment. One buffer, no page flip, no vblank. Capabilities are reported in one field defined with the protocol. The hardware pointer plane is set through a pair of calls the composition root installs, reachable only by the display owner. |
+| Pointer plane | [`drv/video/modeset/gen3cursor.zig`](../src/drv/video/modeset/gen3cursor.zig) | gen3 hardware cursor; moving it is a register write, so nothing reads the framebuffer back. The cursor image goes in the page after the scanout buffer in stolen memory, used only if the memory map shows that page is not the allocator's; otherwise the pointer is drawn in software. Registers are packed structs and the image arithmetic is pure, both host-tested. Not emulated; verified only on the machine. |
+| Window manager | [`user/eeewm/`](../src/user/eeewm/) | Display server and tiling manager. See [Window manager](#window-manager). |
+| Window protocol | [`user/proto/`](../src/user/proto/) | Control channel, shm event ring, shm surface per window. Wire types and client half; the server half lives with the manager. `FileDialog` hosts `eui`'s chooser in a floating window. `opening.zig` resolves which program opens a file, via the settings service. |
+| Control library | [`user/eui/`](../src/user/eui/) | Surface and primitives; theme with a highlight colour; buttons, toggles, checkboxes, swatches, theme tiles, labels, progress bars, sliders, meters; menus with icons and columns; scrolling table with icon and tree columns; section rail; footer; control strip; text area and field; menu bar with shortcuts; scrollbars; status bar; file chooser; keyboard focus with Tab order; per-widget damage. Reference: [`docs/libeui.md`](libeui.md), generated on every build. |
+| Fonts | [`lib/font.zig`](../src/lib/font.zig) | Spleen 8x16 and 12x24 for the console, linked into the kernel. Ark Pixel 12, proportional and monospaced, for the desktop. Subset: Latin-1, punctuation, arrows, box drawing, blocks, shapes; the range table is shared with the generator. `make image` packs the desktop faces into `/share/fonts.pack`; the window manager maps it once and shares the handle with every client. |
+
+### Window manager
+
+- Desktops exist while occupied or viewed; numbers never shift. One tiling arrangement
+  with per-desktop maximise. Floating windows. Full-display focus on the manager's own
+  key. Focus follows click.
+- The bar: named tabs with per-tab window menus, number chips while Super is held, a
+  centred launcher that filters as you type, and status menus for network, sound and
+  power (including backlight).
+- Bindings are one table ([`user/lib/bindings.zig`](../src/user/lib/bindings.zig)),
+  dispatched exhaustively and listed in Settings help.
+- Compositing is a row-wise surface copy. Each window owns its surface and damage.
+- The pointer uses the hardware plane where available and is drawn in software
+  otherwise, from one description of its image.
+- Floating windows open at their requested size, move with Super and arrows or Super
+  and drag, and stop at the screen edge.
+- The launcher indexes `/home` two levels deep when it opens and ranks files with apps,
+  windows and verbs. Enter opens a file with its opener; Shift+Enter opens its folder.
 
 ## Userspace
 
 | Program | File | State |
 |---|---|---|
-| `init` | [`user/init.zig`](../src/user/init.zig) | PID 1. Manifest parsing, dependency order, readiness, restart policy, orphan reaping. A service is in one phase of its life at a time, and a service that promised a name is up only once the name is registered: one that lets the window pass is put down, and the restart policy judges the miss like any other failure to start. `svc` shows `starting` while it is waited on, and `stopping` for one asked to stop that has not gone: a service is asked first, through the quit event every service watches, and ended outright only when it has not gone within three seconds. The wait for a promised name is a wait on the registry's own event rather than a poll. The boot line can hold a service down (`nonet`, `nohw`) or start one late (`netlate`), which is how a suspect driver is kept off the machine, or brought up under the watchdog, from outside where only the boot line can reach. |
-| `vsh` | [`user/vsh.zig`](../src/user/vsh.zig) | Builtins, program lookup in `/bin`, multicall dispatch, pipelines, `>` and `>>` redirection. Line editing with history and completion; the prompt shortens home to `~` and carries the last command's status in the colour of its arrow. |
-| Tools | [`user/tools/`](../src/user/tools/) | `ls cp mv rm mkdir cat hexdump file find tree grep head tail wc sort pack unpack page free top kill log irq devices display disk mount unmount check format grow svc cfg date eeefetch smbios sysinfo net backlight battery vol ser`. `log -f` stays and prints what is said next, waiting on the record's own event rather than asking again. What a line is comes from [`ulib.lines`](../src/user/lib/lines.zig) and what is under a directory from [`ulib.walk`](../src/user/lib/walk.zig), so the text commands and the three that walk a tree cannot each mean something different by it. `pack` writes ustar, checked against a real archiver in both directions. |
-| `cfgd` | [`user/cfgd/`](../src/user/cfgd/) | The one writer of the settings store. Validates against a schema fixed at build time, writes the domain's file, and signals an event per domain so a change reaches whoever is watching. |
-| `platd` | [`user/platd/`](../src/user/platd/) | The platform service: what the BIOS and the embedded controller still own. uACPI interprets the tables in a process with the driver and power capabilities and nothing else. What runs on it: the embedded controller (`ec`), battery, backlight, hotkeys, the parts of the machine the firmware can switch, sleep states, power off through the firmware's own methods, and the interrupt model: it answers PCI routing questions from `_PRT`. The backlight and the switchable parts each have a standard backend and a vendor one behind a single interface, so a machine whose panel offers no `_BCM` and whose radio has no node of its own is served by the same op as one that does. Which maker a machine is, is a row in [`vendor.zig`](../src/user/platd/vendor.zig) with the maker's own file under `vendor/`: recognition, the greeting its firmware expects, its notification numbering and whichever features it offers. Nothing outside that file and that row names a maker, so a machine of a make this build has never met is a file and a row. The EC ports, the battery mislabel and the power-management no-touch ranges come from the kernel's quirk registry through `sysinfo`, so `platd` holds no machine knowledge of its own. Registers its service name once the firmware is fully settled (see the bring-up model below). Two firmware gates are held shut here, and everything on-demand works without either: the system control interrupt opens onto a burst of methods that is not yet understood, and the vendor greeting that would move the top-row keys onto this system's side of the firmware writes a trap port whose handler on this unit sometimes never returns. So the panel, the battery, the switchable parts and the routing answer when asked, and nothing arrives unasked: no notification, no lid or mains notice, and no key. The keys themselves work, because the firmware keeps handling them in system management mode, which is what the closed greeting leaves it doing; what this service would add to them is decoded and wired and opens with the gates. |
-| `devmgd` | [`user/devmgd/`](../src/user/devmgd/) | The one authority on which driver drives which device. Reads `/lib/drivers/*.man` manifests (each naming hardware by PCI id or class, and one home for its driver: a standalone binary it starts and stops, or a service that claims the assignment), walks the bus, and records the bindings. Resident and event-driven: services ask what they were assigned, `driver` lists and controls the standalone ones, and a rescan asks the kernel to walk the bus again before it reads the manifests, so it binds both a driver newly dropped in and hardware that was not there at boot. No service compiles in a PCI id. |
-| `sndd` | [`user/sndd/`](../src/user/sndd/) | The sound service. A routing graph (`lib/audiograph`) sits in the middle: every program that makes or takes sound is a node with ports, the hardware is a node like any other, and links decide who hears whom. Fan-in mixes, fan-out copies, defaults point at the hardware ins and outs until repointed. Frames ride shared `lib/spsc` rings; the channel carries only the graph's verbs. A ring holds what the program opening it asked for: a sixth of a second for sound that answers for something happening now, a third for something already written. The depth is a trade and the two kinds of program want opposite ends of it, since what is buffered is both what is heard late and how long the program can go unrun without the sound breaking. A program making its sound on the same beat as its picture fills the ring once a frame, so a ring shorter than one of its frames leaves a gap in every one; the depth is also how far ahead of itself such a program runs. The pace is the hardware's period interrupt, one bounded mix per wake, nothing polled. Two drivers share `pcm.zig`, which holds what every PCM controller needs and none should write twice: DMA arenas, bounded settling waits, period slicing, and turning a hardware position into "how many periods finished". `ac97` runs the Intel controller's DMA engines over a 32-entry descriptor ring. `hda` runs the High Definition Audio controller and walks its codec's widget graph: nothing about the analog path is assumed, so an output pin with a converter behind it is found by following connections, and that path is what gets powered, unmuted at its own full scale, and pointed at a stream. Both were verified against the emulator's wav capture at the right frequency and amplitude, and `hda` against the machine itself, whose own ALC662 it walks the same way: playback heard out loud. A port is named for the device it belongs to and its own name, in one place, so a machine with two sound cards offers two rows a person can tell apart wherever they are listed. `tone`, `vol` and `patch` are the tools. |
-| `usbd` | [`user/usbd/`](../src/user/usbd/) | The USB bus. One event loop over the service channel, the controllers' interrupts and the volumes' doorbells; nothing polls, and a bus with nothing happening on it costs nothing. Two controller drivers sit behind one seam: `ehci.zig` for high speed, which takes the controller from the firmware by the specification's handshake and runs an asynchronous ring for control and bulk transfers and a periodic list for the endpoints hardware polls on its own behalf; and `uhci.zig` for the companions a full or low speed root port belongs to, which is the older and simpler design, registers in I/O space and descriptors of one packet each; the chipset carries four companions, and the driver is one body over four compile-time-bound units. Which of them a device is on changes nothing above. Registers are packed structs with their bit positions proven at compile time, and the descriptors take the extended form always, upper address halves present and zero, because a controller that addresses sixty-four bits reads that form whether or not it is asked to. `core.zig` enumerates: reset a port, learn its packet size, hand it an address, read what it says it is, tell it which configuration to be, and ask the device manager which driver fits; a device that stays deaf through two asks earns one fresh reset, and a transfer that dies narrates what each stage saw, so a class this build has never met is a manifest and a program away. `umass.zig` drives disks over the bulk-only transport, `hid.zig` keyboards and mice in the boot protocol every one of them speaks, and `hub.zig` more ports on a port: a hub is a device with a driver like any other, and what is behind one is enumerated exactly the way a root port's device is. `acm.zig` and `ftdi.zig` drive serial adapters, the first by the class every microcontroller pretending to be a serial port answers and the second by the numbers one maker chose for the cable everybody owns, which sit in [`ftdi/regs.zig`](../src/user/usbd/ftdi/regs.zig) beside that driver and are host-tested against the divisors the part is documented with; both offer their ports through `serial.zig`, which names them, carries their bytes and answers the `serial` service, so a third chip is that seam's four functions and nothing else. A read stands on the endpoint bytes arrive on, carried by the controller in hardware, so a port with nothing coming in costs nothing; a chip that answers every read with its own state whether or not anything came is only read while a program has the port. A disk becomes a volume the kernel's filesystems mount; a key becomes a key, meaning whatever the layout says; a serial port becomes two rings and an event. The bus can be put down and brought back, which is what a machine waking from sleep will ask for and what `usb rebuild` asks for by hand: every controller stopped, everything the bus knew given up, the controllers built again and walked afresh. A volume follows the disk it was made for by where that disk sits rather than by the address it was given, because an address is the walk's to hand out and a disk that never moved comes back with another one when something in front of it was taken away; a mount therefore survives the bus being rebuilt and still reaches the disk it was made for. `usb` and `ser` are the tools. |
-| `logd` | [`user/logd/`](../src/user/logd/) | The machine's record, out of a serial port. This machine has no serial port of its own, which is the single fact that most shapes how it is debugged: what it says is read off a photograph of the screen or out of the record afterwards, and a fault that takes the screen leaves neither. Named a port in the `log` settings domain, this sends the whole record down it as it stands and then every line as it is said, so a boot is read as text on another machine. What it cannot carry is the boot before `usbd` has found the adapter, which is the part a port on the chip would have had. Nothing polls and nothing asks twice: with no port named it waits only to be told the setting changed, with a named port not plugged in it waits to be told the ports changed, and with the console going it waits on the record growing and on the port having room. A port whose ring fills stops the pass rather than the service, the cursor going back to where what did not fit begins, so nothing is lost and nothing waits inside a write. Running and unused it costs one blocked process and no time at all. |
-| `netd` | [`user/netd/`](../src/user/netd/) | The network service. One event loop, one compile-time driver registry: `e1000`, `rtl8139`, `atl2` for the 701's own Attansic, `atl1e` for the Attansic L1E the 1000 carries, and `ar5212` for the 701's radio, each entry declaring the interface class it produces so a radio and a wired port are told apart before either has a name. The two Attansic parts move frames in completely different ways and are the same silicon around them, so the block reset, the MDIO controller, the station address, the gaps, the half-duplex rules, the low half of the MAC control word and the maker's PHY registers are written once in [`attansic.zig`](../src/user/netd/attansic.zig) with every bit position checked on the build machine; what differs between the parts, including an interrupt register at one offset with two numberings, stays with the driver that knows which part it is. The 802.3 registers are one layer further out in [`mii.zig`](../src/user/netd/mii.zig), where every wired driver reaches them. `atl1e` sends from a descriptor ring and receives into two pages the part fills in turn, each frame behind a record carrying a sequence number: a record that does not follow means the driver has lost its place, and it rebuilds the adapter between passes rather than reading a page whose boundaries it cannot find. Walking a page is the part of that driver most likely to be wrong and the only part of it that can be run away from the silicon, so it is on its own in [`rxpage.zig`](../src/user/netd/rxpage.zig), over a plain slice with no hardware in it, and host-tested against pages built a frame at a time. Every register and descriptor word the driver writes is pinned at compile time against the value the part is documented with, so a transcription slip fails the build rather than the machine. The radio driver identifies its silicon, reads its calibration store, runs the reset and channel-set pipeline transcribed from FreeBSD's Atheros hardware layer (pinned reference-only under `third_party/ath_hal`, its tables generated by `make athtables`, never compiled), works a transmit queue, programs the amplifier from the curves its board was measured with, and hands every intact frame up with its signal. Everything above a driver reaches a radio through the radio table an interface carries, so no driver is named above the device layer and a second radio is a second table; a driver whose class says radio and whose table is absent does not compile. The station above it scans the channels the regulatory plan allows, keeps an account of every network heard, and drives the join through authentication, association and the four-way handshake, choosing how fast to speak from an account of how each rate has fared and sealing traffic itself, so the cipher is the same whichever radio is underneath. The nonce the key exchange needs is drawn from the machine's pool, which this service feeds with what its radio hears, and is spent by the exchange that used it. What arrives is judged by the association and not by the frame: on a protected network every data frame is opened under the association's keys or dropped, every accepted packet number is remembered so a recorded frame is not delivered twice, and only a frame that verified moves the counter the signed frames are judged against. Whether the exchange completes on the machine is described under the known gaps. Rings live in DMA memory behind `dma_alloc`, interrupts are taken and acknowledged through `irqevent`, PCI routing is asked of `platd` and only then does the first packet move. Above the drivers runs lwIP (vendored verbatim, `NO_SYS`, raw API): IPv4, ARP, ICMP, UDP, TCP, a DHCP client per interface and a DNS stub, driven entirely by the loop whose wait deadline is the stack's own next timer. Configuration lives in the `net` settings domain as four matcher slots (class, driver label or bus location, most specific claim first); netd watches it and applies diffs, so `net <iface> up/down/dhcp/static` is persistent and immediate, and a machine with several NICs of one class configures each on its own. The wireless key is sequenced here, because the interface is this service's and the radio's power is the platform service's: going off the interface comes down and the hardware is given back before the power goes, and coming on the power goes first, then a rescan, then the claim. A card that lost its power is claimed, mapped and started again rather than resumed, and what it is waited on for is the card answering rather than a length of time. `net load` says what the loop has been woken for and how much of that it had nothing to do about, which on this machine's shared edge lines is how a service busy on an idle network is told apart from one doing work: every interrupt on a line wakes every owner of it, and `irq` counts the times a line woke its neighbours. `ping` is a deferred-reply channel op, and so are `tcp_connect`, `tcp_accept` and `resolve`: the caller blocks exactly as long as the network does. Stream and datagram traffic never touches the channel: the socket bridge grants each socket its own segment (control page and two `lib/spsc` rings) and its own event, and returns both when the socket ends. A socket belongs to the process that asked for it, since the kernel attests the sender of every message, so only its owner may close it or accept from it. One doorbell is shared by every client so the wait set never grows. lwIP's own loopback interface makes 127.0.0.1 real on a machine with no network, delivered by `netif_poll_all` before the loop sleeps. Resolution asks `/etc/hosts` before any DNS server. The boundary is hand-mirrored in `lwip.zig` with comptime layout proofs pinned twice, the Zig side and `lwipport/layout_check.c` against the vendored headers. |
-| `edit` | [`user/tools/edit.zig`](../src/user/tools/edit.zig) | The editor. What it does with characters is `lib/text`, and what it does with the screen is the pager's lower half, which both it and `page` draw through: take the screen, draw the body, put a bar on the last row, read a key. Folding long lines and numbering them are that shared body's, so the two programs cannot disagree about what a text looks like, and a line that runs off the edge ends in a dim arrow rather than looking like a line that ended. What is left here is the arrangement. The text comes from a named file, from a pipe, or from nowhere; a document with no file behind it is ordinary and asks where to go when saved, which is also what opening a second file from inside relies on. Nothing is written until asked, and a file too long to hold is opened but refused a save rather than written back as its own head. |
-| C examples | [`examples/`](../examples/) | Programs that prove the library rather than demonstrate it. `greet` covers arguments, formatting and allocation; `conform` checks sixty-three library behaviours against the host's C library and must match exactly; `frames` draws a scaled back buffer the way a game does; `beep` mixes and plays a tone; `mixing` plays three at once, panned apart, and stops two of them; `bigheap` takes sixteen megabytes in one block and reads every page back. |
-| The manual | [`manual/`](../manual/), [`tools/gen-manual-index.zig`](../tools/gen-manual-index.zig) | One page per command, plain text, copied to `/doc` and read with `man`. The page is also the source of the one-line summary `tools` and `help` print: a build step reads every page's title line into a comptime table, and a command with no page fails the build naming the file to write. Optional: `make MANUAL=no` (or `-Dmanual=false`) leaves the pages out of the image and the summaries out of the programs, which saves a FAT cluster run in a root filesystem read over the BIOS's own USB path; the listings then print names alone and `man` says there is no manual. On by default. Each is written once, so a command's summary and its page cannot disagree. |
-| Shared code | [`user/lib/`](../src/user/lib/) | Buffered streams, the heap, paths, colour by role, console shape, config parsing, line editing, completion, time formatting, sysinfo, the process table. |
-| Heap | [`user/lib/heap.zig`](../src/user/lib/heap.zig) | Size-class free lists over pages the kernel hands out, exposed both as raw calls and as `std.mem.Allocator`. `malloc` is a wrapper over it, not the other way round. Blocks larger than the classes get a whole segment and are recycled through a reuse list rather than let go, so a caller that churns one size pays for the segment once. |
-| Streams | [`user/lib/stream.zig`](../src/user/lib/stream.zig) | Buffered reads and writes over a handle. Standard output is one instance; a C `FILE` is another. |
-| eeelibc | [`user/libc/`](../src/user/libc/) | Enough C for a POSIX program to build and run: crt0, errno, descriptors, the heap, stdio with one formatter and a scanner, strings and ctype, termios, `TIOCGWINSZ`, time. A descriptor is a kernel handle, so there is no table. No `fork`, no asynchronous signals, no sockets, no float conversions. |
-| Directory listing | [`user/lib/dir.zig`](../src/user/lib/dir.zig) | One decoded listing, parent first, then directories, then names written the way they should be read. |
-| Pipes | [`kernel/pipe.zig`](../src/kernel/pipe.zig) | Byte stream with a reader and writer count, waitable by `wait_many`. Bound to a child's standard streams at spawn. |
+| `init` | [`user/init.zig`](../src/user/init.zig) | PID 1. Manifests, dependency order, readiness, restart policy, orphan reaping. A service promising a name is up only once the name is registered; missing the window counts as a failed start. Stop asks through the quit event and ends the process after three seconds. `svc` shows `starting` and `stopping`. The boot line can hold a service down (`nonet`, `nohw`, `no.<name>`) or start it late under the watchdog (`netlate`, `late.<name>`). |
+| `vsh` | [`user/vsh.zig`](../src/user/vsh.zig) | Builtins, `/bin` lookup, multicall dispatch, pipelines, `>` and `>>`. Line editing with history and completion. Prompt shows `~` for home and colours its arrow by the last exit status. |
+| Tools | [`user/tools/`](../src/user/tools/) | `ls cp mv rm mkdir cat hexdump file find tree grep head tail wc sort pack unpack page free top kill log irq devices display disk mount unmount check format grow svc cfg date eeefetch smbios sysinfo net backlight battery vol ser`. `log -f` follows new lines on the ring's event. Lines come from [`ulib.lines`](../src/user/lib/lines.zig) and directory walks from [`ulib.walk`](../src/user/lib/walk.zig). `pack` writes ustar, checked against a real archiver both ways. |
+| `edit` | [`user/tools/edit.zig`](../src/user/tools/edit.zig) | Text editor in the console. Text handling is `lib/text`; screen handling is shared with `page`, including folding, numbering and the overflow arrow. Opens a named file, a pipe, or nothing (asks for a name on save). Writes nothing until asked. A file too long to hold opens read-only. |
+| `cfgd` | [`user/cfgd/`](../src/user/cfgd/) | Sole writer of the settings store. Validates against a build-time schema, writes the domain file, signals an event per domain. |
+| `platd` | [`user/platd/`](../src/user/platd/) | Platform service running uACPI. See [Platform service](#platform-service). |
+| `devmgd` | [`user/devmgd/`](../src/user/devmgd/) | Driver-to-device binding authority. Reads `/lib/drivers/*.man` (PCI id or class, and a standalone binary or a claiming service), walks the bus, records bindings. Services ask for their assignment; `driver` lists and controls standalone drivers. A rescan re-walks the bus first, so new drivers and newly powered hardware both bind. No service compiles in a PCI id. |
+| `sndd` | [`user/sndd/`](../src/user/sndd/) | Sound service. See [Sound](#sound). |
+| `usbd` | [`user/usbd/`](../src/user/usbd/) | USB bus service. See [USB](#usb). |
+| `logd` | [`user/logd/`](../src/user/logd/) | Sends the kernel log to a USB serial port named in the `log` settings domain: the whole ring on open, then each new line. Covers everything from `usbd` onwards. Blocks on events only: the setting, the port list, the ring, and port buffer space. A full port buffer ends the pass and resumes from the unsent line. |
+| `netd` | [`user/netd/`](../src/user/netd/) | Network service. See [Network](#network). |
+| C examples | [`examples/`](../examples/) | `greet` (arguments, formatting, allocation); `conform` (library behaviours compared line by line against the host's C library, must match exactly); `frames` (scaled back buffer); `beep` (a tone); `mixing` (three tones, panned, two stopped); `bigheap` (16 MiB block, every page read back). |
+| The manual | [`manual/`](../manual/), [`tools/gen-manual-index.zig`](../tools/gen-manual-index.zig) | One plain-text page per command, installed to `/doc`, read with `man`. Each page's title line is the command's summary in `tools` and `help`; a command without a page fails the build. `make MANUAL=no` (or `-Dmanual=false`) leaves pages and summaries out. On by default. |
+| Shared code | [`user/lib/`](../src/user/lib/) | Streams, heap, paths, colour roles, console shape, config parsing, line editing, completion, time formatting, sysinfo, process table. |
+| Heap | [`user/lib/heap.zig`](../src/user/lib/heap.zig) | Size-class free lists over kernel pages, as raw calls and as `std.mem.Allocator`; `malloc` wraps it. Oversized blocks get their own segment and are reused rather than released. |
+| Streams | [`user/lib/stream.zig`](../src/user/lib/stream.zig) | Buffered reads and writes over a handle. Standard output and C `FILE` are both instances. |
+| eeelibc | [`user/libc/`](../src/user/libc/) | See [eeelibc](#eeelibc). |
+
+### Platform service
+
+- uACPI runs in a process holding only `Caps.driver` and `Caps.power`.
+- Provides: embedded controller, battery, backlight, hotkeys, switchable parts (radio,
+  camera, card reader, USB ports, modem), sleep states, firmware power off, and PCI
+  interrupt routing from `_PRT`.
+- Backlight and switchable parts each have a standard backend and a vendor backend
+  behind one interface.
+- A vendor is one row in [`vendor.zig`](../src/user/platd/vendor.zig) plus a file
+  under `vendor/`: recognition, firmware greeting, notification numbering, features.
+  No other code names a vendor.
+- EC ports, the battery mislabel and power-management no-touch ranges come from the
+  kernel quirk registry through `sysinfo`.
+- Registers `/svc/platform` once firmware is settled.
+- Two firmware gates are held shut on this unit: the SCI (its method burst is not yet
+  understood) and the vendor greeting (it writes a trap port whose handler sometimes
+  does not return). With both shut, panel, battery, switchable parts and routing work
+  on request, and nothing arrives unrequested: no lid, mains or key notifications. The
+  top-row keys still work because firmware handles them in SMM. The decoding for them
+  exists and activates when the gates open.
+
+### Sound
+
+- A routing graph (`lib/audiograph`): each program and each hardware device is a node
+  with ports; links route. Fan-in mixes, fan-out copies. Defaults point at the hardware
+  until changed.
+- Audio travels in shared `lib/spsc` rings; the channel carries only graph operations.
+- Ring depth is chosen by the opener: 1/6 s for live sound, 1/3 s for pre-written sound.
+  A program producing sound per frame needs a ring at least one frame deep.
+- Paced by the hardware period interrupt: one bounded mix per wake, no polling.
+- `pcm.zig` is shared by both drivers: DMA arenas, bounded settling waits, period
+  slicing, hardware position to completed periods.
+- `ac97`: Intel controller, 32-entry descriptor ring.
+- `hda`: High Definition Audio. Walks the codec widget graph to find an output pin with
+  a converter behind it, powers and unmutes that path. Verified against the emulator's
+  wav capture and by ear on the 701's ALC662.
+- Ports are named by device and port, so two cards list distinctly.
+- Tools: `tone`, `vol`, `patch`.
+
+### USB
+
+- One event loop over the service channel, controller interrupts and volume doorbells.
+  No polling.
+- `ehci.zig`: high speed. Takes the controller from firmware by the specification
+  handshake; asynchronous ring for control and bulk, periodic list for interrupt
+  endpoints.
+- `uhci.zig`: full and low speed companions. I/O-space registers; the chipset's four
+  companions are one driver over four comptime-bound units.
+- Registers are packed structs with bit positions checked at compile time. Descriptors
+  always use the 64-bit layout with upper halves zero.
+- `core.zig` enumerates: port reset, packet size, address, descriptors, configuration,
+  driver lookup through `devmgd`. A device silent through two requests gets one more
+  reset. A failed transfer logs each stage.
+- Class drivers: `umass.zig` (bulk-only disks), `hid.zig` (boot-protocol keyboards and
+  mice), `hub.zig`, `acm.zig` (CDC-ACM serial), `ftdi.zig` (FTDI serial; values in
+  [`ftdi/regs.zig`](../src/user/usbd/ftdi/regs.zig), host-tested against documented
+  divisors).
+- Serial ports are served through `serial.zig`, which answers the `serial` service; a
+  new chip implements four functions. An idle port costs nothing; chips that report
+  state on every read are read only while a program holds the port.
+- `usb rebuild`, and resume, stop every controller, discard bus state and enumerate
+  again. Volumes are matched to disks by physical position, so mounts survive.
+- Tools: `usb`, `ser`.
+
+### Network
+
+- Drivers in a compile-time registry, each declaring its interface class: `e1000`,
+  `rtl8139`, `atl2` (701 wired), `atl1e` (1000 wired), `ar5212` (701 radio).
+- Attansic parts share block reset, MDIO, station address, gaps, half-duplex rules,
+  MAC control low half and vendor PHY registers in
+  [`attansic.zig`](../src/user/netd/attansic.zig), bit positions checked at build.
+  802.3 registers are in [`mii.zig`](../src/user/netd/mii.zig).
+- `atl1e` transmits from a descriptor ring and receives into two alternating pages of
+  sequenced records. An out-of-sequence record triggers an adapter rebuild. The page
+  walk is in [`rxpage.zig`](../src/user/netd/rxpage.zig), host-tested and fuzzed. All
+  register and descriptor words are pinned at compile time.
+- `ar5212` identifies the silicon, reads the calibration EEPROM, runs the reset and
+  channel-set pipeline transcribed from FreeBSD's Atheros HAL (reference only in
+  `third_party/ath_hal`; tables generated by `make athtables`), programs transmit power
+  from board calibration, and delivers intact frames with signal strength.
+- Radios are reached through a radio table on the interface. A radio-class driver
+  without one does not compile.
+- The station scans the regulatory plan's channels, tracks networks heard, and drives
+  authentication, association and the four-way handshake. Rate selection uses
+  per-rate success. Encryption is done in the station, independent of the radio.
+- The handshake nonce comes from the entropy pool, which the radio feeds with noise,
+  and is used once.
+- On a protected network every data frame is decrypted under the association keys or
+  dropped; accepted packet numbers are remembered against replay; only verified frames
+  advance the counter.
+- DMA rings via `dma_alloc`, interrupts via `irqevent`, PCI routing from `platd`
+  before the first packet.
+- lwIP, vendored unmodified, `NO_SYS`, raw API: IPv4, ARP, ICMP, UDP, TCP, DHCP per
+  interface, DNS stub. The loop's wait deadline is lwIP's next timer.
+- Configuration: `net` settings domain, four matcher slots (class, driver label or bus
+  location; most specific wins). `net <iface> up|down|dhcp|static` persists and
+  applies immediately.
+- Wireless key: off takes the interface down and releases the hardware before power
+  off; on powers first, rescans, then claims. A card that lost power is reclaimed and
+  restarted, waiting for it to answer.
+- `net load` reports wake reasons and wakes with no work. `irq` counts wakes caused by
+  shared lines.
+- `ping`, `tcp_connect`, `tcp_accept` and `resolve` are deferred-reply channel
+  operations.
+- Socket data bypasses the channel: each socket has its own segment (control page and
+  two `lib/spsc` rings) and event, released on close. A socket belongs to the process
+  that created it; only that process may close or accept on it. One shared doorbell.
+- Loopback 127.0.0.1 through lwIP's loop interface. `/etc/hosts` is consulted before
+  DNS.
+- The lwIP boundary is mirrored in `lwip.zig` with comptime layout checks on both
+  sides (`lwipport/layout_check.c`).
+
+### eeelibc
+
+- crt0, errno, descriptors (kernel handles, no table), heap, stdio with one formatter
+  and a scanner, strings, ctype, termios, `TIOCGWINSZ`, time, environment (`getenv`,
+  `setenv`), `strtod`, `rand`, `assert`, `stat`, `access`, `opendir`, `getopt`.
+- `math.h` maps to Zig's compiler_rt and `std.math`.
+- Float formatting through `std.fmt.float`, including exponent form and `%g`. Fixed
+  notation rounds half to even from the exact decimal expansion, via
+  [`lib/decimal.zig`](../src/lib/decimal.zig).
+- `vibeee.h`: taking the screen, reading keys, joining the sound graph. Key numbers and
+  modifier bits are generated from their Zig definitions.
+- Checked by `examples/conform.c` against the host C library.
+- Not provided: `fork`, asynchronous signals, sockets.
+- `tcgetattr`/`tcsetattr` and `VMIN` are implemented with no program exercising them.
 
 ## Applications
 
-Built in the order of [design §10.8](../design/00-vibeee.md): each needs only what the one
-before it forced into place. All of them run in one application frame
-([`user/proto/app.zig`](../src/user/proto/app.zig)), which owns the connection, the
-window, resizing, theme changes, the draw pass and the commit; a program brings a
-draw hook and only the interceptions it wants.
+Built in the order of [design §10.8](../design/00-vibeee.md). All run in one application
+frame ([`user/proto/app.zig`](../src/user/proto/app.zig)) that owns the connection,
+window, resizing, theme changes, draw pass and commit; a program supplies a draw hook.
 
 | Program | File | State |
 |---|---|---|
-| Settings | [`user/apps/settings.zig`](../src/user/apps/settings.zig) | Sections down a rail: Display (theme tiles, highlight and pointer swatches, interface scale, bar position, wallpaper), Network (every interface wired or wireless, enabled, DHCP or a claimed address, and for a radio the networks it has heard with the one it joins), Input (keyboard layout), Audio, Power (battery at length, backlight in the panel's own levels), Help (the manager's bindings, from the table it dispatches from), About (what the machine is, and nothing about what it is doing). Edited through `cfgd` from the same schema `cfg` uses; everything applies at once. The Network pane, the `net` command and the bar's network menu share one model in `ulib/netconfig.zig` and one set of verbs on the slot itself, so a verb means the same thing wherever it is given, and the pane sleeps on the service's event rather than asking on a timer. |
-| Monitor | [`user/apps/monitor.zig`](../src/user/apps/monitor.zig) | Process tree with per-process CPU share, memory and uptime, refreshed twice a second. Ends a selected process. |
-| Pad | [`user/apps/pad.zig`](../src/user/apps/pad.zig) | Text editor: soft-wrapped editing in the interface face, a File menu, open and save through the floating file dialog, live byte count. Opens what it is given on the command line, which is how the file manager and the launcher hand a document over. Asked to close with changes unsaved, it asks first, on a sheet across the bottom of the window: save, discard or cancel, by button, by letter, by Enter or by Escape. |
-| eTerm | [`user/eterm/`](../src/user/eterm/) | Terminal window running `vsh` over a pipe pair, on its own warm near-black in every theme, in the interface family's monospace with line-drawing synthesized from cell geometry. Extended VT100 per [design §16](../design/10-gui.md): cursor movement, erase, insert and delete, scrolling regions, alternate screen, SGR with 256 colours, DECCKM, OSC titles. Line editing is the terminal's until a program manages its own input, which a full-window one signals by taking the alternate screen and a shell's line editor by a private mode both this terminal and the kernel console answer, so neither echoes what the editor already draws. A full-window program reads its keys from the pipe when the compositor holds the keyboard, decoding the sequences the terminal sends ([`user/lib/keys.zig`](../src/user/lib/keys.zig), both directions proved inverses), and asks the terminal its window size and hears of a resize the same in-band way. |
-| Files | [`user/efm/`](../src/user/efm/) | Two panes over the toolkit's table, a place button per mounted volume, copy and move between the panes on F5 and F6, folders and deletion behind a question asked in the footer. Moving is a rename where one volume allows it and a copy-then-remove where it does not. F3 turns the right pane into a preview: a thumbnail and what the camera wrote for a photograph, the first of a text file, and what it is for anything else. Enter opens a file with whatever opens its sort of thing, and runs it when it is a program. |
-| Viewer | [`user/apps/eimg.zig`](../src/user/apps/eimg.zig) | One picture at a time on the darkest ground the theme has, at fit, whole or double size, turned by hand a quarter at a time on top of the way the camera held it. What the camera wrote is a sidebar that scrolls, off until it is asked for. |
-| Calc | [`user/apps/calc.zig`](../src/user/apps/calc.zig) | Arithmetic, in a window that floats above the tiling rather than taking a share of it. Typed at or pointed at: every key on the pad has a key on the keyboard, and the pad answers Tab and the space bar like every other control. |
-| Screenshot | [`user/apps/screenshot.zig`](../src/user/apps/screenshot.zig) | A picture of the display or of the window holding the keyboard, written as PNG into `/home`. Not a window: a command, with `Super+S` and `Super+Shift+S` spawning it rather than carrying a second way of doing the same thing. The manager copies the pixels and stops there, because encoding one takes as long as a person would notice and the manager is the process that must not stop. |
+| Settings | [`user/apps/settings.zig`](../src/user/apps/settings.zig) | Rail sections: Display (theme, highlight, pointer, scale, bar position, wallpaper), Network (interfaces, enable, DHCP or static, heard networks for radios), Input (layout), Audio, Power (battery, backlight levels), Help (bindings), About. Edits through `cfgd` using the `cfg` schema; applies immediately. Network state is shared with `net` and the bar menu in `ulib/netconfig.zig`; the pane waits on the service's event. |
+| Monitor | [`user/apps/monitor.zig`](../src/user/apps/monitor.zig) | Process tree with CPU share, memory and uptime, refreshed twice a second. Ends a selected process. |
+| Pad | [`user/apps/pad.zig`](../src/user/apps/pad.zig) | Soft-wrapped text editor, File menu, open and save dialogs, byte count. Opens its command-line argument. Asks save, discard or cancel before closing with unsaved changes. |
+| eTerm | [`user/eterm/`](../src/user/eterm/) | Terminal running `vsh` over a pipe pair. Extended VT100 per [design §16](../design/10-gui.md): cursor movement, erase, insert, delete, scroll regions, alternate screen, 256-colour SGR, DECCKM, OSC titles. Line editing is the terminal's until a program takes the alternate screen or sets the private line-editor mode (also honoured by the console). Full-screen programs read key sequences from the pipe ([`user/lib/keys.zig`](../src/user/lib/keys.zig), encode and decode proven inverse) and query window size in band. |
+| Files | [`user/efm/`](../src/user/efm/) | Two panes, a place button per mounted volume, F5 copy and F6 move (rename within a volume, copy and delete across volumes), new folder and delete with confirmation. F3 previews: thumbnail and EXIF for photos, head of text files, kind for anything else. Enter opens with the file's opener, or runs a program. |
+| Viewer | [`user/apps/eimg.zig`](../src/user/apps/eimg.zig) | One picture at a time at fit, actual or double size, rotated by hand in quarter turns on top of the EXIF orientation. EXIF sidebar, off by default. |
+| Calc | [`user/apps/calc.zig`](../src/user/apps/calc.zig) | Floating calculator. Arithmetic from `lib/calc.zig`. Every pad key has a keyboard key; Tab and Space work as on every control. |
+| Screenshot | [`user/apps/screenshot.zig`](../src/user/apps/screenshot.zig) | PNG of the display or the focused window, into `/home`. A command, spawned by `Super+S` and `Super+Shift+S`. The manager copies pixels; encoding happens in this process. |
 
 ## Programs that are not the system
 
-The image carries what a machine needs to start and be used. Anything else is built
-apart from it and installed into `/home`, where it sits beside the files it works on.
+Built separately from the image and installed into `/home`.
 
 | Component | File | State |
 |---|---|---|
-| Recipes | [`apps/`](../apps/) | One directory per program: an `app.mk` saying where its source comes from and how to build it, and whatever platform half this system needs that the upstream project has no reason to carry. Third-party source is never committed, and is fetched into `build/apps/`. `make apps` builds all of them, `make app APP=<name>` one. |
-| Staging | `home/` | What an app build writes into, and what the image seeds `/home` from. Programs go in `home/bin/`, which is on the search path ahead of the system's `/bin`, and what they read stays in `home/` with a person's files. The host side is the source of truth, so rebuilding the image puts an installed program back rather than losing it with the old one. Untracked. |
-| Doom | [`apps/doom/`](../apps/doom/) | The portable engine, whose platform half is six calls: this one answers them with the framebuffer, the key stream, the clock and the mixer. Its source list is read out of the engine's own makefile rather than copied, so a file added upstream arrives without anyone noticing it should have. It builds, runs in a window, takes input, plays its sound effects through the system's mixer, and writes a save into `/home` through the FAT driver. Music has no backend: a wad's music is a score rather than a recording, and there is no sequencer to play it with. Data is not fetched: the recipe names the WAD it wants and where to get it, and stops there. |
-| eeemod | [`apps/eeemod/`](../apps/eeemod/) | A tracker module player, first-party and built into `home/bin/`. The file ([`module.zig`](../apps/eeemod/module.zig)) is a view over the bytes, decoded a cell at a time; the song ([`player.zig`](../apps/eeemod/player.zig)) is rows and ticks and the whole ProTracker effect set as one tagged union the sequencer switches over exhaustively, with the period table built at comptime from its own definition. Voices go to the shared mixer, and an Amiga period converts to a mixer step in one division, so the player carries no fixed point of its own. Both halves are host-tested. The window draws four strips and repaints each only when what it shows changed. The pattern is a page with the playing row picked out rather than a list that scrolls under it: scrolling moves every line whenever the row changes, so a row costs two lines and a page turn comes once every screenful. The stream is fed on either side of the drawing as well as between passes, painting a window being the longest thing the program does. Opening a module uses the toolkit's own dialog, and a machine with no sound service still shows what is in the file. |
-| Hero | [`apps/hero/`](../apps/hero/) | A character journal for Dungeons and Dragons on the 2024 rules, first-party and built by the main `build.zig` into `home/bin/` rather than into the image. It opens a `.hero` file from the launcher or its own File menu and handles rolls, damage, rests, spells, gold and notes against the character in the file. Its model is host-tested by `zig build test-hero`, which `make hero` runs before building. Versioned on its own: `hero --version`. |
-| web | [`apps/web/`](../apps/web/) | **Experimental, and marked so wherever it is named.** A web browser of its own parts: [`fetch.zig`](../apps/web/fetch.zig) over HTTP and HTTPS with connections kept to a site, lexbor for the markup and the selectors, [`css.zig`](../apps/web/css.zig) for the cascade this browser acts on, [`extract.zig`](../apps/web/extract.zig) to turn a tree into a page, [`layout.zig`](../apps/web/layout.zig) to say where every word goes, QuickJS behind [`dom.zig`](../apps/web/dom.zig) for the scripts, and [`pictures.zig`](../apps/web/pictures.zig) for what a page shows. It draws in one column: what shows and what is hidden, colours, the way lines lean, the room and lines around a box, rows set side by side by flex and by grid, and where a page positions a box against another. Forms go by GET and by POST. Pictures come three at a time and are kept when the page is read again. A page's scripts run on its own tree under bounds on memory, call depth and how long one may hold the engine; what they ask for is answered on connections of its own, so nothing a script does waits on another. `web -t <address>` prints a page's words in the shell, which is how it is tested against real sites. Its layout and its cascade are host-tested by `zig build test-web`, and the document a script sees by `zig build test-dom`. What it does not do is under the known gaps. |
-| echat | [`apps/echat/`](../apps/echat/) | An IRC client. The protocol engine is complete: the line grammar with IRCv3 message tags parsed and unescaped in place, framing out of a byte stream, `RPL_ISUPPORT` and everything that depends on it, capability negotiation at version 302 including replies split across lines and capabilities arriving after registration, SASL with `PLAIN` and `EXTERNAL`, taken-nick retries, keepalive and a registration timeout. It opens no socket and allocates nothing, so all of it runs on the host: `make echat` tests it against `third_party/irc-parser-tests`, transcribed into Zig by `make irctests` and never compiled from the reference. The window over it draws a rail of networks with their rooms held under them and a count on each, the transcript grouped so a run from one person carries their name once, who is here with their membership marks, and a line to type into that holds the keyboard. Commands are /server, /join, /part, /nick, /topic, /me, /msg and /quit, and anything else goes as typed. Up to four networks at once, each with its own socket, and the wait sleeps on all of them. Verified against a real network: it registers, joins, and shows who is there. Networks are written down in `/cfg/echat.cfg` in the store's own grammar, read with `ulib.config`: where to reach one, what to be called there, the account to prove with SASL, the channels to join, and whether to open it at start. The schema is the app's own rather than a `cfgd` domain, since the system ships neither. Connections are sealed by default: `ulib.tls` is `std.crypto.tls` over a granted socket, checked against the authorities in `/share/ca.store`, which `make castore` decodes from the vendored bundle. Sealed connections do not work yet, for two reasons in the standard library rather than here, described under the known gaps; a network is reached in the clear on 6667 until they are cleared. |
+| Recipes | [`apps/`](../apps/) | One directory per program: `app.mk` (source and build) plus any platform glue. Third-party source is fetched into `build/apps/`, never committed. `make apps` builds all; `make app APP=<name>` one. |
+| Staging | `home/` | Build output and the image's `/home` seed. Programs go in `home/bin/`, searched before `/bin`. Untracked; rebuilding the image restores installed programs. |
+| Doom | [`apps/doom/`](../apps/doom/) | Portable engine with a six-call platform layer: framebuffer, keys, clock, mixer. Source list read from the engine's makefile. Runs in a window with sound effects and saves to `/home`. No music backend. The WAD is not fetched; the recipe names it. |
+| eeemod | [`apps/eeemod/`](../apps/eeemod/) | Tracker module player. [`module.zig`](../apps/eeemod/module.zig) decodes the file lazily; [`player.zig`](../apps/eeemod/player.zig) sequences rows, ticks and the ProTracker effect set as one tagged union; period table built at comptime. Voices go to the shared mixer. Both halves host-tested. Four strips, each repainted only on change; the pattern is shown a page at a time. Uses the toolkit's open dialog. Works without a sound service. |
+| Hero | [`apps/hero/`](../apps/hero/) | D&D 2024 character journal. Opens `.hero` files; rolls, damage, rests, spells, gold, notes. Model host-tested by `zig build test-hero`, which `make hero` runs first. `hero --version`. |
+| web | [`apps/web/`](../apps/web/) | **Experimental.** Browser: [`fetch.zig`](../apps/web/fetch.zig) (HTTP and HTTPS, kept-alive connections), lexbor (markup and selectors), [`css.zig`](../apps/web/css.zig) (cascade), [`extract.zig`](../apps/web/extract.zig) (tree to page), [`layout.zig`](../apps/web/layout.zig), QuickJS behind [`dom.zig`](../apps/web/dom.zig), [`pictures.zig`](../apps/web/pictures.zig). One column: visibility, colours, text direction, box spacing, flex and grid rows, positioned boxes. GET and POST forms. Pictures fetched three at a time and cached. Scripts run under memory, depth and time bounds, with their own connections. `web -t <address>` prints a page's text. Tests: `zig build test-web`, `zig build test-dom`. |
+| echat | [`apps/echat/`](../apps/echat/) | IRC client. Engine: IRCv3 tags, stream framing, `RPL_ISUPPORT`, CAP 302 including multi-line and post-registration capabilities, SASL `PLAIN` and `EXTERNAL`, nick retries, keepalive, registration timeout. No sockets or allocation, so it is host-tested against `third_party/irc-parser-tests` (transcribed by `make irctests`). Window: network rail with rooms and counts, grouped transcript, member list, input line. `/server /join /part /nick /topic /me /msg /quit`. Up to four networks. Verified on a real network. Config in `/cfg/echat.cfg`. TLS through `ulib.tls` and `/share/ca.store` (`make castore`) is written and does not work; plaintext on 6667 until it does. |
 
 ## Shared between kernel and userspace
 
-[`src/lib/`](../src/lib/) is compiled into both. It imports nothing else, enforced on every
-build. What one driver alone uses does not live here however pure it is: the AR5212
-family's words and arithmetic sit in [`user/netd/ar5212/family.zig`](../src/user/netd/ar5212/family.zig)
-beside the driver that is the only thing reading them, and its tests run from
-`src/tests.zig` like every other module's.
+[`src/lib/`](../src/lib/) is compiled into both and imports nothing else, enforced on
+every build. Code used by one driver only stays with that driver, for example
+[`user/netd/ar5212/family.zig`](../src/user/netd/ar5212/family.zig).
 
 | Module | Purpose |
 |---|---|
 | [`syscalls.zig`](../src/lib/syscalls.zig) | The ABI as data: numbers, flags, wire formats. Generates the dispatcher binding and [`syscalls.md`](syscalls.md). |
-| [`ring.zig`](../src/lib/ring.zig) | SPSC shared-memory ring layout, and the shape of a segment carrying one ring each way, which is how a service hands a program both halves of a conversation in one grant. Where each ring sits is worked out by both sides of a privilege boundary separately, so it is written once and host-tested rather than twice and hoped for. |
+| [`ring.zig`](../src/lib/ring.zig) | SPSC ring layout, and a segment carrying one ring each way. Host-tested. |
 | [`civil.zig`](../src/lib/civil.zig) | Calendar arithmetic. |
-| [`mmio.zig`](../src/lib/mmio.zig) | A device's register window: an enum names the offsets, the window is instantiated for the width they are reached at, and instantiating it proves every offset is aligned for that width. Shared by the drivers, so the volatile access and the proof exist once. |
-| [`audio.zig`](../src/lib/audio.zig) | Sound as numbers: frames, periods, durations, volume as percent scaled without floating point, mixing that clips rather than wraps, and a fixed-point sine for tones and beeps. A mixer of as many voices as a program budgets for, each read at the rate it was recorded and scaled for each ear: one stream carries one thing, and a program making several sounds at once has to add them together. Samples come eight bits either signed or unsigned, or sixteen; a voice can hold a loop, start part way in, and be bent while it sounds; and the rate conversion draws a line between the two samples the position falls between, since taking the nearer turns an eight kilohertz recording into a staircase. Host-tested. |
-| [`text.zig`](../src/lib/text.zig) | An editable text as arithmetic: where the lines are, where the cursor is, and what typing or deleting does to both. UTF-8 throughout, so a cursor never lands inside a character and a delete never takes half of one. The column a cursor is asking for is remembered across short lines, which is the one thing everybody notices when an editor gets it wrong. The line index and the window arithmetic are shared with the pager, since a reader and an editor have to agree about what a line is. Pure, host-tested. |
-| [`usb.zig`](../src/lib/usb.zig) | The bus as data: request types, descriptors parsed from bytes at whatever offset they sit at, the walk over a configuration, pipes that own their data toggle, and the signature a driver is looked up by, which a manifest may name several of. Pure, host-tested. |
-| [`scsi.zig`](../src/lib/scsi.zig) | The bulk-only transport and the part of SCSI a disk needs: command and status wrappers little endian because USB is, the commands inside them big endian because SCSI is, and what capacity, sense and inquiry answers mean. Pure, host-tested. |
-| [`hid.zig`](../src/lib/hid.zig) | The boot protocol: the keyboard and mouse report shapes, the table between HID's usage numbers and the keys this system names, built once at compile time, and the difference between two reports, which is what a keystroke actually is. Pure, host-tested. |
-| [`pci.zig`](../src/lib/pci.zig) | What a device says about itself on the bus, and the capability shapes a driver acts on: which power states a link may enter, and how large a burst the link settled on in each direction. A device told to burst more than that puts packets on the link the other end will not take. Pure, host-tested. |
-| [`serial.zig`](../src/lib/serial.zig) | What a serial line is set to and what it says it is doing: the rate, the bits, the parity and the stop bits, the two lines a host holds up, and the seven facts a far end reports. RS-232's own numbering, which is why the USB class that carries a serial port writes these values out unchanged and a driver for a chip with its own register layout translates. Written and read back the way people write a line, `115200 8N1`, and what the far end is saying written as the names on a connector, all of a signal's name or none of it. Pure, host-tested. |
-| [`volume.zig`](../src/lib/volume.zig) | What the kernel and a userspace disk driver agree about: requests, statuses, and how the shared area they travel in is divided. Held in one place because it is the one thing neither side may have its own version of. Pure, host-tested. |
-| [`audiograph.zig`](../src/lib/audiograph.zig) | The routing graph: nodes, source/sink ports, links, defaults. Fan-in is mixing and fan-out copying by topology, so a mixer or recorder is one more node. Pure, host-tested. |
-| [`wifi.zig`](../src/lib/wifi.zig) | What a radio can be tuned to and how fast it may talk: band, channel with frequency both ways, channel width, security, SSID as octets, signal, and a rate that is either a legacy rate (whose enum values are the wire encoding) or a modulation-and-coding index. Covers b, g and n, so a later radio changes which values appear and not the vocabulary above it. |
-| [`ieee80211.zig`](../src/lib/ieee80211.zig) | 802.11 frames: frame control, the four-address rules, the QoS and HT control words, translation to and from ethernet through LLC/SNAP, the beacon's fixed fields, information elements walked and found by kind, and the robust-security element read for which cipher and key management a cell offers. |
-| [`mlme.zig`](../src/lib/mlme.zig) | The frames a station exchanges to join: open-system authentication, association request and response, probe request, and the farewell with its reason; and the account a scan keeps of one network from a beacon, with a security this system names whether or not it will join it. |
-| [`wpa2.zig`](../src/lib/wpa2.zig) | WPA2 with a pre-shared key as arithmetic, each piece against the standard's own vectors: the master key from a passphrase, the transient key from the nonces, the key-frame integrity code, the group-key wrap, and the four-way handshake as a value a test can hand key frames to. The cipher under every data frame is the library's own AES-CCM with the eight-byte code and thirteen-byte nonce 802.11 names, so nothing here implements a mode. |
-| [`join.zig`](../src/lib/join.zig) | Joining a network as a value: what has been reached, what to send next, when to stop waiting and how many attempts remain. Frames go in and an action comes out, so the whole of authentication, association and the key exchange is host-tested without a radio. |
-| [`rates.zig`](../src/lib/rates.zig) | How fast to talk to a station that is listening. A smoothed account per rate of how often a frame arrived, ranked by that chance over the air the rate takes, which is the only ranking that finds the point where a fast rate failing sometimes still beats a slow one that never does. Yields the series of rates the hardware works down, sampling one every so often so a link that improves is noticed. |
-| [`entropy.zig`](../src/lib/entropy.zig) | Unpredictable bytes, gathered from what the machine cannot predict. Interrupt timing collected into a ring cheap enough for the interrupt path, and a pool that hashes batches of it together with anything else offered: a radio's undecodable frames are the band's noise. Drawing hands back a hash of the pool and a count, never the pool. A pool says when it has heard too little, and a partial batch adds nothing, so asking repeatedly cannot talk one into claiming otherwise. |
-| [`escapes.zig`](../src/lib/escapes.zig) | The terminal escape-sequence state machine. Two terminals here and one grammar: the console draws into a text grid and eTerm into a window. |
-| [`style.zig`](../src/lib/style.zig) | What a line of output means, so both sides colour it the same. Roles rather than colours, because the two do not encode colour the same way. |
-| [`driver.zig`](../src/lib/driver.zig) | Driver confidence and binding state, so the boot table and `devices` cannot describe the same binding differently. |
-| [`kind.zig`](../src/lib/kind.zig) | What a file is, through three doors onto one answer: the name, for a listing asking about every row a cursor passes over; the bytes, for anything that can afford to read before it acts; and both together, where a mark in the bytes settles it and the name settles what they only guessed at: a format with no mark near its start is otherwise shapeless however plainly it is named. Wider than what this build can open, so a zip is a zip rather than a shrug; a container is told from what is inside it, and every kind belongs to a family a caller can act on. Pure, host-tested. |
-| [`openers.zig`](../src/lib/openers.zig) | Which program opens what, as a bit per family. Nothing here lists the programs a machine carries: each declares itself in a stanza of `/etc/openers` installed with it, so adding one is a program and its declaration. What is here is the policy over those declarations, and the choice in `open.cfg` above it; a choice naming something gone falls back rather than failing. Pure, host-tested. |
-| [`calc.zig`](../src/lib/calc.zig) | Arithmetic the way a person does it on a small machine: immediate execution, fixed point to six places, and every key of a calculator as a state machine. Pure, host-tested against the keys a hand presses rather than against a screen. |
-| [`str.zig`](../src/lib/str.zig) | Strings, and the one place a number becomes digits. |
-| [`logo.zig`](../src/lib/logo.zig) | The wordmark, drawn by the kernel and by `eeefetch`. |
+| [`mmio.zig`](../src/lib/mmio.zig) | Register windows: an enum names offsets, instantiation proves each offset aligned for the access width. |
+| [`audio.zig`](../src/lib/audio.zig) | Frames, periods, durations, integer volume scaling, clipping mix, fixed-point sine. A voice mixer: 8-bit signed or unsigned and 16-bit samples, loops, start offsets, pitch bend, linear interpolation. Host-tested. |
+| [`text.zig`](../src/lib/text.zig) | Editable text: line index, cursor, insert and delete, UTF-8 safe, remembered column. Shared with the pager. Host-tested. |
+| [`usb.zig`](../src/lib/usb.zig) | Request types, descriptor parsing, configuration walk, pipes with data toggle, driver signatures. Host-tested. |
+| [`scsi.zig`](../src/lib/scsi.zig) | Bulk-only transport wrappers and the SCSI commands a disk needs. Host-tested. |
+| [`hid.zig`](../src/lib/hid.zig) | Boot-protocol keyboard and mouse reports, usage-to-key table built at comptime, report differencing. Host-tested. |
+| [`pci.zig`](../src/lib/pci.zig) | Device identity and capability shapes: link power states, maximum payload per direction. Host-tested. |
+| [`serial.zig`](../src/lib/serial.zig) | Line settings (rate, bits, parity, stop bits), control lines, the seven status signals, in RS-232 numbering. Parses and prints `115200 8N1`. Host-tested. |
+| [`volume.zig`](../src/lib/volume.zig) | Kernel and userspace disk-driver protocol: requests, statuses, shared area layout. Host-tested. |
+| [`audiograph.zig`](../src/lib/audiograph.zig) | Routing graph: nodes, ports, links, defaults. Host-tested. |
+| [`wifi.zig`](../src/lib/wifi.zig) | Band, channel and frequency, width, security, SSID, signal, legacy rate or MCS index. Covers 802.11b, g and n. |
+| [`ieee80211.zig`](../src/lib/ieee80211.zig) | Frame control, addressing rules, QoS and HT control, LLC/SNAP to Ethernet, beacon fields, information elements, RSN element. |
+| [`mlme.zig`](../src/lib/mlme.zig) | Open-system authentication, association, probe request, deauthentication and disassociation, and a scanned network's record from a beacon. Fuzzed. |
+| [`wpa2.zig`](../src/lib/wpa2.zig) | WPA2-PSK: PMK from passphrase, PTK from nonces, key MIC, group key unwrap, four-way handshake. Each checked against the standard's vectors. Data frames use the library's AES-CCM with 802.11 parameters. |
+| [`join.zig`](../src/lib/join.zig) | Joining as a state value: frames in, next action out. Host-tested without a radio. |
+| [`rates.zig`](../src/lib/rates.zig) | Rate selection by smoothed per-rate delivery probability weighted by airtime, with periodic sampling. |
+| [`entropy.zig`](../src/lib/entropy.zig) | Interrupt timing ring and hashing pool. Draws return a hash and a readiness flag, never the pool. |
+| [`escapes.zig`](../src/lib/escapes.zig) | Terminal escape-sequence parser, shared by the console and eTerm. |
+| [`style.zig`](../src/lib/style.zig) | Output colour roles shared by console and GUI. |
+| [`driver.zig`](../src/lib/driver.zig) | Driver confidence and binding state for the boot table and `devices`. |
+| [`kind.zig`](../src/lib/kind.zig) | File kind from name (`fromName`), from bytes (`fromBytes`), or both (`of`), with a family per kind. Used by `file`, the file manager and the launcher. Host-tested. |
+| [`openers.zig`](../src/lib/openers.zig) | Which program opens which file family. Programs declare themselves in `/etc/openers`; `open.cfg` holds the user's choice, falling back if the chosen program is gone. Host-tested. |
+| [`calc.zig`](../src/lib/calc.zig) | Calculator: immediate execution, six-place fixed point, keys as a state machine. Host-tested. |
+| [`fuzzing.zig`](../src/lib/fuzzing.zig) | Choice source for fuzz targets: the fuzzer's `Smith`, or a seeded generator. Test-only. |
+| [`str.zig`](../src/lib/str.zig) | Strings and number formatting. |
+| [`logo.zig`](../src/lib/logo.zig) | The wordmark, drawn by the kernel and `eeefetch`. |
 
 ## Testing
 
-- `make test`: host-side unit tests (bootinfo layout, keymap tables, QR encoder, run
-  queues, calendar, ring buffer, battery arithmetic and its mislabeled-percent correction,
-  the quirk registry's family matching, command-line flag matching, the terminal emulator
-  and its key encoding, text wrapping and cursor arithmetic) plus a differential check of the QR encoder against `libqrencode`
-- The host tests cover the extra applications' models as well as the system's,
-  since those are pure Zig and cost no emulator. Building the apps for the target
-  is still on demand: that is the expensive half.
-- The host tests are compiled for a second machine as well as this one. `zig build
-  test` builds for whatever it is run on, so code that compiles on one host and not
-  another passes here and fails wherever the tests run next: the libc's `va_list` is
-  a plain pointer on aarch64 and a structure of its own on x86-64. `zig build check`
-  builds them for x86-64 Linux and does not run them, a binary for another machine
-  being one this one cannot run.
-- The kernel's own boundary is tested the same way, which is what the split files are
-  for: `arch/x86/pagetable.zig` holds the page-table format and the walk that decides
-  whether a user buffer may be touched, with no instructions in it, so it can be asked
-  about a range that runs off the end of its mapping without a machine to run off the
-  end of; `kernel/elf/plan.zig` decides everything about a program image before a frame
-  is spent on it, so the files worth asking about are the ones no linker would produce;
-  the long-name assembler in `kernel/fat.zig` is asked about runs no formatter would
-  write, because it is the parser most exposed to whatever medium is put in the machine
-- `probe` asks the running kernel the same questions from Ring 3, which is where the
-  check, the fault path and the errno that comes back are actually exercised: a null
-  pointer, one nothing is mapped at, an address in the kernel's half, a length that
-  wraps, a buffer running off the end of its page, a read-only page offered as somewhere
-  to write, a stray handle, a misaligned message, a reserved service name, a read-only
-  event, a crafted program image, and a keyboard another program is holding. It then
-  sends handles over a channel a few hundred times and reads what the kernel is holding
-  on either side, because a reference kept on every call is an object that is never
-  freed and nothing else would show it
-- Every file that holds tests is reached by one of the runners, and that is checked
-  rather than assumed: the shared library through the test block in `lib.zig`, which
-  names its declarations, and everything else by being imported in `src/tests.zig` or
-  `src/quirks/tests.zig`. A file that is only re-exported is not analysed until
-  something reaches for it, and a runner collects tests from the files it analyses, so
-  a file nobody names builds cleanly, reports success, and runs nothing. The way to
-  prove a file is in the run is to make one of its tests fail on purpose and watch the
-  suite go red
+- `make test`: host-side tests for everything that runs without hardware, including the
+  optional applications' models, plus the QR encoder compared against `libqrencode`
   across all eight masks.
-- `make fuzz` drives every target that calls `std.testing.fuzz`. It does not work on
-  Zig 0.16.0: the compiler's test runner fails to build in fuzz mode, and a four-line
-  project with one fuzz test fails the same way. Each target therefore has a seeded
-  counterpart that runs in `make test`, driving the same code through the `Choices`
-  union in [`lib/fuzzing.zig`](../src/lib/fuzzing.zig). Targets build a plausible input
-  and let the search choose what is wrong with it, in the format's own terms rather than
-  as bytes; an input of arbitrary numbers fails the first check it meets. Five targets,
-  each over input from outside the machine:
-  - **Volume**, [`fat/check.zig`](../src/kernel/fat/check.zig): built through the
-    driver, damaged, then required to mount, check, and settle (a second check finds
-    nothing). Reaches every branch of the checker, cross-linked clusters included.
-  - **Boot sector**, same file: each field pushed past where its check holds. Found two
-    defects, both fixed: a table size that overflowed the data-area calculation, and a
-    volume claiming more sectors than its medium.
-  - **Program image**, [`elf/plan.zig`](../src/kernel/elf/plan.zig): a returned plan is
-    checked against everything the loader assumes without asking again. Segment bytes
-    inside the file, nothing in the kernel's half or the page at zero, no two segments
-    sharing a page, entry inside an executable segment.
-  - **Receive page**, [`netd/rxpage.zig`](../src/user/netd/rxpage.zig): records as the
-    Attansic L1E writes them, then tampered with. The walk must always advance or stop,
-    and a returned frame must lie inside the page.
-  - **Management frame**, [`lib/mlme.zig`](../src/lib/mlme.zig): unauthenticated input
-    off the air. Every parser answers or declines for any bytes, and answers the same
-    way twice.
-  - **Page table**, [`arch/x86/pagetable.zig`](../src/arch/x86/pagetable.zig):
-    differential against a walk with none of its shortcuts.
-- `zig build check`: the layering rules, and a check that no module imports something it never uses.
-- `make check-all`: the gate a change passes before it is done. The tree is formatted as
-  `zig fmt` formats it, the layering holds, the host tests pass, both images build, the root
-  filesystem and the two volumes hold what a boot needs, and the development image boots
-  headless twice: the first boot reports done, `probe` refuses everything it should and leaks
-  nothing, `svc` shows the services up, nothing panicked or tripped the boot watchdog, and a
-  setting written on the first boot is read back on the second, where a service asked to
-  stop also goes on its own. A volume written to and then cut off, which is what killing
-  the emulator is, is found on the next boot to say so, is checked, keeps what was
-  written, and is left settled for the boot after that.
-- Boot self-tests, heap, syscall ABI, clock advance, IPC. Each reports `fail` on the boot
-  log rather than hanging, because the target has no serial port.
-- `make shot OUT=x.png TYPE="..."`, boot headless, type at the shell, screenshot, and a full serial transcript beside it. `PAUSE` is the wait after each typed line, for a command that takes longer than a moment.
+- `zig build check`: layering rules, unused imports, and the host tests compiled for
+  x86-64 Linux as well as the build machine.
+- Pure logic is kept in files with no I/O so it can be tested directly: page-table
+  walk, program-image plan, FAT long-name assembly, volume check decisions, volume
+  geometry, receive-page walk.
+- A new test file runs only if `src/tests.zig`, `src/quirks/tests.zig` or the test
+  block in `lib.zig` names it; a re-export is not enough. Confirm by making one of its
+  tests fail.
+- `probe` checks kernel boundaries from Ring 3: null and unmapped pointers, kernel
+  addresses, wrapping lengths, buffers crossing a page end, read-only pages as write
+  targets, stray handles, misaligned messages, reserved service names, read-only
+  events, crafted program images, a keyboard held by another program. It then passes
+  handles over a channel repeatedly and checks for leaked references.
+- `make fuzz` drives fuzz targets. It does not work on Zig 0.16.0: the compiler's test
+  runner fails to build in fuzz mode. Each target has a seeded counterpart in
+  `make test`, driven through [`lib/fuzzing.zig`](../src/lib/fuzzing.zig). Targets
+  build a plausible input and choose damage in the format's own terms:
+  - Volume, [`fat/check.zig`](../src/kernel/fat/check.zig): mount, check, and a second
+    check finds nothing.
+  - Boot sector, same file: fields pushed past their checks.
+  - Program image, [`elf/plan.zig`](../src/kernel/elf/plan.zig): every accepted plan
+    satisfies what the loader assumes.
+  - Receive page, [`netd/rxpage.zig`](../src/user/netd/rxpage.zig): the walk advances or
+    stops; frames lie inside the page.
+  - Management frame, [`lib/mlme.zig`](../src/lib/mlme.zig): parsers are total and
+    deterministic.
+  - Page table, [`arch/x86/pagetable.zig`](../src/arch/x86/pagetable.zig): agrees with a
+    walk without shortcuts.
+- `make check-all` is the gate. It runs `zig fmt` check, `zig build check`,
+  `make test`, the browser document tests, builds both images, checks the volumes'
+  contents, then boots the development image headless for each step:
+  1. First boot reports done; `probe` passes and leaks nothing; services are up; no panic
+     or watchdog; a setting is written.
+  2. Second boot reads the setting back; a service stops on request.
+  3. Power cut: a volume written then killed is found dirty, checked, keeps its data, and
+     is clean on the following boot.
+  4. The image on a larger card: `/home` grows into it, keeps its data and checks clean;
+     another volume is formatted and checks clean.
+  5. Network: DHCP lease and echo on every emulated adapter.
+  6. USB serial adapter: enumerates, takes settings, carries typed data.
+  7. Serial console: the log reaches the port, including lines written after it opened.
+  8. Hub and bus rebuild: a disk behind a hub keeps its mount across `usb rebuild`.
+  9. Suspend and resume: display, keyboard, disk and network work after waking.
+  10. Card reader boot: the volumes arrive through USB.
+- Boot self-tests: heap, syscall ABI, clock advance, IPC. Failures print `fail` in the
+  boot log rather than hanging.
+- `make shot OUT=x.png TYPE="..."` boots headless, types at the shell, and writes a
+  screenshot and a serial transcript. `PAUSE` sets the wait after each line.
 
 ## The boot log
 
-Two command-line gates, and they decide different things. `verbose` shows the boot's
-narration, one line per component and per service as it comes up; `debug` is the tier
-beneath it, for chasing a fault, and is the one kind of line that is not recorded when it
-was never asked for. A quiet boot shows failures and warnings only, and the whole story,
-kernel and services alike, is still in the ring behind `log`, which keeps its own needle
-filter and a `-n` tail.
-
-Once the shell claims the console, the screen is its conversation: everything else still
-says its line, into the ring, in every boot mode. The claim dies with its owner, so the
-shutdown's own narration returns to the screen for the last lines.
+- `verbose` shows one line per component and service as it starts. `debug` adds a
+  lower tier and is the only kind of line not recorded unless requested.
+- A quiet boot shows failures and warnings. Everything is in the ring behind `log`,
+  which filters by substring and tails with `-n`.
+- Once the shell owns the console, other output goes to the ring only. The claim ends
+  with its owner, so shutdown messages reach the screen.
 
 ## The bring-up model
 
-**A service registers its name only once it is ready to answer.** `platd` loads the
-firmware, finishes its transitions, then registers `/svc/platform`. The SCI itself is
-routed and left shut (see the `platd` row above): what the name promises is that the
-firmware is settled, which is what its dependants actually need.
-
-**Names order the boot, not the clock.** The manifest's `needs` lists the services and
-targets a service asks questions of, and `provides` is the name init waits for before
-releasing dependants. `netd` declares `needs = platd`, and because `platd` publishes
-its name only once the firmware has settled, the adapter's DMA engines start after the
-firmware's own boot activity by construction, with no timed allowance anywhere. The
-manifest's `target` names the group a service belongs to; the boot's own services
-belong to `boot`, and a service in no target starts from the supervising loop once the
-targets have settled. Boot-line tokens hold any service down for one boot (`no.<name>`)
-or start it late under the watchdog (`late.<name>`, short forms `nonet`, `nohw`,
-`netlate`) for diagnosis.
+- A service registers its name only when ready to answer. `platd` registers
+  `/svc/platform` once firmware is settled.
+- Names order the boot, not time. `needs` lists the services a service calls; `provides`
+  is the name init waits for before starting dependants. `netd` needs `platd`, so the
+  network adapter starts after firmware boot activity without a timed delay.
+- `target` groups services. Boot services belong to `boot`; services in no target start
+  after targets settle.
+- Boot-line tokens: `no.<name>` holds a service down for one boot; `late.<name>` starts
+  it late under the watchdog. Short forms: `nonet`, `nohw`, `netlate`.
 
 ## Milestones
 
-Against the table in [design §15](../design/00-vibeee.md).
+Against [design §15](../design/00-vibeee.md).
 
-**M0 is complete.** Boot chain, kernel entry, PMM/paging/heap, IDT, LAPIC/IOAPIC, timers,
-scheduler, syscalls, Ring 3, IPC, ramfs, VESA console, i8042 keyboard and `vsh` are all in
-and exercised on every boot.
+### M0: complete
 
-**M1 is complete.**
+Boot chain, kernel entry, PMM, paging, heap, IDT, LAPIC and IOAPIC, timers, scheduler,
+syscalls, Ring 3, IPC, ramfs, VESA console, i8042 keyboard, `vsh`. Exercised every boot.
+
+### M1: complete
 
 | Item | State |
 |---|---|
-| PATA + FAT32 | Done, reading and writing |
-| `init` | Done: manifests, dependency order, readiness, restart policy, orphan reaping |
-| `devmgd` | Done. Matches `/lib/drivers/*.man` against the bus and starts each driver with the capabilities its manifest asks for. `usbd`, `sndd` and `netd` come up this way, so what a build drives is a manifest and a program rather than a branch anybody has to edit |
-| `eeelibc` | Done enough to build and run a POSIX program that draws its own pixels. `math.h` is a shim: Zig's compiler_rt already carries `sin`, `cos`, `exp`, `log`, `sqrt`, `floor`, `fmod` and the rest under their C names, and `std.math` the inverse angles, hyperbolics, `pow` and `hypot`, so what is written here is the second list wearing its C name. `printf` does the float conversions through `std.fmt.float`, with C's exponent form and `%g`'s trimming. `vibeee.h` covers what POSIX has no word for: taking the screen, reading keys, and joining the sound graph as a node with one output, mixing several sounds into it and waiting in a way that keeps feeding it, with the key numbers and modifier bits generated from the enum and packed struct that define them. Parity is checked rather than claimed: `examples/conform.c` is eighty-seven facts with one right answer each, built with the host's compiler and with ours; all of them match. A process carries an environment, handed down from init and passed on by the shell, so `getenv` answers what it was told and `setenv` changes it. `strtod`, `rand`, `assert`, `stat`, `access`, `opendir`, `getopt` and the set-walking string functions are there, which is most of what a program reaches for before it reaches for anything unusual. No `fork`, no asynchronous signals, no sockets. Fixed notation rounds the way C rounds, through `lib/decimal.zig`: a double is expanded to its exact decimal, which every binary fraction has, and rounded to the nearer with a tie going to the even neighbour. The shortest decimal that reads back as a double is a different number and rounds the other way at a half, which is why the digits come from the value itself rather than from a shorter spelling of it. Infinities and NaNs are spelled out before any of that, having no expansion to take. The raw-terminal path (`tcgetattr`/`tcsetattr`, `VMIN`) is implemented and has no program exercising it |
-| Multicall utilities | Done |
-| Touchpad | Works in relative mode; no tap zones, edge scrolling or gestures |
-| **GMA900 native modeset** | Done and verified on the machine: gen3 reads the panel's timing from the registers firmware programmed and sets it at boot, reverting if the pipe reports an underrun |
-| **First boot on real hardware** | Done. The machine boots its image from the SD slot and comes up running; what remains below is the polish, not the bring-up |
-| Battery and backlight | Done: `_BIF`/`_BST` through the embedded controller, with this family's mislabeled-percent quirk corrected by the kernel's quirk registry and the health figure labelled as the firmware's own word. `_BIF` is read once per session, because spamming it wedged the interpreter into an out-of-memory state that took `_PTS` down with it; a derived rate covers the times the firmware's own is unusable |
-| Wired networking | Done and verified on the machine, sustained: a DHCP lease from the home router, the gateway and the internet answering every echo of every round, ARP conversation flowing both ways. On this board the interrupt lines ride the falling edge with the service-until-quiet discipline and the runtime never says a word to the interrupt controller; that ride is now a quirk of this firmware rather than the system's nature, a generic board keeps level lines with the deferred completion, and every acknowledgement says whether its pass found work, so a shared edge wire held low across a neighbour's assertion is chased by a cascade instead of going silent |
-| Settings and home that outlive a boot | Done and verified in the emulator against this machine's own shape: the 701 reads its medium through a USB card reader, so the volumes carrying what the machine remembers are unreachable when the boot mount pass runs, and the root is the copy the loader left in memory. The boot medium is spoken for by the signature the loader read, and its second and third volumes take `/cfg` and `/home` whenever they arrive, which on this machine is after `usbd` has enumerated the reader |
-| USB | Done and verified on the machine, all the way to files: the high speed controller enumerates a stick, `umass` drives it over the bulk-only transport, and its partitions arrive under `/media` on their own. Two faults stood between the emulator's account and this machine's, and neither could appear under emulation. The controller addresses sixty-four bits and therefore reads the extended descriptor format whatever the segment register holds, where the emulator's part is thirty-two bit and reads the short one; the descriptors carry the extended form always, upper halves present and zero. And nothing chose a configuration: an addressed device answers on endpoint zero and has none of the endpoints it describes until it is told which configuration to be, where the emulator's devices carry their endpoints regardless |
-| The Eee PC 1000's wired port | Written, not run. The Attansic L1E is the wired part of the 1000 and of the 901 units that carry one, and shares its MAC, its PHY and its reset with the L2 the 701 has. Nothing emulates it and the machine that has one is not the machine this is developed on, so what is proven is the shared half's arithmetic, on the build machine, and that the whole compiles |
-| The bus going down and coming back | Done in the emulator: a disk behind a hub keeps its mount across `usb rebuild`, which is the path a resume from sleep will take. Two bugs were in the way and are fixed. A hub's ports are the hub driver's to watch and what it found was acted on two calls away from the walk that offers disks to the kernel, so a stick plugged into a hub was enumerated and driven and never mounted, and one unplugged left its volume mounted over nothing. And a volume was matched to its disk by address, which the walk hands out afresh: a disk that came back after one in front of it was taken away would have been mounted over another's volume |
-| A serial console | Done in the emulator, end to end: naming a port sends the whole boot record down it and goes on sending as lines are said, which the gate checks by looking for both the boot's opening line and one written after the port opened. The record also reaches the mirror now when the screen's owner suppresses it, so the emulator's own transcript carries every service rather than only the ones that narrated before the shell came up: `usbd` was missing from every transcript this machine has ever produced. Untried on the machine, which has no adapter to hand |
-| Serial adapters | Done in the emulator, end to end: a cable enumerates, `ftdi` drives it, `ser` lists the port and opens a terminal on it, keystrokes reach the far end, what the far end sends is shown, setting the line takes, and pulling the cable while the terminal is open ends it rather than leaving it waiting. Not yet tried on the machine, which has no adapter to hand. The other driver, for the class a microcontroller answers with, has no emulated device anywhere: its parsing is host-tested and the rest of its path is the one the cable proved |
-| `eeewm` + `libeui` | Done, and past what M1 asked for |
-| Floating windows | Done: a window that asks to float opens at the size it asks for, and is moved with Super and the arrows or by dragging it with Super held. It stops at the screen's edge, because a window dragged off it is one nobody can drag back |
-| Finding a file | Done: the launcher gathers what is under `/home`, two levels deep, when it opens rather than while somebody types, and ranks files beside apps, windows and verbs. A row wears the picture its sort of file gets and says what it is; Enter opens it with whatever opens that sort of thing, and Shift with Enter opens where it lives instead |
-| eimg | Done: one picture at a time, on the darkest ground the theme has, at fit, whole or double. The camera's own words are a sidebar that is there when it is wanted, scrolled and stacked so nothing arrives cut in half. A turn by hand is a quarter on top of what the file says it was taken as, rather than a second idea of which way up something is; the same walk draws it as draws the file manager's thumbnails |
-| Calc | Done: the first window that asks to float, at the size it asks for. The arithmetic is `lib/calc.zig`, fixed point to six places so an answer is what the arithmetic says rather than the nearest binary fraction, and host-tested against the keys a hand presses rather than against a screen. Typed at or pointed at: every key on the pad has a key on the keyboard, Enter ends a sum, and the pad answers Tab and the space bar like every other control |
-| eTerm | Done |
-| Files, Pad | Done: Files is the dual-pane manager; Pad is the graphical text editor with file dialogs and an unsaved-changes prompt |
-| Keymaps | Done: US-International and Belgian AZERTY, chosen by a setting or cycled with `Super+Space`, and the choice is remembered |
+| PATA + FAT32 | Read and write. |
+| `init`, `devmgd` | Manifests, dependency order, readiness, restart policy, orphan reaping; drivers bound from manifests. |
+| libc | Builds and runs POSIX programs that draw their own pixels. See [eeelibc](#eeelibc). |
+| Multicall utilities | Done. |
+| Touchpad | Relative mode only. |
+| GMA900 native modeset | Verified on the machine. The 701 boots from the SD slot. |
+| `eeewm` + `libeui` | Done. |
+| eTerm | Done. |
+| Keymaps | US-International and Belgian AZERTY, set in Settings or cycled with `Super+Space`, remembered. |
 
-**The boot line can be changed at the machine.** The loader shows what the kernel is
-about to be told and waits two seconds before using it: a key in that window opens the
-line for typing, which is the only moment there is, since nothing after it can change
-what the kernel starts with. The change lasts for that boot alone; the medium is never
-written to, so a line that stops the machine booting is undone by starting it again.
-Verified in the emulator for the ordinary boot, an added flag taking effect, backspace,
-an empty line, and eighty characters typed into a buffer that holds sixty-three.
+### M2: complete
 
-**A machine that remembers.** The boot medium carries three volumes: the system,
-`/cfg`, and `/home` itself. The loader records the medium's own partition signature, so
-the kernel attaches the disk it actually booted from rather than whichever one it found
-first. Settings are read from `/etc` and then from `/cfg` on top: a value nobody changed
-is what the system was built with, and one that was changed outlives the power being
-cut. Home is a volume rather than a directory in the root filesystem, because that
-filesystem is rebuilt from the medium at every boot and a home that empties itself
-overnight is not one. Verified across clean shutdowns and reboots, and read back off the
-image from outside.
+| Item | State |
+|---|---|
+| `usbd` | EHCI and UHCI, mass storage, keyboards, mice, hubs. Verified on the machine: a stick enumerates, mounts under `/media`, unmounts on removal. |
+| `platd` | uACPI, EC, battery, backlight, switchable parts, routing. Battery percent mislabel corrected by the quirk registry; `_BIF` read once per session. Hotkey decoding is written; notifications are gated off on the 701 (see [Platform service](#platform-service)). |
+| `sndd` | Routing graph over AC'97 and HDA. HDA verified by ear on the 701. |
+| `netd` | Wired networking with lwIP, DHCP, DNS, and SNTP (`timed`). Verified on the machine: lease, gateway and internet reachable. `nc`, `resolve`, `ping`; 127.0.0.1 without hardware. |
+| Pad, Monitor, Settings | Done. |
 
-**M2 is complete**, except for USB suspend and resume: wired networking is done on the machine through
-the whole stack, streams and datagrams included: `nc` carries conversations both ways
-over the socket bridge, `resolve` answers names from the hosts table and DNS, `ping`
-takes names, and 127.0.0.1 works with no hardware under it. Audio runs as a routing
-graph over AC'97 and HDA. USB runs on EHCI: a stick enumerates, mounts under /media,
-is read and written, and takes its mount with it when it is pulled; a USB keyboard
-types and a USB mouse moves the pointer. A hub is a device with a driver like any
-other, and what hangs off one enumerates the way a root port's device does. The boot
-bring-up model (services behind `needs`/`provides`, registered settled) is
-load-bearing. The bus goes down and comes back, and so does the machine: suspend to
-memory runs start to finish in the emulator. M3 begins with Wi-Fi, the remaining
-platform work, and new applications.
+### M3: in progress
+
+| Item | State |
+|---|---|
+| Wi-Fi | Scans, joins a WPA2 network and takes a DHCP lease on the machine. Traffic not confirmed. |
+| Suspend to memory | Verified in the emulator. Not run on the 701. |
+| Install to SSD | Not started. Prerequisites done: `format`, `grow`, volume check. |
+| A/B updater | Not started. |
+| UVC webcam | Not started. |
+| Turbo mode | Not started. |
+| Mines, Draw | Not started. |
+
+### Not on the roadmap, done
+
+| Item | State |
+|---|---|
+| Persistent settings and home | The boot medium carries the system, `/cfg` and `/home`. Settings read from `/etc` then `/cfg`. The loader records the medium's partition signature so the right disk is used. On the 701, `/cfg` and `/home` mount when `usbd` brings up the card reader. Verified in the emulator across shutdowns and reboots. |
+| Volume check, format, grow | Clean-unmount flag, check at mount, `check`, `format`, `grow`. Verified in the emulator by the gate. |
+| Fuzz targets | Six targets with seeded counterparts in `make test`. See [Testing](#testing). |
+| Bus rebuild | A disk behind a hub keeps its mount across `usb rebuild`. Verified in the emulator. |
+| Serial console | The log reaches a USB serial port. Verified in the emulator; not tried on the machine. |
+| Serial adapters | FTDI verified in the emulator: enumeration, `ser`, typed data both ways, settings, unplug. `acm` not run against a device. |
+| Eee PC 1000 wired port | `atl1e` written, not run. Shared Attansic code tested on the build machine. |
+| Boot line editing | Loader waits two seconds for a key to edit the command line. Verified in the emulator. |
+| Files, Viewer, Calc | Done. |
+| Floating windows, file search | Done. |
 
 ## Known gaps
 
-- `/etc` and `/tmp` are part of the root image, which is rebuilt from the boot medium
-  every time. That is what `/etc` is for; `/tmp` is named for it. Everything a person
-  writes goes to `/home`, which persists.
-- **The final power cut.** Power off stops every service, flushes, reaches `_PTS` and
-  writes the sleep state; the panel goes dark and the power LED stays on, so the SLP_TYP
-  transition on this machine is not finished. What it needs after a formed `_S5_` request
-  is still open.
-- The pointing device runs in relative mode: no tap zones, edge scrolling or multi-finger gestures.
-- Wheel decoding is untested; QEMU's monitor cannot generate scroll events.
-- **Suspend to memory has only been run in the emulator.** `make check-all` proves the
-  whole path there. The one piece known to be missing is in the gen3 driver: it restores
-  the pipe, the plane and the fitter, but not the panel power delays or the watermarks
-  firmware set. Until it saves and restores those, a wake on the 701 may come back with
-  the panel mistimed.
-- A full or low speed device behind a hub on the *high speed* controller needs split
-  transactions. The queue heads carry the hub and port for them and the arithmetic is
-  written, but nothing has exercised it: the emulator will not put a full speed hub on
-  an EHCI bus, and the machine's own hubs are the companions' business.
-- A serial port has one read standing on it at a time, which is one packet on the
-  companion controllers and eight on the high speed one. A device sending faster than
-  this process is woken loses what did not fit, and says so: the ring carries the fact
-  out of band and `ser` prints it, which is the one place it cannot be said among the
-  bytes that had nowhere to go. At a console's rate there is a third of a second of
-  room and the question does not arise.
-- The class driver for a serial port, `acm`, has never run against a device. No
-  emulator carries one, and nothing this machine owns answers that class; what is
-  proven is the descriptor reading, which is where every reference driver's
-  workarounds live, and it is host-tested against the shapes real devices write.
-- **The console over a serial port begins where the bus service does.** Everything
-  before `usbd` has found the adapter is in the record and is sent when the port
-  opens, so a boot that completes loses nothing; a boot that dies before then says
-  nothing down the wire, and the panic screen is what it leaves. A port on the
-  chipset would have carried that part, and this machine has none.
-- A serial adapter's break is held by the device where the class times it and refused
-  where the chip does not: holding it here would stop everything else the bus service
-  carries for as long as it lasted.
-- The Attansic L1E driver has never run against a part. No emulator carries one, and
-  the machine this is developed on has the L2 instead. It declines the part's
-  checksum and segmentation offload, uses one of its four receive queues, and bursts
-  at whatever the PCI Express link settled on rather than tuning for a gigabit wire:
-  all three are choices a driver that had been measured might revisit.
-- **What a file is, is decided twice.** The `file` command reads a file's first
-  bytes and names what it found; the file manager's preview and its listing
-  decide by suffix instead, because reading every file the cursor passes over
-  would be a disk seek per keypress. Both answers are useful and neither is the
-  other's: what belongs in `lib` is one recogniser with both doors, a cheap one
-  from the name and a certain one from the bytes, so the icon a listing draws
-  and the kind `file` reports cannot disagree.
-- **The launcher cannot draw a program's own icon.** A program carries its own
-  pictures in the toolkit's format now, packed at compile time, and hands them to
-  its rail rows, headings and tiles; what it cannot do is hand one to the
-  launcher, which draws a picture per row from a list the window manager holds, so
-  a program under home has no picture there. What that wants is the icon in the
-  program's own binary, with the shell's own set as the fallback: design/10-gui.md
-  §6.7 says the shape.
-- **Sealed connections are written and do not work.** `ulib.tls` grants a socket
-  to `std.crypto.tls.Client`, checks the server against `/share/ca.store` and
-  reads and writes through it; the transport, the store, the randomness and the
-  buffers are each confirmed by packet capture and against a local TLS 1.3
-  server, which the client reaches as far as comparing the certificate's name.
-  Two things in the standard library stop it going further, neither of them in
-  this tree. Its client has no answer for a `certificate_request`, so a network
-  that asks the client to identify itself is refused outright, and Libera.Chat
-  and OFTC both ask. Against a chain that does verify, the handshake faults
-  inside `Client.init` itself. Until both are cleared, `echat` reaches a network
-  in the clear on 6667.
-
-- **The radio joins a network; it does not stay in one yet.** Scanning and
-  joining are both confirmed on the machine: `net wifi scan` lists the networks
-  in earshot, and the station finds the one it was told to, authenticates,
-  associates, proves the key and reports itself joined on a home access point.
-  `ar5212` brings the AR2425 up, reads its store, runs the transcribed reset
-  and channel-set pipeline, establishes the power it may transmit at from the
-  board's own conformance tables, works its transmit queue and hands frames up;
-  the station sweeps the plan, or holds a channel configuration names, keeps
-  what it hears, and drives `lib/join.zig` through the whole exchange.
-
-  On the last run the station held the association, completed the key exchange
-  and took a DHCP lease. Traffic is unconfirmed: a ping to the gateway drew no
-  answer, and the bar's network icon stayed dim while `net` reported the
-  interface up with an address.
-
-  Management frame protection (802.11w) is not implemented. Management frames
-  are unauthenticated, so a forged deauthentication or disassociation ends the
-  join. The station ignores one not addressed to it and takes one answer of
-  each kind per exchange, but a forgery that arrives first is still
-  indistinguishable from the real frame.
-
-  The station reports which step it gave up on, which step it was on when the
-  last answer arrived, and the reason the cell gave for ending it, which is
-  what the next run is read for. It also counts frames heard while an exchange
-  is in hand, how many were addressed to this station, and how many were
-  authentications; the radio answers with what its queue did, what its
-  registers hold, the descriptor it is waiting on, and how its drops divide
-  between frames the baseband could not read, frames the air damaged, frames
-  it could not open, frames whose integrity code did not check out, frames
-  naming a key it does not hold, and frames of the wrong shape. On a channel
-  shared with other cells most drops are the first kind and say nothing about
-  this station.
-
-  None of the radio can be exercised in the emulator, which has no such radio.
-  The pure halves are host-tested regardless: the join's state machine, the
-  frames it sends, the key exchange's arithmetic, and the rate choice.
-
-  What the protection is worth is a separate question from whether the join
-  completes, and the answer is now written down rather than assumed. On a
-  protected network every data frame is opened under the association's keys or
-  dropped, so a frame's own claim to be unprotected buys nothing; every
-  accepted packet number is remembered, so a recorded frame played back is not
-  delivered twice; only a frame that verified moves the counter the signed
-  frames are judged against; a key handed over with the bytes it already had
-  keeps its numbering; a nonce is spent by the exchange that used it; and a
-  password set for a network's name means no open network answering to that
-  name is joined. Each of those is a host test. What none of them is, is a
-  test against another implementation: the access point in the tests is this
-  same code playing the other side, so what they establish is that the station
-  does what it is meant to and not that the two agree with anything else on
-  the air. Frame fixtures taken from a real capture, and a fake radio to drive
-  the loop through lost frames and refused queues, are what would settle that,
-  and are owed.
-
-  Ahead of all of it, the radio has to be on the bus at all. This firmware
-  leaves it powered down, so the card is not a device that failed to bind: it
-  is not there, and nothing in a bus walk at boot could have found it. `hw
-  wireless on` switches it through the vendor's own method, and the bus is
-  walked again so what appears is bound and claimed without a reboot. The
-  network service asks for it at start-up too, when configuration says the
-  radio should be in use.
-
-- **The web browser is an experiment.** `web` is not part of the system image and is
-  not held to the standard the rest of it is. It draws mainstream pages in part
-  rather than in full. What is known to be missing:
-
-  - **A page cannot measure itself.** `getBoundingClientRect` answers noughts,
-    because the browser keeps no geometry a script can read: layout happens after
-    the scripts have run, not between their lines. A page that places something by
-    what it measured places it at the origin.
-  - **Nothing is watched for.** `IntersectionObserver` and its kin are given an
-    observer that watches and stays silent, so a page that loads as it is scrolled
-    loads nothing, and one that reveals a part when it comes into view never
-    reveals it.
-  - **A block box takes the column.** A width a page states is followed for a box
-    that floats, for a flex or grid item and for one the page positions; an
-    ordinary block ignores it, and `margin: 0 auto` centres nothing.
-  - **`display` on an element that is not a block.** A page that makes an inline
-    element a block does not get a new line for it: the reader breaks lines by what
-    an element is called, not by what the cascade made it.
-  - **The faces carry no Chinese, Japanese or Korean.** The vendored pixel font is
-    the Latin subset, which covers Latin, Greek and Cyrillic; anything else draws
-    as question marks. That is the system's font rather than the browser's.
-  - **Scripts are slow.** A search results page costs about twenty-five seconds in
-    the engine on the reference machine against about two and a half on a desktop.
-    The time is spread across matching selectors, building strings and the engine
-    itself rather than sitting in one place.
-  - **A page's stylesheets come one at a time.** Everything else a page is made of
-    is asked for several at once; the stylesheets are not, because they are applied
-    in the order the page names them and are kept in the order they arrive.
+- `/etc` and `/tmp` are in the root image, which is rebuilt from the boot medium every
+  boot. `/home` persists.
+- **Power off does not cut power.** It stops services, flushes, runs `_PTS` and writes
+  the sleep state; the panel goes dark but the power LED stays on. What the 701 needs
+  after `_S5_` is not known.
+- The pointing device is relative only: no tap zones, edge scrolling or gestures.
+  Wheel decoding is unverified; QEMU's monitor cannot send scroll events.
+- **Suspend has not run on the 701.** The gen3 driver does not save and restore the
+  panel power delays and watermarks, so a wake may mistime the panel.
+- **Growing a volume is not power-safe.** A power cut while `grow` moves data leaves
+  the volume unreadable.
+- Full or low speed devices behind a hub on the EHCI controller need split
+  transactions. The arithmetic is written and untested: the emulator does not put a
+  full speed hub on EHCI, and the 701's own hubs are on the companions.
+- A serial port has one pending read: one packet on the companions, eight on EHCI. A
+  device that outruns the service loses data; the ring flags the loss and `ser` prints
+  it.
+- `acm` has not run against a device. Its descriptor parsing is host-tested.
+- The serial console starts when `usbd` finds the adapter. A boot that fails earlier
+  sends nothing to the port.
+- A serial break is held by the device where the class supports a timed break, and
+  refused otherwise.
+- `atl1e` has not run against hardware. It does not use checksum or segmentation
+  offload, uses one of four receive queues, and uses the link's negotiated burst size.
+- **The launcher cannot show a program's own icon.** Launcher entries use a fixed icon
+  set held by the window manager. [design/10-gui.md](../design/10-gui.md) §6.7 describes
+  embedding the icon in the program binary.
+- **TLS does not work.** `ulib.tls` wraps `std.crypto.tls.Client` with the CA store; the
+  transport, store, randomness and buffers are verified, and the handshake reaches
+  certificate name comparison. Two standard library limits block it: no response to
+  `certificate_request` (Libera.Chat and OFTC send one), and a fault in `Client.init`
+  on a chain that verifies. `echat` uses plaintext on 6667.
+- **Wi-Fi does not carry traffic.**
+  - Confirmed on the machine: `net wifi scan` lists networks; the station
+    authenticates, associates, completes the key exchange and takes a DHCP lease.
+  - Not confirmed: a ping to the gateway gets no reply, and the bar's network icon
+    stays dim while `net` shows an address.
+  - 802.11w is not implemented, so a forged deauthentication or disassociation ends
+    the association.
+  - The radio must be powered before it appears on the bus. `hw wireless on` powers it
+    through the vendor method and rescans; `netd` does the same at start when
+    configured.
+  - Diagnostics: the station reports the step it failed at, the last step answered and
+    the reason code; counts frames heard, frames addressed to it and authentication
+    frames. The radio reports its queue, registers, pending descriptor, and drops by
+    cause.
+  - Host tests cover the join state machine, frame construction, key derivation, rate
+    selection and replay protection, but the access point in those tests is this same
+    code. Captured frame fixtures and a fake radio are not written.
+- **The browser is experimental** and not part of the image. Known missing:
+  - `getBoundingClientRect` returns zeros: layout runs after scripts.
+  - `IntersectionObserver` and similar never fire.
+  - Ordinary blocks ignore a stated width; `margin: 0 auto` does not centre.
+  - Line breaks follow the element's tag, not its computed `display`.
+  - No CJK glyphs: the system font covers Latin, Greek and Cyrillic.
+  - Scripts are slow: about 25 s for a search results page on the 701, against about
+    2.5 s on a desktop.
+  - Stylesheets are fetched one at a time.

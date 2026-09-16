@@ -153,10 +153,8 @@ const Table = struct {
         return &self.rows[row];
     }
 
-    /// Change how long a row's device is.
-    ///
-    /// The row is what the rest of the system holds a pointer to, so a
-    /// partition that has grown has to grow here rather than in a copy.
+    /// Change a row's length in sectors. Callers hold pointers to the row, so
+    /// the row itself is updated.
     fn resize(self: *Table, dev: *const Device, sectors: u64) void {
         for (self.rows[0..self.count]) |*d| {
             if (d == dev) {
@@ -439,11 +437,8 @@ pub const Room = struct {
     }
 };
 
-/// How far a partition could be extended.
-///
-/// Only the last one on a disk can grow, and only into space no other
-/// partition claims. An entry is moved rather than rewritten elsewhere, so
-/// nothing before it shifts and nothing else has to be touched.
+/// How far a partition could be extended: to the end of the disk, or to the
+/// start of the next partition after it.
 pub fn roomAfter(part: *const Device) Error!Room {
     const place = partitionOf(part) orelse return error.NotSupported;
 
@@ -456,7 +451,7 @@ pub fn roomAfter(part: *const Device) Error!Room {
 
     const my_end = @as(u64, mine.lba_first) + mine.sectors;
 
-    // The disk's end, or the start of whatever comes next on it.
+    // The disk's end, or the next partition's start.
     var limit = place.disk.sectors;
     for (0..4) |i| {
         if (i == place.number - 1) continue;
@@ -472,11 +467,9 @@ pub fn roomAfter(part: *const Device) Error!Room {
     };
 }
 
-/// Extend a partition over the room after it, and say what it now covers.
+/// Extend a partition over the room after it. Returns its new length.
 ///
-/// Only the entry's length changes. Where the partition starts, what type it
-/// is and what is written inside it are left exactly as they were, so this is
-/// undone by writing the old length back.
+/// Only the entry's length changes; start, type and contents are untouched.
 pub fn extendPartition(part: *const Device) Error!u32 {
     const place = partitionOf(part) orelse return error.NotSupported;
     if (place.disk.read_only) return error.NotSupported;
@@ -493,8 +486,7 @@ pub fn extendPartition(part: *const Device) Error!u32 {
     try place.disk.write(0, &sector);
     place.disk.flush() catch {};
 
-    // The row the rest of the system holds is what says how long the
-    // partition is, and it has just changed.
+    // Update the registry row, which holds the partition's length.
     resizeRow(part, room.could_be);
     return room.could_be;
 }
@@ -564,11 +556,7 @@ const counting_ops = Ops{
     }.flush,
 };
 
-/// A device backed by memory.
-///
-/// Test-only: the filesystem's own tests need a medium they can look inside
-/// and damage. Nothing outside a test block names it, so none of it reaches
-/// the image.
+/// A device backed by memory. Test-only; not referenced outside test blocks.
 pub const Memory = struct {
     bytes: []u8,
 

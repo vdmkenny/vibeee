@@ -1,14 +1,13 @@
 # 09: Platform / ACPI / Power subsystem (vibeee)
 
-> **Status: partly built.** `platd` runs uACPI in userspace and holds the driver capability
-> and nothing else. Built: table load and namespace bring-up, the SCI, the sleep states the
-> tables declare, `_PTS`/`_S5_` power off and reboot, `_PTS` and `_WAK` around a suspend to
-> memory, `_BIF`/`_BST` battery, backlight through `_BCM` or the vendor's `PBLS`, thermal zone
-> readings, the switchable parts behind `hw` including the radio and camera gates, the
-> embedded controller as an EmbeddedControl region handler with query draining, and the
-> hotkeys of §6.6 as a queue anyone may watch. Not built: fan control and the overclock
-> module. There is no `powerd`: what §6.6 calls policy has
-> nowhere to live until there is a session to have a policy about.
+> **Status: partly built.** `platd` runs uACPI in userspace with `Caps.driver` and
+> `Caps.power` only. Built: table load and namespace bring-up, SCI handling, the sleep
+> states the tables declare, `_PTS`/`_S5_` power off and reboot, `_PTS`/`_WAK` around
+> suspend, `_BIF`/`_BST` battery, backlight through `_BCM` or vendor `PBLS`, thermal zone
+> readings, switchable parts behind `hw` (radio, camera, card reader, USB ports, modem), the EC
+> region handler with query draining, and the §6.6 hotkey queue. On the 701 the SCI and the
+> vendor greeting are held shut, so no notifications arrive (see `docs/status.md`). Not
+> built: fan control, the overclock module, and `powerd` (power policy).
 >
 > **§4 is superseded.** It decides to write a minimal AML interpreter. That decision was
 > taken when there was no C toolchain here and no third-party interpreter small enough to

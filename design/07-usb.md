@@ -3,17 +3,13 @@
 > Where this document and [`00-vibeee.md`](00-vibeee.md) disagree, the master design wins:
 > it carries later decisions this document predates.
 
-Status: implemented through M1, verified end to end in QEMU. Both controllers
-run behind one seam: EHCI for high speed, and the UHCI companions that a full or
-low speed root port belongs to. On top of them: enumeration, hot-plug, the
-bulk-only mass storage class with its SCSI commands, the block-device seam to
-the kernel, and boot-protocol HID. A stick is enumerated, mounted under /media,
-read and written, and unplugging it takes its mount with it; a keyboard types
-and a mouse moves the pointer, on either controller. Hubs are driven, so a keyboard or a disk behind one appears
-and disappears like anything else. UVC (§4.2) is design for a later milestone. Suspend
-and resume (§5.10) is built: the bus is stopped before the machine sleeps, and on resume
-the controllers are claimed, initialised and enumerated again, with each mount reattached
-by identity. Owner: usbd. Depends
+Status: implemented through M2, verified in QEMU and on the 701. EHCI for high speed
+and the UHCI companions for full and low speed, behind one interface. Enumeration,
+hot-plug, bulk-only mass storage with SCSI, the kernel block-device bridge, boot-protocol
+HID, hubs, and FTDI and CDC-ACM serial. A stick enumerates, mounts under /media, reads and
+writes, and unmounts on removal; keyboards and mice work on either controller. Suspend
+and resume (§5.10) is built: the bus stops before sleep and is re-enumerated on resume,
+with mounts reattached by disk position. UVC (§4.2) is not built. Owner: usbd. Depends
 on: kernel contracts v0, 05-input (injection), 03-vfs (volume consumer),
 platformd (CAMS/ACPI), devmgr (supervision/matching).
 

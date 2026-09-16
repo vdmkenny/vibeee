@@ -1,14 +1,12 @@
 format - make a new filesystem on a volume
 
-  format hd0p3
-  format -t fat16 sd1
+  format hd0p1
+  format -t fat16 usb0p1
 
-Writes an empty FAT filesystem over the volume. Everything on it becomes
-unreachable: the tables and the root directory are written afresh and
-nothing reads the data area again.
+Writes an empty FAT filesystem. All data on the volume is lost.
 
-The width is chosen from the volume's size unless `-t` names one. A
-volume too small for the width asked for is refused.
+The width (fat12, fat16, fat32) is chosen from the volume's size unless -t
+names one. A volume too small for the named width is refused.
 
-Refused while the volume is mounted. Asks for the volume's name to be
-typed before writing.
+Refused on a mounted volume. Asks for the volume name before writing.
+`disk` lists volumes.

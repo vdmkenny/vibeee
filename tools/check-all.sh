@@ -100,18 +100,16 @@ grep -Eq '^cfgd +stopped' "$LOG2.txt" || fail "cfgd did not stop when asked (see
 ! grep -Eq "did not stop when asked|cannot be asked to stop" "$LOG2.txt" || fail "a service had to be ended rather than asked (see $LOG2)"
 echo "a setting written before a reboot is read back after it, and a service asked to stop went"
 
-step "power cut: the volume says so, and is checked and repaired"
-# The whole reason `fat/clean.zig` and `fat/check.zig` exist. A write marks
-# the volume as being written to; nothing clears that mark until it is
-# unmounted. Killing the emulator is a power cut, so the next boot must find
-# the mark and check the volume rather than trusting it.
+step "power cut: the volume is found dirty, checked and repaired"
+# A write marks the volume dirty until unmount. Killing the emulator is a power
+# cut: the next boot must find the mark, check the volume and keep its data.
 LOGCUT1=$BUILD/check-cut1.log
 boot "$BUILD/check-cut1.png" -w 30 -p 2 -s 1 -t "echo written-before-the-cut > /home/cut.txt
 cat /home/cut.txt"
 plain "$LOGCUT1" > "$LOGCUT1.txt"
 grep -q "written-before-the-cut" "$LOGCUT1.txt" || fail "the file was not written before the cut (see $LOGCUT1)"
 
-# No unmount, no shutdown: the emulator is killed where it stands.
+# Killed without unmount or shutdown.
 LOGCUT2=$BUILD/check-cut2.log
 boot "$BUILD/check-cut2.png" -w 30 -p 2 -s 1 -t "cat /home/cut.txt
 check /home"
@@ -120,12 +118,12 @@ grep -q "/home was not unmounted" "$LOGCUT2.txt" ||
     fail "a volume cut off mid-write was mounted as though it were clean (see $LOGCUT2)"
 grep -q "written-before-the-cut" "$LOGCUT2.txt" ||
     fail "what was written before the cut did not survive it (see $LOGCUT2)"
-grep -q "claimed twice" "$LOGCUT2.txt" &&
-    fail "the check found clusters claimed twice on a volume nothing damaged (see $LOGCUT2)"
-grep -q "nothing to put right" "$LOGCUT2.txt" ||
+grep -q "cross-linked" "$LOGCUT2.txt" &&
+    fail "the check found cross-linked clusters on an undamaged volume (see $LOGCUT2)"
+grep -q "/home: clean" "$LOGCUT2.txt" ||
     fail "the volume was still not sound after being checked (see $LOGCUT2)"
 
-# And the check settles it: a boot after one that checked has nothing to do.
+# After the check, the next boot finds the volume clean.
 LOGCUT3=$BUILD/check-cut3.log
 boot "$BUILD/check-cut3.png" -w 30 -p 2 -s 1 -t "unmount /home"
 plain "$LOGCUT3" > "$LOGCUT3.txt"
@@ -133,10 +131,9 @@ plain "$LOGCUT3" > "$LOGCUT3.txt"
     fail "a volume checked on the last boot was checked again on this one (see $LOGCUT3)"
 echo "a volume cut off mid-write says so, is checked, keeps what was written, and settles"
 
-step "a card larger than the image written to it: format, and grow into the rest"
-# What a person does with the image: write it to whatever card they have,
-# which is never the size of the image. The partition covers what the image
-# gave it and the filesystem covers the partition, so both have to grow.
+step "a card larger than the image: grow into it, and format a volume"
+# The image on a 256 MiB card. `grow` must extend the /home partition and its
+# filesystem and keep the data; `format` must produce a volume that checks clean.
 GROWIMG=$BUILD/check-grow.img
 cp "$DEV_IMAGE" "$GROWIMG"
 dd if=/dev/zero bs=1m count=0 seek=256 of="$GROWIMG" >/dev/null 2>&1
@@ -160,17 +157,17 @@ check /media/hd0p1" \
 plain "$LOGGROW" > "$LOGGROW.txt"
 ! grep -qi "panic\|STOPPED" "$LOGGROW.txt" || fail "the kernel stopped growing or formatting (see $LOGGROW)"
 
-# The partition covers the card, and the filesystem covers the partition.
+# Partition extended to the card, filesystem extended to the partition.
 grep -q "covers 425984 sectors, was 32768" "$LOGGROW.txt" ||
     fail "the partition was not extended over the rest of the card (see $LOGGROW)"
-grep -Eq "clusters became [0-9]{6,}" "$LOGGROW.txt" ||
+grep -Eq "to [0-9]{6,} clusters" "$LOGGROW.txt" ||
     fail "the filesystem did not grow with its partition (see $LOGGROW)"
 grep -q "written-before-the-grow" "$LOGGROW.txt" ||
     fail "what was on the volume did not survive the grow (see $LOGGROW)"
-# Twice: once for the grown volume and once for the freshly formatted one.
-[ "$(grep -c "nothing to put right" "$LOGGROW.txt")" -ge 2 ] ||
+# Two clean checks: the grown volume and the formatted one.
+[ "$(grep -Ec ": clean$" "$LOGGROW.txt")" -ge 2 ] ||
     fail "a grown or freshly formatted volume was not sound (see $LOGGROW)"
-grep -q "a new filesystem, empty" "$LOGGROW.txt" ||
+grep -q "hd0p1: formatted" "$LOGGROW.txt" ||
     fail "the volume was not formatted (see $LOGGROW)"
 echo "a card larger than its image grows into itself, and a volume can be made afresh"
 

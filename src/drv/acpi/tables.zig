@@ -1,15 +1,11 @@
 //! ACPI table discovery.
 //!
-//! Finding a table by signature, and reading the two that the kernel itself
-//! needs: the FADT for shutdown, and the MADT for the interrupt controller.
+//! Finds tables by signature and reads the two the kernel needs: the FADT
+//! (power) and the MADT (interrupt controllers). Pattern-matches the `_S5_` and
+//! `_S3_` packages in the DSDT.
 //!
-//! **This is not an ACPI implementation and must not be mistaken for one.** It
-//! reads two tables and pattern-matches a single constant package. Everything
-//! else this machine needs from ACPI, battery state, the ASUS010 hotkey
-//! methods, backlight via PBLS, the WLDS and CAMS power gates, thermal zones,
-//! requires evaluating AML, and the plan for that remains uACPI
-//! (design/00-vibeee.md §11). What is here exists so that powering off cleanly
-//! does not have to wait for an interpreter.
+//! No AML is evaluated here. Everything else (battery, hotkeys, backlight, power
+//! gates, thermal zones) is done by `platd` with uACPI.
 
 const std = @import("std");
 const hal = @import("../../kernel/hal.zig");

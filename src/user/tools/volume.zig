@@ -1,12 +1,11 @@
-//! format and grow: making a filesystem, and extending one.
+//! format and grow.
 //!
-//!   format hd0p3          make a new filesystem, choosing the width
-//!   format -t fat16 sd1   make one of a named width
-//!   grow hd0p3            extend the filesystem over the whole volume
-//!   grow -n hd0p3         say what growing would come to, and stop
+//!   format hd0p1          make a new filesystem, width chosen by size
+//!   format -t fat16 usb0  make one of a named width
+//!   grow usb0p3           extend the partition and filesystem over free space
 //!
-//! Both refuse a mounted volume. Both ask before writing, because format
-//! destroys what is there and grow can lose it if power is cut part way.
+//! Both refuse a mounted volume. Both ask for the volume's name before writing:
+//! format destroys the contents, and grow loses them on a power cut.
 
 const std = @import("std");
 const abi = @import("lib").syscalls;
@@ -30,7 +29,7 @@ pub fn format(args: []const []const u8) void {
     const volume = rest[0];
     out.text("format ");
     out.text(volume);
-    out.text(": everything on it becomes unreachable.\n");
+    out.text(": all data on it will be lost\n");
     if (!confirmed(volume)) return;
 
     sys.formatVolume(volume, flags) catch |err| {
@@ -39,36 +38,17 @@ pub fn format(args: []const []const u8) void {
         return;
     };
     out.text(volume);
-    out.text(": a new filesystem, empty\n");
+    out.text(": formatted\n");
     out.flush();
 }
 
 pub fn grow(args: []const []const u8) void {
-    var only_say = false;
-    var rest = args;
-    while (rest.len > 1 and std.mem.startsWith(u8, rest[0], "-")) {
-        if (std.mem.eql(u8, rest[0], "-n")) {
-            only_say = true;
-        } else {
-            return growUsage();
-        }
-        rest = rest[1..];
-    }
-    if (rest.len != 1) return growUsage();
+    if (args.len != 1) return growUsage();
 
-    const volume = rest[0];
-    if (only_say) {
-        // Nothing here can say what a grow would come to without doing it:
-        // the kernel plans and applies under one lock, so that a volume
-        // cannot be mounted in between.
-        out.text("grow -n is not available: ask for the grow itself\n");
-        out.flush();
-        return;
-    }
-
+    const volume = args[0];
     out.text("grow ");
     out.text(volume);
-    out.text(": data moves. Losing power part way leaves it unreadable.\n");
+    out.text(": data will move; power loss during the move destroys the volume\n");
     if (!confirmed(volume)) return;
 
     const report = sys.growVolume(volume) catch |err| {
@@ -80,10 +60,11 @@ pub fn grow(args: []const []const u8) void {
     out.text(volume);
     out.text(": ");
     out.decimal(report.was);
-    out.text(" clusters became ");
+    out.text(" to ");
     out.decimal(report.now);
+    out.text(" clusters");
     if (report.moved != 0) {
-        out.text(", and ");
+        out.text(", ");
         out.decimal(report.moved);
         out.text(" moved");
     }
@@ -91,13 +72,9 @@ pub fn grow(args: []const []const u8) void {
     out.flush();
 }
 
-/// Ask, and take nothing but the volume's own name for an answer.
-///
-/// A name rather than a letter: both of these are asked for once and are not
-/// undone, and typing what is about to be written to is the difference
-/// between meaning it and pressing a key.
+/// Ask for the volume's name. Anything else cancels.
 fn confirmed(volume: []const u8) bool {
-    out.text("type its name to go ahead: ");
+    out.text("type the volume name to continue: ");
     out.flush();
 
     var buf: [64]u8 = undefined;
@@ -105,7 +82,7 @@ fn confirmed(volume: []const u8) bool {
     const typed = std.mem.trim(u8, buf[0..got], " \t\r\n");
     if (std.mem.eql(u8, typed, volume)) return true;
 
-    out.text("left alone\n");
+    out.text("cancelled\n");
     out.flush();
     return false;
 }

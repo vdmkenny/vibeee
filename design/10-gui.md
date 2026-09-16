@@ -2,17 +2,17 @@
 
 > **Status: partially implemented.**
 >
-> Built and working: the tiling model ([`user/eeewm/layout.zig`](../src/user/eeewm/layout.zig)) with 4 tags, tall, wide and monocle, per-tag layout and mfact, floating exceptions and focus-follows-click; the status bar with tag pips, layout glyph, title and clock; keycode bindings; and `libeui` ([`user/eui/`](../src/user/eui/)) with a swappable theme, damage-driven painting and keyboard focus.
+> Built and working: the tiling model ([`user/eeewm/layout.zig`](../src/user/eeewm/layout.zig)) with per-desktop layout, maximise, floating windows and focus-follows-click; the bar; keycode bindings; and `libeui` ([`user/eui/`](../src/user/eui/)) with a swappable theme, damage-driven painting and keyboard focus.
 >
 > Also built: the client protocol of §5 (control channel, per-client event ring, per-window shm surface), the launcher and session menu, and configuration from `/etc/eeewm.cfg`.
 >
-> Departures from this document, both deliberate: desktops are created on demand and shown as a taskbar of named tabs rather than four numbered pips, because a number says nothing about what is behind it; and clients are identified by the process id the kernel attests on `recv` rather than by the listener/accept semantics §5 assumed, which do not exist.
+> Departures from this document: desktops are created on demand and shown as named tabs rather than four numbered pips; clients are identified by the process id the kernel attests on `recv`, not by the listener/accept semantics §5 assumed.
 >
-> Not yet: page flipping, vblank pacing and the hardware cursor, all of which need the GMA900 driver and are advertised through `DisplayInfo.caps`. No SSE2 blit kernels. Commit damage rectangles are carried but not yet honoured per window.
+> Also built: the gen3 hardware cursor plane. Not yet: page flipping, vblank pacing, SSE2 blit kernels, and per-window honouring of commit damage rectangles.
 > Where this document and [`00-vibeee.md`](00-vibeee.md) disagree, the master design wins:
 > it carries later decisions this document predates.
 
-Status: design v1. Depends on: 04-graphics (display owner contract), 05-input (event stream),
+Depends on: 04-graphics (display owner contract), 05-input (event stream),
 06-platform/platformd (battery/temp/brightness/sleep), netd, sndd, usbd, 07-userspace (spawn, libc).
 Cross-subsystem assumptions are tagged **[ASSUME→NN]** and repeated in "Open questions".
 

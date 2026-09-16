@@ -2,18 +2,16 @@
 
 > **Status: partially implemented.**
 >
-> Built and working: physical memory ([`pmm.zig`](../src/kernel/pmm.zig)), the slab heap ([`heap.zig`](../src/kernel/heap.zig)), the O(1) scheduler with per-thread FPU state ([`sched.zig`](../src/kernel/sched.zig)), per-process address spaces, the ELF loader ([`elf.zig`](../src/kernel/elf.zig), [`exec.zig`](../src/kernel/exec.zig)), the handle table ([`handle.zig`](../src/kernel/handle.zig)), table-driven syscalls ([`syscall_table.zig`](../src/kernel/syscall_table.zig)), timekeeping ([`clock.zig`](../src/kernel/clock.zig)), blocking and IPC ([`wait.zig`](../src/kernel/wait.zig), [`event.zig`](../src/kernel/event.zig), [`channel.zig`](../src/kernel/channel.zig), [`svc.zig`](../src/kernel/svc.zig), [`shm.zig`](../src/kernel/shm.zig)), and clean shutdown ([`shutdown.zig`](../src/kernel/shutdown.zig)).
+> Built and working: physical memory ([`pmm.zig`](../src/kernel/pmm.zig)), the slab heap ([`heap.zig`](../src/kernel/heap.zig)), the O(1) scheduler with per-thread FPU state ([`sched.zig`](../src/kernel/sched.zig)), per-process address spaces, the ELF loader ([`elf.zig`](../src/kernel/elf.zig), [`exec.zig`](../src/kernel/exec.zig)), the handle table ([`handle.zig`](../src/kernel/handle.zig)), table-driven syscalls ([`syscall.zig`](../src/kernel/syscall.zig)), timekeeping ([`clock.zig`](../src/kernel/clock.zig)), blocking and IPC ([`wait.zig`](../src/kernel/wait.zig), [`event.zig`](../src/kernel/event.zig), [`channel.zig`](../src/kernel/channel.zig), [`svc.zig`](../src/kernel/svc.zig), [`shm.zig`](../src/kernel/shm.zig)), and clean shutdown ([`shutdown.zig`](../src/kernel/shutdown.zig)).
 >
-> Also built: SYSENTER where the CPU has it, with `int 0x80` as the fallback and the same
-> register convention either way; the userspace-driver API (`irq_attach`, `ioport_grant`,
-> `map_device`), all three behind the driver capability; pipes; and the VFS with FAT over
-> both a ramdisk and a partition.
+> Also built: SYSENTER with `int 0x80` fallback, same register convention; the
+> userspace driver API (`irq_attach`, `ioport_grant`, `map_device`) behind `Caps.driver`;
+> pipes; the VFS with FAT over a ramdisk and partitions; the ublk bridge
+> ([`ublk.zig`](../src/kernel/ublk.zig)) through which `usbd` provides block devices;
+> suspend to memory ([`sleep.zig`](../src/kernel/sleep.zig)).
 >
-> Not yet: the ublk bridge, which is what lets `usbd` provide a block device, and therefore
-> what stands between this machine and a filesystem that outlives a reboot.
->
-> There is no devfs and there will not be: a program reaches hardware through a capability
-> granted at spawn, and a name in a directory cannot grant one.
+> No devfs, by design: hardware access is a capability granted at spawn, which a directory
+> entry cannot grant.
 >
 > Where this document and [`00-vibeee.md`](00-vibeee.md) disagree, the master design
 > wins: it carries later decisions this document predates.

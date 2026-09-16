@@ -1,22 +1,16 @@
-//! Extending a filesystem over the whole of the volume it sits on.
+//! Extending a filesystem over the rest of its volume.
 //!
-//! A card written from a 48 MB image has a 16 MB `/home` on it whatever the
-//! card's size. This makes the filesystem cover the rest.
+//! The system image gives `/home` 16 MiB whatever the card's size.
 //!
-//! A bigger volume needs a bigger allocation table, and the table sits in
-//! front of the data, so the data area moves forward by as much as the tables
-//! grow. Cluster numbers do not change: every cluster's data moves by the
-//! same amount, so no chain and no directory record is rewritten.
+//! A larger volume needs a larger allocation table. The table precedes the
+//! data, so the data area moves forward by the table's growth. Cluster numbers
+//! do not change, so no chain or directory record is rewritten.
 //!
-//! Order: move the data, then write the tables, then the boot sector. The
-//! boot sector is what says where everything is, so until it is written the
-//! volume still describes the old layout.
+//! Order: data, tables, boot sector. Until the boot sector is written the
+//! volume describes the old layout.
 //!
-//! **A power cut during the move destroys the volume.** The data has left the
-//! places the old boot sector points at and has not yet been vouched for by a
-//! new one. Nothing can be done about that without a journal, which FAT does
-//! not have. `plan` says beforehand whether a move is needed, and the tool
-//! asks before starting one.
+//! A power cut during the move destroys the volume: FAT has no journal.
+//! `plan` reports whether a move is needed; the tool asks before starting.
 
 const std = @import("std");
 const block = @import("../block.zig");

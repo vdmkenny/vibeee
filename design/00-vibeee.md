@@ -2,22 +2,19 @@
 
 A from-scratch minimal graphical OS in Zig. Flagship target: **ASUS Eee PC 701 4G**. Written to be portable to similar constrained machines (other netbooks, ARM CE-era devices) by containing machine-specific code behind explicit boundaries.
 
-**How this was built.** vibeee is vibecoded: the code and these documents were written by
-Claude under the author's direction. The design decisions recorded here are real decisions
-with real reasoning, and the hardware research is verified against primary sources, but
-nothing here has been audited by a human line by line.
+**How this was built.** The code and these documents were written by Claude under the
+author's direction. Hardware research is checked against primary sources. Nothing has
+been audited line by line by a human.
 
-**Implementation status.** M0, M1, and M2 are complete.
-What runs, on QEMU and on the target machine: the whole boot chain, memory and interrupts,
-the O(1) scheduler, syscalls, Ring 3 with per-process address spaces and an ELF loader,
-IPC, ATA and FAT, the console and terminal, the window manager and control library with
-Settings, Monitor, Pad, Files, Calc, eTerm, and the picture viewer, keymaps, and the
-desktop. `platd` runs the AML interpreter, embedded controller, hotkeys, battery, and
-backlight against the real firmware; USB, audio, and wired networking run as userspace
-services too, and the machine suspends to memory and comes back. Open items are the
-final power cut and Wi-Fi.
-Precisely what exists is listed in [`../docs/status.md`](../docs/status.md); this document
-is the design, and the status changes faster than design text.
+**Implementation status.** M0, M1 and M2 are complete; M3 is in progress. Running on QEMU
+and the 701: boot chain, memory and interrupts, O(1) scheduler, syscalls, Ring 3 with
+per-process address spaces, ELF loader, IPC, ATA, FAT with a check at mount, console,
+terminal, window manager, control library, Settings, Monitor, Pad, Files, Calc, eTerm,
+the picture viewer, keymaps. `platd` runs uACPI with the embedded controller, battery and
+backlight; USB, audio and wired networking are userspace services. Suspend to memory
+works in the emulator. Open: the final power cut, Wi-Fi traffic, suspend on the 701,
+and the rest of M3. [`../docs/status.md`](../docs/status.md) lists what exists; this
+document is the design.
 
 Companion docs: [`01-boot.md`](01-boot.md) … [`11-userspace.md`](11-userspace.md) hold the
 per-subsystem detail; this document is authoritative where they differ, since it carries later
@@ -684,7 +681,7 @@ Toolchain: Zig (pinned), NASM, mtools, and nothing else. No autotools, no libc o
 | **M0** | Boot chain, kernel entry, PMM/paging/heap, IDT, LAPIC/IOAPIC, timers, scheduler, syscalls, Ring 3, IPC, ramfs, VESA console, i8042 keyboard, `vsh` | QEMU | **Done** |
 | **M1** | PATA + FAT32, `init`/`devmgd`, libc, multicall utils, touchpad, **GMA900 native modeset**, `eeewm` + `libeui`, eTerm, keymaps | **First real-hardware boot** | **Done** |
 | **M2** | `usbd` (EHCI + mass storage + ublk), `platd` (uACPI, EC, hotkeys, battery, backlight), `sndd` (HDA + ALC662), `netd` ethernet + lwIP + DHCP/DNS/SNTP, Pad/Monitor/Settings | Hardware | **Done**: `netd` is verified on the machine through the whole stack, `sndd` runs the routing graph over both controllers, and `usbd` carries disks, keyboards, mice and hubs |
-| **M3** | AR2425 WiFi + WPA2 supplicant, UVC webcam, install-to-SSD, A/B updater, turbo mode, and new GUI applications such as Mines and Draw | Hardware | Under way. S3 suspend and resume, which this milestone also carried, is done and proven in the emulator, and has not been run on the machine. On the machine the radio scans, joins and takes a DHCP lease, but does not carry traffic yet. The webcam, install-to-SSD, the A/B updater and turbo mode are not started |
+| **M3** | AR2425 WiFi + WPA2 supplicant, UVC webcam, install-to-SSD, A/B updater, turbo mode, and new GUI applications such as Mines and Draw | Hardware | In progress. S3 suspend and resume: done in the emulator, not run on the machine. Wi-Fi: scans, joins and takes a DHCP lease on the machine; traffic not confirmed. Install-to-SSD: not started; its prerequisites `format`, `grow` and the volume check are done. Webcam, A/B updater, turbo mode, Mines and Draw: not started |
 | **M4** | Polish: 2D acceleration if profiling justifies, C3 idle, power tuning, ARM/HAL second-board proof, app bundles | Hardware | Not started |
 | **M5** | Browser experiment (`lexbor` + `quickjs` + Zig TLS), explicitly exploratory | Hardware | **Under way, and staying exploratory**: `apps/web` fetches, parses, cascades, lays out in one column, runs a page's scripts and brings its pictures. It draws mainstream pages in part rather than in full; [`docs/status.md`](../docs/status.md) says what is missing. Not part of the system image |
 

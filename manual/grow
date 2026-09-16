@@ -1,19 +1,19 @@
-grow - extend a filesystem over the whole of its volume
+grow - extend a partition and its filesystem over free space
 
-  grow hd0p3
+  grow usb0p3
 
-A card written from the system image carries a 16 MiB /home whatever the
-card's size. This makes the filesystem cover the rest of its partition.
+The system image gives /home 16 MiB whatever the card's size. grow extends
+the partition over free space after it, then the filesystem over the
+partition.
 
-A larger volume needs a larger allocation table, and the table sits in
-front of the data, so the data moves forward by as much as the table
-grows. Cluster numbers do not change, so no file is rewritten.
+`disk` shows which volume is mounted at /home: usb0p3 when the 701 boots
+from SD. Unmount it first.
 
-Losing power during the move leaves the volume unreadable. FAT has no
-journal and there is no way around that. Copy anything that matters off
-the volume first.
+A larger allocation table moves the data area forward. Cluster numbers do
+not change.
 
-Refused while the volume is mounted, when the filesystem already fills
-its volume, and when the larger volume would need a wider FAT than it
-has: growing does not change the width, because that would renumber every
-cluster.
+A power cut during the move destroys the volume. Copy important files off
+first.
+
+Refused on a mounted volume, a filesystem already filling its partition,
+or one that would need a wider FAT than it has.

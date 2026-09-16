@@ -1,20 +1,17 @@
 //! A volume's geometry: where its tables, root and data area sit.
 //!
-//! One description of the relationship between a boot sector's fields and the
-//! addresses derived from them. `read` is what mounting does, `toBpb` is what
-//! formatting does, and `plan` chooses a geometry for a volume of a given
-//! size. Two descriptions of this would let a formatter and the driver
-//! disagree about where the data area starts.
+//! `read` parses a boot sector (mount), `toBpb` writes one (format), `plan`
+//! chooses a geometry for a size, `grown` for the same filesystem on a larger
+//! volume. One definition, so format and mount agree.
 //!
-//! Everything is worked out in 64 bits and narrowed once it is known to fit.
-//! Every field here comes off a medium, and a product of two of them does not
-//! fit in the width the fields have.
+//! Arithmetic is done in 64 bits and narrowed after checking: fields come from
+//! the medium, and their products overflow 32 bits.
 
 const std = @import("std");
 const block = @import("../block.zig");
 const table = @import("alloc.zig");
 
-/// Sector size, as a width the arithmetic here uses without casting.
+/// Sector size as `u32`.
 pub const SECTOR: u32 = block.SECTOR_SIZE;
 
 pub const Kind = table.Kind;
@@ -57,16 +54,16 @@ pub const Bpb = extern struct {
 pub const BOOT_SIGNATURE: u16 = 0xAA55;
 pub const SIGNATURE_AT = 510;
 
-/// A fixed disk, which is what the media byte says for everything here.
+/// Media byte for a fixed disk.
 const MEDIA_FIXED: u8 = 0xF8;
 
-/// Where FAT32 keeps its free-cluster hint. One sector, after the boot sector.
+/// FAT32 FSInfo sector.
 pub const FSINFO_SECTOR: u16 = 1;
-/// Where FAT32 keeps a copy of the boot sector.
+/// FAT32 backup boot sector.
 pub const BACKUP_BOOT_SECTOR: u16 = 6;
 
-/// Reserved sectors per kind. FAT32 keeps room for its hint sector and its
-/// backup boot sector; the older layouts keep only the boot sector itself.
+/// Reserved sectors per kind. FAT32 reserves room for FSInfo and the backup boot
+/// sector.
 fn reservedFor(kind: Kind) u16 {
     return switch (kind) {
         .fat12, .fat16 => 1,
@@ -74,8 +71,8 @@ fn reservedFor(kind: Kind) u16 {
     };
 }
 
-/// Root directory entries per kind. FAT32 moved the root into a cluster
-/// chain, and says so by having none here.
+/// Fixed root directory entries per kind. Zero on FAT32, whose root is a
+/// cluster chain.
 fn rootEntriesFor(kind: Kind) u16 {
     return switch (kind) {
         .fat12, .fat16 => 512,
@@ -83,9 +80,7 @@ fn rootEntriesFor(kind: Kind) u16 {
     };
 }
 
-/// The cluster counts each kind covers. The boundaries are the format's, and
-/// a volume on the wrong side of one is read as the other kind by anything
-/// that goes by the count.
+/// Cluster count range per kind, as the specification defines it.
 pub fn clusterRange(kind: Kind) struct { min: u32, max: u32 } {
     return switch (kind) {
         .fat12 => .{ .min = 1, .max = 4084 },

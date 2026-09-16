@@ -1,22 +1,16 @@
-//! Clearing, copying and shifting runs of sectors.
+//! Clearing, copying and shifting runs of sectors, for format and grow.
 //!
-//! Formatting and growing both move more of a volume than fits in one read,
-//! and both need somewhere to put it. That buffer is here, once, and it is
-//! static: a kernel thread's stack is eight to sixteen kilobytes, which is
-//! less than a useful buffer, and a filesystem that allocates to move a
-//! sector is one that fails when memory is short.
+//! One static buffer. Kernel thread stacks (8 to 16 KiB) are too small for it,
+//! and allocating per move would fail under memory pressure.
 //!
-//! **Callers hold the mount table's lock.** One buffer means one operation at
-//! a time, which is what formatting and growing already require of each other
-//! for other reasons: neither may run on a mounted volume.
+//! Callers must hold the mount table lock: one buffer, one operation at a time.
 
 const std = @import("std");
 const block = @import("../block.zig");
 
 pub const Error = error{Io};
 
-/// Sectors per read or write. Larger is fewer round trips, which on a card
-/// behind a reader is most of the time these take.
+/// Sectors per read or write.
 pub const CHUNK = 32;
 
 const BYTES = CHUNK * block.SECTOR_SIZE;
@@ -36,8 +30,8 @@ pub fn clear(dev: *const block.Device, at: u32, count: u32) Error!void {
 
 /// Copy `count` sectors from `from` to `to`, front to back.
 ///
-/// For runs that do not overlap, or that overlap with the destination below
-/// the source. `shiftUp` is what moves a run forward onto itself.
+/// Safe when the runs do not overlap or the destination is below the source.
+/// Use `shiftUp` to move a run forward over itself.
 pub fn copy(dev: *const block.Device, from: u32, to: u32, count: u32) Error!void {
     var done: u32 = 0;
     while (done < count) {
@@ -51,8 +45,8 @@ pub fn copy(dev: *const block.Device, from: u32, to: u32, count: u32) Error!void
 
 /// Move `count` sectors from `from` up to `from + by`, back to front.
 ///
-/// Back to front because the destination is above the source and may still
-/// hold sectors of this run that have not been read yet.
+/// Back to front, so an overlapping destination is written only after it is
+/// read.
 pub fn shiftUp(dev: *const block.Device, from: u32, count: u32, by: u32) Error!void {
     var left = count;
     while (left > 0) {
@@ -81,9 +75,7 @@ fn sectorSays(bytes: []const u8, sector: u32) u8 {
 }
 
 test "a run shifted up onto itself arrives whole" {
-    // The case the direction exists for: every distance from one sector,
-    // where the destination still holds unread parts of the run, up to past
-    // the end of it, where it does not.
+    // Distances from one sector (heavy overlap) to past the run's end (none).
     const gpa = testing.allocator;
     for ([_]u32{ 1, 2, 31, 32, 33, 100 }) |by| {
         const bytes = try numbered(gpa, 400);
