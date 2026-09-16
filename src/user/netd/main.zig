@@ -726,11 +726,12 @@ fn takeUp(class: lib.ifmatch.Class) void {
     log.warn("netd", "the hardware is powered and nothing appeared on the bus");
 }
 
-/// Whether anything answers at that place. Asked before a claim so that a
-/// slot still coming up is waited for rather than reported as a device that
-/// refused: the two look the same from a claim that failed.
+/// Whether a device answers at that place. Asked before a claim, because a
+/// failed claim looks the same for a slot still coming up as for a device
+/// that refused, and only the first is waited for.
 fn answering(location: lib.pci.Location) bool {
-    return @as(u16, @truncate(pci.read(location, 0))) != lib.pci.NO_DEVICE;
+    const identity: lib.pci.Identity = @bitCast(pci.read(location, lib.pci.Identity.OFFSET));
+    return identity.vendor != lib.pci.NO_DEVICE;
 }
 
 /// How long to keep looking. A card of this era is on the bus well inside

@@ -59,6 +59,7 @@ pub const eth = @import("eth.zig");
 pub const entropy = @import("entropy.zig");
 pub const hostname = @import("hostname.zig");
 pub const hosts = @import("hosts.zig");
+pub const ich = @import("ich.zig");
 pub const icmp = @import("icmp.zig");
 pub const ieee80211 = @import("ieee80211.zig");
 pub const ifmatch = @import("ifmatch.zig");
@@ -99,6 +100,7 @@ test {
     _ = escapes;
     _ = eth;
     _ = hosts;
+    _ = ich;
     _ = ieee80211;
     _ = icmp;
     _ = ifmatch;

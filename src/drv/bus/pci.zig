@@ -65,14 +65,12 @@ pub fn quiesce(at: lib.pci.Location) void {
     _ = pcicfg.read(selector);
 }
 
-/// Whether anything still answers at that place.
-///
-/// A slot with nothing in it reads as all ones, because no part drove the
-/// lines and the bus is pulled up. The one question a table of devices has to
-/// be able to ask again: a part that was switched off is gone from the bus
-/// without anything saying so.
+/// Whether a device still answers at that place. The device table asks again
+/// after a walk, because a part that is switched off leaves the bus without
+/// any notice.
 pub fn answers(at: lib.pci.Location) bool {
-    return @as(u16, @truncate(configRead32(at, 0x00))) != lib.pci.NO_DEVICE;
+    const identity: lib.pci.Identity = @bitCast(configRead32(at, lib.pci.Identity.OFFSET));
+    return identity.vendor != lib.pci.NO_DEVICE;
 }
 
 pub const HEADER_TYPE_OFFSET = lib.pci.HEADER_TYPE_OFFSET;
@@ -96,11 +94,10 @@ pub fn enumerate(cb: Callback) void {
 
 fn scanSlot(bus: u8, slot: u5, cb: Callback) void {
     const base = lib.pci.Location{ .bus = bus, .device = slot, .function = 0 };
-    const id = configRead32(base, 0x00);
-    const vendor: u16 = @truncate(id);
-    if (vendor == lib.pci.NO_DEVICE) return;
+    const id: lib.pci.Identity = @bitCast(configRead32(base, lib.pci.Identity.OFFSET));
+    if (id.vendor == lib.pci.NO_DEVICE) return;
 
-    cb(base, vendor, @truncate(id >> 16));
+    cb(base, @intFromEnum(id.vendor), id.device);
 
     // Bit 7 of the header type means multi-function. Without it, probing
     // functions 1-7 can return aliases of function 0 on some bridges.
@@ -110,10 +107,9 @@ fn scanSlot(bus: u8, slot: u5, cb: Callback) void {
     var func: u8 = 1;
     while (func < 8) : (func += 1) {
         const a = lib.pci.Location{ .bus = bus, .device = slot, .function = @truncate(func) };
-        const fid = configRead32(a, 0x00);
-        const fvendor: u16 = @truncate(fid);
-        if (fvendor == lib.pci.NO_DEVICE) continue;
-        cb(a, fvendor, @truncate(fid >> 16));
+        const fid: lib.pci.Identity = @bitCast(configRead32(a, lib.pci.Identity.OFFSET));
+        if (fid.vendor == lib.pci.NO_DEVICE) continue;
+        cb(a, @intFromEnum(fid.vendor), fid.device);
     }
 }
 
@@ -214,8 +210,8 @@ pub fn quietBridgeAspm() void {
         var func: u8 = 0;
         while (func < 8) : (func += 1) {
             const a = lib.pci.Location{ .bus = 0, .device = @truncate(slot), .function = @truncate(func) };
-            const id = configRead32(a, 0x00);
-            if (@as(u16, @truncate(id)) == lib.pci.NO_DEVICE) continue;
+            const id: lib.pci.Identity = @bitCast(configRead32(a, lib.pci.Identity.OFFSET));
+            if (id.vendor == lib.pci.NO_DEVICE) continue;
 
             const code: lib.pci.ClassCode = @bitCast(configRead32(a, lib.pci.ClassCode.OFFSET));
             const is_bridge = code.class == .bridge and

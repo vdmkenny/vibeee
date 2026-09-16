@@ -84,7 +84,7 @@ fn publishPlatform(bi: *const bootinfo.BootInfo) void {
         .pm1a_control = if (fadt) |f| f.pm1a_control else 0,
         .pm1a_control_len = if (fadt) |f| f.pm1a_control_len else 0,
         .pm_block = pm_block orelse 0,
-        .pm_block_len = if (pm_block != null) 0x80 else 0,
+        .pm_block_len = if (pm_block != null) lib.ich.PM_BLOCK_BYTES else 0,
 
         .ram_total_mb = if (ram) |r| r.total_mb else 0,
         .ram_devices = if (ram) |r| r.devices else 0,
@@ -577,42 +577,50 @@ fn handOverOhci(addr: libpci.Location) bool {
     return true;
 }
 
-/// The chipset's power management block base, from the LPC bridge, or null
-/// when this is not a machine with one. The block's registers are the last
-/// thing a driver should ever be handed, so its range is published next to
-/// the FADT's account of the same territory.
+/// The base port of the chipset's power management block, from the LPC
+/// bridge, or null on a machine without one. The block's range is published
+/// with the FADT's PM1 ranges, and the platform service keeps its drivers off
+/// all of them.
 fn lpcPmBase() ?u16 {
-    const lpc = libpci.Location{ .bus = 0, .device = 31, .function = 0 };
-    const id = pci.configRead32(lpc, 0);
-    if (id & 0xFFFF != 0x8086) return null;
-    const code: libpci.ClassCode = @bitCast(pci.configRead32(lpc, libpci.ClassCode.OFFSET));
+    const bridge = lib.ich.LPC_BRIDGE;
+    const identity: libpci.Identity = @bitCast(pci.configRead32(bridge, libpci.Identity.OFFSET));
+    if (identity.vendor != .intel) return null;
+    const code: libpci.ClassCode = @bitCast(pci.configRead32(bridge, libpci.ClassCode.OFFSET));
     if (code.class != .bridge or code.subclass != libpci.Subclass.isa_bridge) return null;
 
-    const pmbase: u16 = @truncate(pci.configRead32(lpc, 0x40) & 0xFF80);
-    return if (pmbase == 0) null else pmbase;
+    const pmbase: lib.ich.PmBase = @bitCast(pci.configRead32(bridge, lib.ich.PmBase.OFFSET));
+    return pmbase.base();
 }
 
-/// The chipset keeps running the firmware's USB input emulation from a
-/// periodic system management interrupt even after every controller has been
-/// handed over: the enables for it live in the power management block, not in
-/// the controllers. That handler runs above interrupts and shares the
-/// interrupt controller's index register and the keyboard controller with the
-/// kernel, and an owner that cannot be locked out makes every access a race.
-/// Off, by the two bits that are its own; the trap interface the platform
-/// service talks to stays armed.
-fn silenceUsbLegacySmi() void {
-    const pmbase = lpcPmBase() orelse return;
+/// The HAL's port instructions, under the names `lib.mmio.PortWindow` calls.
+const Ports = struct {
+    pub const in8 = hal.inb;
+    pub const in16 = hal.inw;
+    pub const in32 = hal.inl;
+    pub const out8 = hal.outb;
+    pub const out16 = hal.outw;
+    pub const out32 = hal.outl;
+};
 
-    const smi_en = pmbase + 0x30;
-    const LEGACY_USB: u32 = 1 << 3;
-    const LEGACY_USB2: u32 = 1 << 17;
-    const was = hal.inl(smi_en);
-    if (was & (LEGACY_USB | LEGACY_USB2) == 0) {
+/// Clear the SMI enables of the firmware's USB keyboard and mouse emulation.
+///
+/// The enables are in the power management block, not in the controllers, so
+/// the emulation's periodic SMI continues after every controller is handed
+/// over. Its handler runs above interrupts and uses the interrupt
+/// controller's index register and the keyboard controller, which the kernel
+/// also uses, so any access by the kernel can race it. Every other enable is
+/// kept, including the APM trap the platform service writes to.
+fn silenceUsbLegacySmi() void {
+    const base = lpcPmBase() orelse return;
+    const pm = lib.mmio.PortWindow(lib.ich.PmRegister, Ports){ .base = base };
+
+    const was = pm.read(lib.ich.SmiEnable, .smi_enable);
+    const quiet = was.withoutLegacyUsb() orelse {
         console.debug("usb", "legacy emulation interrupts already quiet", .{});
         return;
-    }
-    hal.outl(smi_en, was & ~(LEGACY_USB | LEGACY_USB2));
-    console.debug("usb", "legacy emulation interrupts quieted, were {x:0>8}", .{was});
+    };
+    pm.write(.smi_enable, quiet);
+    console.debug("usb", "legacy emulation interrupts quieted, were {x:0>8}", .{@as(u32, @bitCast(was))});
 }
 
 /// Walk PCI again and make the table say what is on the bus now.

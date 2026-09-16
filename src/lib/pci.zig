@@ -44,10 +44,23 @@ pub const Location = packed struct(u16) {
     }
 };
 
-/// What a vendor id reads as where there is no device: nothing drove the
-/// lines and the bus is pulled up. The one answer that means absence, so it
-/// is written down once rather than spelled at every place that asks.
-pub const NO_DEVICE: u16 = 0xFFFF;
+/// Configuration dword 0: who made the part, and which part it is.
+pub const Identity = packed struct(u32) {
+    vendor: Vendor,
+    device: u16,
+
+    pub const OFFSET: u8 = 0x00;
+};
+
+/// The vendor ids named where something in this system acts on one.
+pub const Vendor = enum(u16) {
+    intel = 0x8086,
+    _,
+};
+
+/// What a vendor id reads as where there is no device: nothing drives the
+/// lines and the bus is pulled up.
+pub const NO_DEVICE: Vendor = @enumFromInt(0xFFFF);
 
 pub const COMMAND_OFFSET: u8 = 0x04;
 pub const BAR0_OFFSET: u8 = 0x10;
@@ -435,6 +448,15 @@ test "a memory window is reachable by its width and its placement" {
     // An I/O window is not memory, and an unassigned pair has no base.
     try std.testing.expectEqual(@as(?u32, null), memoryWindowBase(@bitCast(@as(u32, 0x0000_E001)), 0));
     try std.testing.expectEqual(@as(?u32, null), memoryWindowBase(@bitCast(@as(u32, 0x0000_0004)), 0));
+}
+
+test "the identity dword has the vendor in its low half and the device in its high half" {
+    const ehci: Identity = @bitCast(@as(u32, 0x265C_8086));
+    try testing.expectEqual(Vendor.intel, ehci.vendor);
+    try testing.expectEqual(@as(u16, 0x265C), ehci.device);
+
+    const empty: Identity = @bitCast(@as(u32, 0xFFFF_FFFF));
+    try testing.expectEqual(NO_DEVICE, empty.vendor);
 }
 
 test "a location is one word, laid out as the syscalls carry it" {
