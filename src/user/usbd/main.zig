@@ -18,6 +18,7 @@ const ftdi = @import("ftdi.zig");
 const hid = @import("hid.zig");
 const hub = @import("hub.zig");
 const uhci = @import("uhci.zig");
+const ohci = @import("ohci.zig");
 const umass = @import("umass.zig");
 const volume = @import("volume.zig");
 const ehci = @import("ehci.zig");
@@ -53,8 +54,16 @@ const DRIVERS = [_]Driver{
     var rows: [uhci.MAX_UNITS]Driver = undefined;
     for (&rows, 0..) |*row, unit| row.* = .{
         .name = uhci.name,
-        .ops = uhci.unitOps(unit),
-        .listen = uhci.unitListen(unit),
+        .ops = hc.unitOps(uhci, unit),
+        .listen = hc.unitListen(uhci, unit),
+    };
+    break :blk rows;
+} ++ blk: {
+    var rows: [ohci.MAX_UNITS]Driver = undefined;
+    for (&rows, 0..) |*row, unit| row.* = .{
+        .name = ohci.name,
+        .ops = hc.unitOps(ohci, unit),
+        .listen = hc.unitListen(ohci, unit),
     };
     break :blk rows;
 };
@@ -70,9 +79,9 @@ const CLASSES = [_]@import("class.zig").ClassDriver{
     ftdi.driver,
 };
 
-/// This family of chipset puts one high speed controller and four
-/// companions on the bus, and a machine may carry a card of its own.
-const MAX_CONTROLLERS = 6;
+/// An ICH7 puts one high speed controller and four companions on the bus,
+/// an ICH9 two and six, and an AMD southbridge two and five.
+const MAX_CONTROLLERS = 8;
 
 var controllers: [MAX_CONTROLLERS]hc.Controller = undefined;
 var controller_count: usize = 0;
@@ -219,6 +228,9 @@ fn serve() noreturn {
     // comes or goes, which is the only time it changes.
     const SOURCES = 1 + MAX_CONTROLLERS + SERIAL_SOURCES +
         @import("lib").volume.MAX_VOLUMES + 2;
+    comptime {
+        if (SOURCES > lib.limits.MAX_WAIT_HANDLES) @compileError("usbd waits on more than one wait can cover");
+    }
     var sources: [SOURCES]u32 = undefined;
     var source_count: usize = 0;
     quit_event = quit.event();
@@ -241,73 +253,66 @@ fn serve() noreturn {
         // The supervisor's request to go. The volumes go with the process:
         // the kernel withdraws what it offered when the offerer is gone.
         if (quit_event != 0 and sources[index] == quit_event) sys.exit(0);
-        if (wake_event != 0 and sources[index] == wake_event) {
-            _ = rebuild();
-            out.flush();
-            continue;
-        }
-        if (index == 0) {
-            drain();
-            continue;
+        dispatch(index, sources[index]);
+
+        // A transfer made for anything above may have waited on the very
+        // interrupt that finished a watched endpoint's read, and taken it.
+        // So the class drivers look at their endpoints after every event,
+        // not only after a controller's: a keyboard typed on while a disk
+        // is busy is otherwise not heard until something else interrupts.
+        for (CLASSES) |driver| {
+            if (driver.ops.woke) |look| look();
         }
 
-        if (index <= controller_count) {
-            const which = index - 1;
-            const controller = &controllers[which];
-            // The controller says what its interrupt amounted to; the
-            // bus is walked only when something moved, and a rebuilt
-            // controller's book is swept before the walk.
-            const outcome = controller.ops.serviceIrq();
-            switch (outcome) {
-                .quiet => {},
-                .ports_changed => {
-                    if (core.scan(@intCast(which), controller.ops) > 0) scanAll();
-                },
-                .reborn => {
-                    // The reborn controller's book is swept, and every
-                    // controller is walked rather than just this one: a
-                    // surrendered controller's ports fall to the
-                    // companions, and only a walk of theirs picks the
-                    // devices back up.
-                    core.forgetController(@intCast(which));
-                    scanAll();
-                },
-            }
-            // A transfer finished, and one of the class drivers is
-            // probably why. Which one is their own business.
-            for (CLASSES) |driver| {
-                if (driver.ops.woke) |look| look();
-            }
-
-            // After the drivers, not only after a root port changed. A
-            // hub's ports are the hub driver's to watch, and what it
-            // finds arrives here two calls away from the walk: a disk
-            // plugged into a hub was enumerated and driven and never
-            // offered to the kernel, and one unplugged from a hub left
-            // its volume mounted over nothing.
-            if (core.stirred()) settle();
-            sys.irqAck(controller.irq, outcome != .quiet);
-            out.flush();
-            continue;
-        }
-
-        // A program asking about a serial port, or saying it has written
-        // something to one.
-        const woke_on = sources[index];
-        if (serial.channel() != 0 and woke_on == serial.channel()) {
-            serial.drain();
-            out.flush();
-            continue;
-        }
-        if (serial.doorbell() != 0 and woke_on == serial.doorbell()) {
-            serial.pump();
-            out.flush();
-            continue;
-        }
-
-        // A volume's doorbell: the kernel wants blocks.
-        if (volume.forDoorbell(woke_on)) |offered| volume.serve(offered);
+        // After the drivers, not only after a root port changed. A hub's
+        // ports are the hub driver's to watch, and what it finds arrives
+        // here two calls away from the walk: a disk plugged into a hub was
+        // enumerated and driven and never offered to the kernel, and one
+        // unplugged from a hub left its volume mounted over nothing.
+        if (core.stirred()) settle();
+        out.flush();
     }
+}
+
+fn dispatch(index: usize, woke_on: u32) void {
+    if (wake_event != 0 and woke_on == wake_event) {
+        _ = rebuild();
+        return;
+    }
+    if (index == 0) return drain();
+
+    if (index <= controller_count) {
+        const which = index - 1;
+        const controller = &controllers[which];
+        // The controller says what its interrupt amounted to; the bus is
+        // walked only when something moved, and a rebuilt controller's
+        // book is swept before the walk.
+        const outcome = controller.ops.serviceIrq();
+        switch (outcome) {
+            .quiet => {},
+            .ports_changed => {
+                if (core.scan(@intCast(which), controller.ops) > 0) scanAll();
+            },
+            .reborn => {
+                // The reborn controller's book is swept, and every
+                // controller is walked rather than just this one: a
+                // surrendered controller's ports fall to the companions,
+                // and only a walk of theirs picks the devices back up.
+                core.forgetController(@intCast(which));
+                scanAll();
+            },
+        }
+        sys.irqAck(controller.irq, outcome != .quiet);
+        return;
+    }
+
+    // A program asking about a serial port, or saying it has written
+    // something to one.
+    if (serial.channel() != 0 and woke_on == serial.channel()) return serial.drain();
+    if (serial.doorbell() != 0 and woke_on == serial.doorbell()) return serial.pump();
+
+    // A volume's doorbell: the kernel wants blocks.
+    if (volume.forDoorbell(woke_on)) |offered| volume.serve(offered);
 }
 
 /// The request to go, or zero when the kernel gave none.

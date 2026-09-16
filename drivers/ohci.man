@@ -1,0 +1,8 @@
+# Generated from src/lib/driver.zig by `zig build driver-manifests`.
+# Do not edit: change what the driver answers for instead.
+#
+# The open host controller, by class: full and low speed USB on AMD,
+# SiS, ALi, NVIDIA and OPTi chipsets and on cards.
+name    = ohci
+service = usb
+match   = pci-class:0c:03:10

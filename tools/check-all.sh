@@ -24,6 +24,7 @@ rm -f "$BUILD"/check-net-*.png "$BUILD"/check-net-*.log "$BUILD"/check-net-*.log
 rm -f "$BUILD"/check-serial.png "$BUILD"/check-serial.log "$BUILD"/check-serial.log.txt "$BUILD"/check-serial.out
 rm -f "$BUILD"/check-console.png "$BUILD"/check-console.log "$BUILD"/check-console.log.txt "$BUILD"/check-console.out
 rm -f "$BUILD"/check-bus.png "$BUILD"/check-bus.log "$BUILD"/check-bus.log.txt "$BUILD"/check-stick.img
+rm -f "$BUILD"/check-stick-ohci.img "$BUILD"/check-stick-ohci.out
 rm -f "$BUILD"/check-cut*.png "$BUILD"/check-cut*.log "$BUILD"/check-cut*.log.txt
 rm -f "$BUILD"/check-grow*.png "$BUILD"/check-grow*.log "$BUILD"/check-grow*.log.txt "$BUILD"/check-grow.img
 
@@ -252,39 +253,60 @@ grep -q "the record is going out of ser0" "$CON_WIRE" ||
     fail "the record stopped at what was already there (see $CON_WIRE)"
 echo "the whole record reached the wire, and went on reaching it"
 
-step "a disk behind a hub, across the bus being put down and brought back"
+step "disks behind a hub and on an open host controller, across the bus being put down and brought back"
 # What a machine waking from sleep will ask for. Behind a hub because
 # that is where the bus's own bookkeeping is hardest: a hub's ports are
 # the hub driver's to watch, and the addresses are handed out afresh, so
 # a volume followed by address rather than by where its disk sits would
-# come back mounted over the wrong one.
+# come back mounted over the wrong one. A second disk and the keyboard
+# everything is typed on sit on an OHCI controller, and the disk is
+# written to as well as read.
 STICK=$BUILD/check-stick.img
 dd if=/dev/zero of="$STICK" bs=1m count=16 >/dev/null 2>&1
 mformat -i "$STICK" -F :: || fail "cannot make a stick to test with"
 echo "the stick still reads" > "$BUILD/check-stick.txt"
 mcopy -i "$STICK" "$BUILD/check-stick.txt" ::/hello.txt || fail "cannot write to the test stick"
+OPEN_STICK=$BUILD/check-stick-ohci.img
+dd if=/dev/zero of="$OPEN_STICK" bs=1m count=16 >/dev/null 2>&1
+mformat -i "$OPEN_STICK" -F :: || fail "cannot make a second stick to test with"
+echo "the open controller's stick reads" > "$BUILD/check-stick-ohci.txt"
+mcopy -i "$OPEN_STICK" "$BUILD/check-stick-ohci.txt" ::/open.txt || fail "cannot write to the second test stick"
 
 LOGBUS=$BUILD/check-bus.log
 QEMU_CPU="$QEMU_CPU" tools/qemu-shot.sh "$BUILD/check-bus.png" -w 30 -p 4 -s 4 \
     -t "cat /media/usb0/hello.txt
+cat /media/usb1/open.txt
+cp /media/usb1/open.txt /media/usb1/copied.txt
 usb rebuild
-cat /media/usb0/hello.txt" \
+cat /media/usb0/hello.txt
+cat /media/usb1/copied.txt
+unmount /media/usb1" \
     -- -drive if=ide,format=raw,file="$DEV_IMAGE" \
     -device piix3-usb-uhci,id=uh -device usb-hub,bus=uh.0,port=1 \
     -drive if=none,id=st,format=raw,file="$STICK" \
-    -device usb-storage,bus=uh.0,port=1.2,drive=st,id=stick >/dev/null \
+    -device usb-storage,bus=uh.0,port=1.2,drive=st,id=stick \
+    -device pci-ohci,id=oh \
+    -drive if=none,id=so,format=raw,file="$OPEN_STICK" \
+    -device usb-storage,bus=oh.0,port=1,drive=so,id=open_stick \
+    -device usb-kbd,bus=oh.0,port=2 >/dev/null \
     || fail "the emulator did not run (see $LOGBUS)"
 plain "$LOGBUS" > "$LOGBUS.txt"
 ! grep -qi "panic" "$LOGBUS.txt" || fail "the kernel panicked rebuilding the bus (see $LOGBUS)"
+grep -Eq "^ohci +[0-9]+ ports" "$LOGBUS.txt" || fail "the open host controller did not come up (see $LOGBUS)"
 # A disk plugged into a hub is offered to the kernel at all, which is what
 # the walk after the class drivers is for.
-grep -q "the bus is back with 2 devices" "$LOGBUS.txt" ||
-    fail "the bus did not come back with the hub and the disk (see $LOGBUS)"
+grep -q "the bus is back with 4 devices" "$LOGBUS.txt" ||
+    fail "the bus did not come back with the hub, the disks and the keyboard (see $LOGBUS)"
 # Twice: once before the bus went down and once after, from a mount that
 # was never dropped and still reaches the disk it was made for.
 [ "$(grep -c "the stick still reads" "$LOGBUS.txt")" -ge 2 ] ||
     fail "the mount did not survive the bus being rebuilt (see $LOGBUS)"
-echo "the bus went down and came back, and the disk behind the hub kept its mount"
+[ "$(grep -c "the open controller's stick reads" "$LOGBUS.txt")" -ge 2 ] ||
+    fail "the open controller's disk was not read and written across the rebuild (see $LOGBUS)"
+mcopy -o -i "$OPEN_STICK" ::/copied.txt "$BUILD/check-stick-ohci.out" 2>/dev/null &&
+    cmp -s "$BUILD/check-stick-ohci.txt" "$BUILD/check-stick-ohci.out" ||
+    fail "what was written to the open controller's disk is not on it (see $LOGBUS)"
+echo "the bus went down and came back; both disks kept their mounts, and a copy reached the disk"
 
 step "the machine asleep and awake again, with its screen, its keys and its disk"
 # The whole suspend path, which the emulator can run because its display

@@ -45,6 +45,8 @@ test {
     // One maker's numbers for the serial adapter everybody owns: the
     // divisors, the data word, and the status bytes on every packet.
     _ = @import("user/usbd/ftdi/regs.zig");
+    // One OHCI endpoint's queue, against a model of the controller.
+    _ = @import("user/usbd/ohci/queue.zig");
     _ = @import("user/netd/attansic.zig");
     _ = @import("user/netd/cursor.zig");
     // The PRO/100's shapes, its configure block and its EEPROM's protocol,

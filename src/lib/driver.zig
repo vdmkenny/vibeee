@@ -198,6 +198,12 @@ pub const answers = [_]Answers{
         .matches = &.{.{ .family = .{ .class = 0x0C, .subclass = 0x03, .interface = 0x00 } }},
     },
     .{
+        .name = "ohci",
+        .service = "usb",
+        .says = "The open host controller, by class: full and low speed USB on AMD,\nSiS, ALi, NVIDIA and OPTi chipsets and on cards.",
+        .matches = &.{.{ .family = .{ .class = 0x0C, .subclass = 0x03, .interface = 0x10 } }},
+    },
+    .{
         .name = "hda",
         .service = "audio",
         .says = "High Definition Audio, by class rather than by part number: the\nregister interface is the specification's and not a maker's, so one\ndriver covers Intel, ATI, nVidia and VIA alike. The part named beside\nit is the one verified on the target, with its ALC662 codec.",
@@ -344,6 +350,7 @@ test "a part beats a family, and a family covers what shares its interface" {
 test "an interface tells the USB controller generations apart" {
     const ehci = matchesOf("ehci");
     const uhci = matchesOf("uhci");
+    const ohci = matchesOf("ohci");
     const high = Signature{ .vendor = 0x8086, .device = 0x265C, .class = 0x0C, .subclass = 0x03, .interface = 0x20 };
     const full = Signature{ .vendor = 0x8086, .device = 0x2658, .class = 0x0C, .subclass = 0x03, .interface = 0x00 };
     const open = Signature{ .vendor = 0x1002, .device = 0x4397, .class = 0x0C, .subclass = 0x03, .interface = 0x10 };
@@ -352,9 +359,11 @@ test "an interface tells the USB controller generations apart" {
     try testing.expectEqual(Confidence.no, bestOf(ehci, full));
     try testing.expectEqual(Confidence.strong, bestOf(uhci, full));
     try testing.expectEqual(Confidence.no, bestOf(uhci, high));
-    // Nothing here drives an OHCI controller, and neither claims one.
     try testing.expectEqual(Confidence.no, bestOf(ehci, open));
     try testing.expectEqual(Confidence.no, bestOf(uhci, open));
+    try testing.expectEqual(Confidence.strong, bestOf(ohci, open));
+    try testing.expectEqual(Confidence.no, bestOf(ohci, full));
+    try testing.expectEqual(Confidence.no, bestOf(ohci, high));
 }
 
 test "a manifest line names exactly the devices its driver answers for" {

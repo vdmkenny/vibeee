@@ -45,6 +45,7 @@ pub const find = @import("find.zig");
 pub const firmware = @import("firmware.zig");
 pub const limits = @import("limits.zig");
 pub const ntp = @import("ntp.zig");
+pub const ohci = @import("ohci.zig");
 pub const openers = @import("openers.zig");
 pub const palette = @import("palette.zig");
 pub const rgb = @import("rgb.zig");
@@ -100,6 +101,7 @@ test {
     _ = ifmatch;
     _ = ipv4;
     _ = mmio;
+    _ = ohci;
     _ = serial;
     _ = spsc;
     _ = str;

@@ -365,7 +365,7 @@ Block until one of several events is signalled.
 | arg | type | meaning |
 |---|---|---|
 | `handles` | const ptr | Array of u32 event handles. |
-| `count` | len | How many, at most 16. |
+| `count` | len | How many, at most 20. |
 | `timeout_us` | uint | 0 to poll, 0xFFFFFFFF to block forever, else microseconds. |
 
 **Returns:** index of the event that fired

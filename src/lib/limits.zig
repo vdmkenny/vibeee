@@ -51,12 +51,15 @@ pub const IMAGE_PIXELS_MAX = 16 * 1024 * 1024;
 
 /// How many events one `wait_many` covers.
 ///
-/// Doubled once from eight, which the desktop hit: it waits on the keyboard,
-/// the pointer, its children, its clients, three settings domains, the
-/// network and its supervisor. Each of those is a different kind of event
+/// The desktop waits on the keyboard, the pointer, its children, its
+/// clients, three settings domains, the network and its supervisor. The USB
+/// service waits on its channel, each of up to eight host controllers (two
+/// high speed and six companions on an ICH9, two and five on an AMD
+/// southbridge), the serial service's pair, four volumes, the machine
+/// waking and its supervisor. Each of those is a different kind of event
 /// rather than one worth folding into another, and a process that cannot
 /// wait on all of its reasons to wake has to poll instead.
 ///
 /// The waiter array lives on a kernel stack while a thread is blocked, so
-/// sixteen of them is a quarter of a kilobyte there.
-pub const MAX_WAIT_HANDLES = 16;
+/// twenty of them is four hundred bytes there.
+pub const MAX_WAIT_HANDLES = 20;

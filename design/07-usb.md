@@ -4,7 +4,7 @@
 > it carries later decisions this document predates.
 
 Status: implemented through M2, verified in QEMU and on the 701. EHCI for high speed
-and the UHCI companions for full and low speed, behind one interface. Enumeration,
+and the UHCI or OHCI companions for full and low speed, behind one interface. Enumeration,
 hot-plug, bulk-only mass storage with SCSI, the kernel block-device bridge, boot-protocol
 HID, hubs, and FTDI and CDC-ACM serial. A stick enumerates, mounts under /media, reads and
 writes, and unmounts on removal; keyboards and mice work on either controller. Suspend
@@ -358,6 +358,34 @@ TD (32 B, 16-aligned): DW0 link(Vf|Q|T) · DW1 status: SPD|C_ERR=3|LS|IOC|Active
 Scope deliberately minimal: control + interrupt-IN only (HID boot kbd 8-B reports @10 ms, mouse 4-B @10 ms).
 No UHCI bulk (FS mass storage refused with a devmgr "unsupported" event; USB1.1 sticks are museum pieces).
 ```
+
+### 5.6.1 OHCI
+
+The open host controller of AMD, SiS, ALi, NVIDIA and OPTi chipsets, registers and shared
+structures in `lib/ohci.zig` so the kernel can take it from the firmware at boot:
+ownership change requested, interrupts disabled, the controller held in reset. The
+driver asks again at open, then:
+
+```
+1. HcControl ← USBRESET (keep RWC); sleep 50 ms       // every device sees a bus reset
+2. HcCommandStatus.HCR; spin ≤ 10 µs until clear       // must be operational within 2 ms,
+3. HCCA, control and bulk heads, FmInterval (toggled), //   shorter than a scheduler tick
+   PeriodicStart = 9/10 frame, LSThreshold 0x628
+4. HcControl ← CBSR 3 | PLE | CLE | BLE | OPERATIONAL
+5. HcInterruptEnable ← WDH | UE | RHSC | MIE
+6. HcRhStatus.LPSC and each port's PPS; sleep POTPGT × 2 ms
+```
+
+One endpoint descriptor for control and one for bulk, re-aimed while idle; one per
+watched endpoint, all hung from every slot of the interrupt table, so each is visited
+every frame and costs nothing until the device answers. A transfer fills the tail
+descriptor and those after it, links a fresh tail, and moves the tail pointer last
+(`ohci/queue.zig`). The last descriptor asks for an interrupt; a failure raises one
+and halts the endpoint, whose head the driver then moves to the tail. A transfer's
+wait takes only the done and unrecoverable interrupts; a root hub change is disabled
+for the rest of the wait and re-enabled after, so the loop hears it. OUT data goes 32
+packets at a time: some controllers, QEMU's among them, stop past about that many
+packets of one endpoint in a pass.
 
 ### 5.7 Enumeration state machine (core, speed-independent)
 

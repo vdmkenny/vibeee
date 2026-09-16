@@ -32,7 +32,8 @@ const mouse = @import("drv/input/ps2mouse.zig");
 const uart = @import("drv/serial/uart16550.zig");
 const block = @import("kernel/block.zig");
 const pci = @import("drv/bus/pci.zig");
-const libpci = @import("lib").pci;
+const lib = @import("lib");
+const libpci = lib.pci;
 const sched = @import("kernel/sched.zig");
 const usermode = @import("arch/x86/usermode.zig");
 const exec = @import("kernel/exec.zig");
@@ -487,12 +488,13 @@ fn reportStorage() void {
 
 /// Take a USB controller away from the firmware's system management code.
 ///
-/// Two shapes of the same eviction. A UHCI controller keeps its trap enables
-/// in one configuration word: zeros for the enables and ones over the
-/// latched statuses end it. An EHCI controller keeps a formal semaphore in
-/// its extended capabilities: the operating system asks, the BIOS releases,
-/// and a BIOS that will not is dispossessed, which is the sequence every
-/// operating system performs before touching the controller.
+/// Three shapes of the same eviction. A UHCI controller keeps its trap
+/// enables in one configuration word: zeros for the enables and ones over
+/// the latched statuses end it. An EHCI controller keeps a formal semaphore
+/// in its extended capabilities: the operating system asks, the BIOS
+/// releases, and a BIOS that will not is dispossessed, which is the sequence
+/// every operating system performs before touching the controller. An OHCI
+/// controller is asked through its own registers.
 fn handOverUsb(addr: libpci.Location, prog_if: u8) void {
     switch (prog_if) {
         0x00 => { // UHCI
@@ -518,11 +520,10 @@ fn handOverUsb(addr: libpci.Location, prog_if: u8) void {
             var legsup = pci.configRead32(addr, eecp);
             pci.configWrite32(addr, eecp, legsup | OS_OWNED);
             var patience: u32 = 0;
-            while (patience < 100) : (patience += 1) {
+            while (patience < FIRMWARE_PATIENCE_MS) : (patience += 1) {
                 legsup = pci.configRead32(addr, eecp);
                 if (legsup & BIOS_OWNED == 0) break;
-                const until = clock.monotonicMicros() + 1_000;
-                while (clock.monotonicMicros() < until) {}
+                stallMillisecond();
             }
             if (legsup & BIOS_OWNED != 0) {
                 pci.configWrite32(addr, eecp, OS_OWNED);
@@ -533,8 +534,49 @@ fn handOverUsb(addr: libpci.Location, prog_if: u8) void {
             var where: [8]u8 = undefined;
             console.debug("usb", "ehci at {s} handed over", .{libpci.spell(addr, &where)});
         },
+        0x10 => handOverOhci(addr),
         else => {},
     }
+}
+
+/// How long the firmware is given to let a USB controller go.
+const FIRMWARE_PATIENCE_MS = 100;
+
+/// A millisecond with nothing else able to run: the walk happens before
+/// the scheduler, and the firmware's answer is what it waits for.
+fn stallMillisecond() void {
+    const until = clock.monotonicMicros() + 1_000;
+    while (clock.monotonicMicros() < until) std.atomic.spinLoopHint();
+}
+
+/// The firmware is asked to let go through the controller's ownership
+/// change request. Whatever it leaves running is stopped: no interrupt on
+/// a line that may be shared, and no list walked through memory the
+/// firmware no longer owns. The driver resets the controller when it opens
+/// it.
+fn handOverOhci(addr: libpci.Location) void {
+    const window: libpci.MemoryBar = @bitCast(pci.configRead32(addr, pci.BAR0_OFFSET));
+    const upper = if (window.kind == .bits64) pci.configRead32(addr, pci.BAR0_OFFSET + 4) else 0;
+    const base = libpci.memoryWindowBase(window, upper) orelse return;
+    const mapped = hal.mapMmio(base, 0x1000, .uncached) catch return;
+    const regs = lib.mmio.Window(lib.ohci.Register, u32){ .base = @ptrFromInt(mapped) };
+
+    const control: lib.ohci.Control = @bitCast(regs.read(.control));
+    if (control.firmware_routed) {
+        regs.write(.interrupt_enable, @bitCast(lib.ohci.Interrupts{ .ownership_changed = true }));
+        regs.write(.command_status, @bitCast(lib.ohci.CommandStatus{ .ownership_change = true }));
+        var patience: u32 = 0;
+        while (patience < FIRMWARE_PATIENCE_MS) : (patience += 1) {
+            const now: lib.ohci.Control = @bitCast(regs.read(.control));
+            if (!now.firmware_routed) break;
+            stallMillisecond();
+        }
+    }
+    regs.write(.interrupt_disable, @bitCast(lib.ohci.Interrupts.ALL));
+    regs.write(.control, @bitCast(lib.ohci.Control{ .remote_wakeup_connected = control.remote_wakeup_connected }));
+
+    var where: [8]u8 = undefined;
+    console.debug("usb", "ohci at {s} handed over", .{libpci.spell(addr, &where)});
 }
 
 /// The chipset's power management block base, from the LPC bridge, or null

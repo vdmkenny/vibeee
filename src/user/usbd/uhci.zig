@@ -12,7 +12,7 @@
 //! unchanged by which of them a device turns out to be on. The chipset
 //! carries four companions behind one fast controller, so the driver is
 //! one body over four units, each bound to its own ops table at compile
-//! time.
+//! time by `hc.unitOps`.
 
 const device = @import("ulib").device;
 const hc = @import("hc.zig");
@@ -353,7 +353,7 @@ const Watch = struct {
 };
 
 /// One controller and everything watched through it.
-const Unit = struct {
+pub const Unit = struct {
     controller: Device = .{},
     watches: [WATCHES]Watch = @splat(.{}),
 };
@@ -362,7 +362,7 @@ const Unit = struct {
 /// four is the budget until silicon carries more.
 pub const MAX_UNITS = 4;
 
-var units: [MAX_UNITS]Unit = @splat(.{});
+pub var units: [MAX_UNITS]Unit = @splat(.{});
 
 // ---------------------------------------------------------------------------
 // Register access
@@ -392,7 +392,7 @@ fn portWrite(self: *Unit, index: u8, value: Port) void {
 // Bring-up
 // ---------------------------------------------------------------------------
 
-fn open(self: *Unit, loc: pci.Location) bool {
+pub fn open(self: *Unit, loc: pci.Location) bool {
     if (self.controller.opened) return false;
     const window: pci.IoBar = @bitCast(pci.bar(loc, 4));
     if (!window.io_space) {
@@ -498,11 +498,11 @@ fn startSchedule(self: *Unit) void {
 // Ports
 // ---------------------------------------------------------------------------
 
-fn portCount() u8 {
+pub fn portCount(_: *Unit) u8 {
     return PORTS;
 }
 
-fn portState(self: *Unit, index: u8) hc.PortState {
+pub fn portState(self: *Unit, index: u8) hc.PortState {
     if (!self.controller.opened or index >= PORTS) return .{};
     const port = portRead(self, index);
     return .{
@@ -513,7 +513,7 @@ fn portState(self: *Unit, index: u8) hc.PortState {
     };
 }
 
-fn resetPort(self: *Unit, index: u8) hc.PortState {
+pub fn resetPort(self: *Unit, index: u8) hc.PortState {
     if (!self.controller.opened or index >= PORTS) return .{};
 
     var port = portRead(self, index).quiet();
@@ -597,14 +597,14 @@ fn stopped(self: *Unit, status: Status) void {
 /// here: a controller put down deliberately and brought back is not one
 /// that went wrong, and holding the mark against it would close it for
 /// good the first time it did.
-fn quiesce(self: *Unit) void {
+pub fn quiesce(self: *Unit) void {
     if (!self.controller.opened) return;
     _ = reset(self);
     self.controller.rebuilt = false;
 }
 
 /// And build it again, as at the first open.
-fn rebuildController(self: *Unit) bool {
+pub fn rebuild(self: *Unit) bool {
     if (!self.controller.opened) return false;
     takeFromFirmware(self.controller.location);
     if (!reset(self)) {
@@ -615,7 +615,7 @@ fn rebuildController(self: *Unit) bool {
     return true;
 }
 
-fn serviceIrq(self: *Unit) hc.Service {
+pub fn serviceIrq(self: *Unit) hc.Service {
     if (!self.controller.opened) return .quiet;
 
     const status: Status = @bitCast(read16(self, .status));
@@ -739,7 +739,7 @@ fn queue(self: *Unit, count: usize) void {
 /// A controller of this kind is full speed itself, so it talks to a slow
 /// device the same way whether a hub is in between or not: the route says
 /// nothing it has to act on.
-fn control(self: *Unit, pipe: usb.Pipe, setup: usb.Setup, data: []u8) hc.Error!usize {
+pub fn control(self: *Unit, pipe: usb.Pipe, setup: usb.Setup, data: []u8) hc.Error!usize {
     if (!self.controller.opened) return hc.Error.Refused;
     if (data.len > BUFFER_BYTES - usb.Setup.BYTES) return hc.Error.Refused;
 
@@ -808,15 +808,15 @@ fn control(self: *Unit, pipe: usb.Pipe, setup: usb.Setup, data: []u8) hc.Error!u
     return moved;
 }
 
-fn bulkLimit() usize {
+pub fn bulkLimit(_: *Unit) usize {
     return BUFFER_BYTES;
 }
 
-fn watchLimit() usize {
+pub fn watchLimit(_: *Unit) usize {
     return REPORT_BYTES;
 }
 
-fn bulk(self: *Unit, pipe: *usb.Pipe, data: []u8) hc.Error!usize {
+pub fn bulk(self: *Unit, pipe: *usb.Pipe, data: []u8) hc.Error!usize {
     if (!self.controller.opened) return hc.Error.Refused;
     if (data.len > BUFFER_BYTES) return hc.Error.Refused;
 
@@ -904,7 +904,7 @@ fn rest(self: *Unit) void {
 // Watched endpoints
 // ---------------------------------------------------------------------------
 
-fn watch(self: *Unit, pipe: usb.Pipe, wanted: u16) hc.Error!u8 {
+pub fn watch(self: *Unit, pipe: usb.Pipe, wanted: u16) hc.Error!u8 {
     if (!self.controller.opened) return hc.Error.Refused;
     if (wanted == 0 or wanted > REPORT_BYTES) return hc.Error.Refused;
 
@@ -979,7 +979,7 @@ fn chain(self: *Unit) void {
     for (&arena.frames) |*frame| frame.* = head;
 }
 
-fn collect(self: *Unit, index: u8, into: []u8) ?usize {
+pub fn collect(self: *Unit, index: u8, into: []u8) ?usize {
     if (index >= self.watches.len or !self.watches[index].live) return null;
     const arena = self.controller.arena.at;
     const status = arena.watch_tds[index].control;
@@ -1001,78 +1001,13 @@ fn collect(self: *Unit, index: u8, into: []u8) ?usize {
     return moved;
 }
 
-fn unwatch(self: *Unit, index: u8) void {
+pub fn unwatch(self: *Unit, index: u8) void {
     if (index >= self.watches.len or !self.watches[index].live) return;
     self.controller.arena.at.watches[index].element = Link.none;
     self.watches[index] = .{};
     chain(self);
 }
 
-// ---------------------------------------------------------------------------
-// The seam
-// ---------------------------------------------------------------------------
-
-/// One driver body, bound to one of its units at compile time: the ops
-/// table stays instance-blind and the binding costs nothing at run time.
-pub fn unitOps(comptime unit: u8) hc.HcOps {
-    const bound = struct {
-        const self = &units[unit];
-        fn open_(loc: pci.Location) bool {
-            return open(self, loc);
-        }
-        fn port_(index: u8) hc.PortState {
-            return portState(self, index);
-        }
-        fn resetPort_(index: u8) hc.PortState {
-            return resetPort(self, index);
-        }
-        fn serviceIrq_() hc.Service {
-            return serviceIrq(self);
-        }
-        fn control_(pipe: usb.Pipe, setup: usb.Setup, data: []u8) hc.Error!usize {
-            return control(self, pipe, setup, data);
-        }
-        fn bulk_(pipe: *usb.Pipe, data: []u8) hc.Error!usize {
-            return bulk(self, pipe, data);
-        }
-        fn watch_(pipe: usb.Pipe, wanted: u16) hc.Error!u8 {
-            return watch(self, pipe, wanted);
-        }
-        fn collect_(index: u8, into: []u8) ?usize {
-            return collect(self, index, into);
-        }
-        fn unwatch_(index: u8) void {
-            unwatch(self, index);
-        }
-        fn quiesce_() void {
-            quiesce(self);
-        }
-        fn rebuild_() bool {
-            return rebuildController(self);
-        }
-    };
-    return .{
-        .open = bound.open_,
-        .ports = portCount,
-        .port = bound.port_,
-        .resetPort = bound.resetPort_,
-        .serviceIrq = bound.serviceIrq_,
-        .control = bound.control_,
-        .bulk = bound.bulk_,
-        .bulkLimit = bulkLimit,
-        .watch = bound.watch_,
-        .collect = bound.collect_,
-        .watchLimit = watchLimit,
-        .unwatch = bound.unwatch_,
-        .quiesce = bound.quiesce_,
-        .rebuild = bound.rebuild_,
-    };
-}
-
-pub fn unitListen(comptime unit: u8) *const fn (u32) void {
-    return struct {
-        fn listen(irq: u32) void {
-            units[unit].controller.irq = irq;
-        }
-    }.listen;
+pub fn listen(self: *Unit, irq: u32) void {
+    self.controller.irq = irq;
 }

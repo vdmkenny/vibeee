@@ -212,12 +212,19 @@ driven. Modesetting belongs to the kernel; `firmware-set` keeps the firmware's m
 ### USB
 
 - One event loop over the service channel, controller interrupts and volume doorbells.
-  No polling.
+  No polling. Class drivers look at their watched endpoints after every event, since a
+  transfer made for any event may have taken the interrupt that finished one.
 - `ehci.zig`: high speed. Takes the controller from firmware by the specification
   handshake; asynchronous ring for control and bulk, periodic list for interrupt
   endpoints.
 - `uhci.zig`: full and low speed companions. I/O-space registers; the chipset's four
-  companions are one driver over four comptime-bound units.
+  companions are one driver over four comptime-bound units (`hc.unitOps`).
+- `ohci.zig`: the full and low speed controller of AMD, SiS, ALi, NVIDIA and OPTi
+  chipsets, up to five units. Taken from the firmware through its ownership request,
+  at boot and again at open. One endpoint descriptor each for control and bulk, and one
+  per watched endpoint, hung from every slot of the interrupt table. An endpoint's queue
+  is in [`ohci/queue.zig`](../src/user/usbd/ohci/queue.zig), fuzzed against a model of
+  the controller. OUT data is queued 32 packets at a time.
 - Registers are packed structs with bit positions checked at compile time. Descriptors
   always use the 64-bit layout with upper halves zero.
 - `core.zig` enumerates: port reset, packet size, address, descriptors, configuration,
@@ -383,7 +390,7 @@ every build. Code used by one driver only stays with that driver, for example
   x86-64 Linux as well as the build machine.
 - Pure logic is kept in files with no I/O so it can be tested directly: page-table
   walk, program-image plan, FAT long-name assembly, volume check decisions, volume
-  geometry, receive-page walk, PRO/100 rings.
+  geometry, receive-page walk, PRO/100 rings, OHCI endpoint queue.
 - A new test file runs only if `src/tests.zig`, `src/quirks/tests.zig` or the test
   block in `lib.zig` names it; a re-export is not enough. Confirm by making one of its
   tests fail.
@@ -416,6 +423,9 @@ every build. Code used by one driver only stays with that driver, for example
     once and in order.
   - PRO/100 EEPROM, [`netd/e100/regs.zig`](../src/user/netd/e100/regs.zig): read exactly
     at either size; a glitching line still ends every read.
+  - OHCI endpoint queue, [`usbd/ohci/queue.zig`](../src/user/usbd/ohci/queue.zig): the
+    controller model only ever processes what the host has finished writing, and each
+    transfer settles to what the model made of it.
   - Page table, [`arch/x86/pagetable.zig`](../src/arch/x86/pagetable.zig): agrees with a
     walk without shortcuts.
 - `make check-all` is the gate. It runs `zig fmt` check, `zig build check`,
@@ -431,7 +441,8 @@ every build. Code used by one driver only stays with that driver, for example
   5. Network: DHCP lease and echo on every emulated adapter.
   6. USB serial adapter: enumerates, takes settings, carries typed data.
   7. Serial console: the log reaches the port, including lines written after it opened.
-  8. Hub and bus rebuild: a disk behind a hub keeps its mount across `usb rebuild`.
+  8. Hub and bus rebuild: a disk behind a hub keeps its mount across `usb rebuild`, and
+     a disk and keyboard on an OHCI controller are read, written and typed on across it.
   9. Suspend and resume: display, keyboard, disk and network work after waking.
   10. Card reader boot: the volumes arrive through USB.
 - Boot self-tests: heap, syscall ABI, clock advance, IPC. Failures print `fail` in the
@@ -487,7 +498,7 @@ syscalls, Ring 3, IPC, ramfs, VESA console, i8042 keyboard, `vsh`. Exercised eve
 
 | Item | State |
 |---|---|
-| `usbd` | EHCI and UHCI, mass storage, keyboards, mice, hubs. Verified on the machine: a stick enumerates, mounts under `/media`, unmounts on removal. |
+| `usbd` | EHCI, UHCI and OHCI, mass storage, keyboards, mice, hubs. Verified on the machine: a stick enumerates, mounts under `/media`, unmounts on removal. |
 | `platd` | uACPI, EC, battery, backlight, switchable parts, routing. Battery percent mislabel corrected by the quirk registry; `_BIF` read once per session. Hotkey decoding is written; notifications are gated off on the 701 (see [Platform service](#platform-service)). |
 | `sndd` | Routing graph over AC'97 and HDA. HDA verified by ear on the 701. |
 | `netd` | Wired networking with lwIP, DHCP, DNS, and SNTP (`timed`). Verified on the machine: lease, gateway and internet reachable. `nc`, `resolve`, `ping`; 127.0.0.1 without hardware. |
@@ -511,7 +522,7 @@ syscalls, Ring 3, IPC, ramfs, VESA console, i8042 keyboard, `vsh`. Exercised eve
 |---|---|
 | Persistent settings and home | The boot medium carries the system, `/cfg` and `/home`. Settings read from `/etc` then `/cfg`. The loader records the medium's partition signature so the right disk is used. On the 701, `/cfg` and `/home` mount when `usbd` brings up the card reader. Verified in the emulator across shutdowns and reboots. |
 | Volume check, format, grow | Clean-unmount flag, check at mount, `check`, `format`, `grow`. Verified in the emulator by the gate. |
-| Fuzz targets | Ten targets with seeded counterparts in `make test`. See [Testing](#testing). |
+| Fuzz targets | Eleven targets with seeded counterparts in `make test`. See [Testing](#testing). |
 | Bus rebuild | A disk behind a hub keeps its mount across `usb rebuild`. Verified in the emulator. |
 | Serial console | The log reaches a USB serial port. Verified in the emulator; not tried on the machine. |
 | Serial adapters | FTDI verified in the emulator: enumeration, `ser`, typed data both ways, settings, unplug. `acm` not run against a device. |

@@ -181,6 +181,12 @@ pub const table = [_]probe.Driver{
         .match = answersFor("uhci"),
         .probe = &answering("uhci"),
     },
+    .{
+        .name = "ohci",
+        .kind = .usb,
+        .match = answersFor("ohci"),
+        .probe = &answering("ohci"),
+    },
 
     // -- Audio -----------------------------------------------------------
     .{

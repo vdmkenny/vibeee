@@ -37,7 +37,8 @@ const DRIVER_DIR = "/lib/drivers";
 /// driver is adding files and telling nobody.
 const MANIFEST_SUFFIX = ".man";
 
-const MAX_DRIVERS = 16;
+/// Every manifest this system ships, and a few more dropped in.
+const MAX_DRIVERS = 24;
 const MAX_BOUND = 12;
 
 /// What a manifest says. Field names are the keys in the file, so the two
@@ -73,8 +74,8 @@ var reading: [1024]u8 = @splat(0);
 /// saying what its driver is for and why, which is worth having in the
 /// file and worth nothing at all in memory: keeping the files instead
 /// made the room this holds a budget for how much anybody had written
-/// rather than for how many drivers there are.
-var manifest_text: [1024]u8 = @splat(0);
+/// rather than for how many drivers there are: about sixty-four bytes each.
+var manifest_text: [MAX_DRIVERS * 64]u8 = @splat(0);
 var manifest_used: usize = 0;
 
 /// One device bound to one manifest: either a process the manager runs, or
@@ -193,10 +194,6 @@ fn say(name: []const u8, why: []const u8) void {
 }
 
 fn readOne(name: []const u8) void {
-    if (manifest_count == MAX_DRIVERS) {
-        return say(name, "there is no room for another driver");
-    }
-
     var path = str.Builder{ .buf = &path_buf };
     path.text(DRIVER_DIR);
     path.byte('/');
@@ -229,10 +226,12 @@ fn readOne(name: []const u8) void {
     if ((current.binary.len == 0) == (current.service.len == 0)) return;
     if (current.name.len > proto.NAME_MAX or current.service.len > proto.NAME_MAX) return;
 
-    // Reading again must not double an already-known driver.
+    // Reading again must not double an already-known driver, and a driver
+    // already known is not one there needs to be room for.
     for (manifests[0..manifest_count]) |existing| {
         if (std.mem.eql(u8, existing.name, current.name)) return;
     }
+    if (manifest_count == MAX_DRIVERS) return say(name, "there is no room for another driver");
     if (!keep(&current)) return say(name, "there is no room left for what it says");
     manifests[manifest_count] = current;
     manifest_count += 1;

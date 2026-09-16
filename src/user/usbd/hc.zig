@@ -113,6 +113,91 @@ pub fn command(ops: HcOps, pipe: usb.Pipe, setup: usb.Setup) Error!void {
     _ = try ops.control(pipe, setup, &nothing);
 }
 
+/// One driver body bound to one of its units at compile time: the ops table
+/// stays instance-blind and the binding costs nothing at run time.
+///
+/// For a chipset that carries several controllers of one kind as separate
+/// functions. `Driver` keeps them in `units` and takes one first in each of
+/// `open`, `portCount`, `portState`, `resetPort`, `serviceIrq`, `control`,
+/// `bulk`, `bulkLimit`, `watch`, `collect`, `watchLimit`, `unwatch`,
+/// `quiesce`, `rebuild` and `listen`.
+pub fn unitOps(comptime Driver: type, comptime unit: usize) HcOps {
+    const bound = Bound(Driver, unit);
+    return .{
+        .open = bound.open,
+        .ports = bound.ports,
+        .port = bound.port,
+        .resetPort = bound.resetPort,
+        .serviceIrq = bound.serviceIrq,
+        .control = bound.control,
+        .bulk = bound.bulk,
+        .bulkLimit = bound.bulkLimit,
+        .watch = bound.watch,
+        .collect = bound.collect,
+        .watchLimit = bound.watchLimit,
+        .unwatch = bound.unwatch,
+        .quiesce = bound.quiesce,
+        .rebuild = bound.rebuild,
+    };
+}
+
+/// Where a bound unit is told its interrupt line.
+pub fn unitListen(comptime Driver: type, comptime unit: usize) *const fn (u32) void {
+    return Bound(Driver, unit).listen;
+}
+
+fn Bound(comptime Driver: type, comptime unit: usize) type {
+    return struct {
+        const self = &Driver.units[unit];
+
+        fn open(loc: pci.Location) bool {
+            return Driver.open(self, loc);
+        }
+        fn ports() u8 {
+            return Driver.portCount(self);
+        }
+        fn port(index: u8) PortState {
+            return Driver.portState(self, index);
+        }
+        fn resetPort(index: u8) PortState {
+            return Driver.resetPort(self, index);
+        }
+        fn serviceIrq() Service {
+            return Driver.serviceIrq(self);
+        }
+        fn control(pipe: usb.Pipe, setup: usb.Setup, data: []u8) Error!usize {
+            return Driver.control(self, pipe, setup, data);
+        }
+        fn bulk(pipe: *usb.Pipe, data: []u8) Error!usize {
+            return Driver.bulk(self, pipe, data);
+        }
+        fn bulkLimit() usize {
+            return Driver.bulkLimit(self);
+        }
+        fn watch(pipe: usb.Pipe, wanted: u16) Error!u8 {
+            return Driver.watch(self, pipe, wanted);
+        }
+        fn collect(index: u8, into: []u8) ?usize {
+            return Driver.collect(self, index, into);
+        }
+        fn watchLimit() usize {
+            return Driver.watchLimit(self);
+        }
+        fn unwatch(index: u8) void {
+            Driver.unwatch(self, index);
+        }
+        fn quiesce() void {
+            Driver.quiesce(self);
+        }
+        fn rebuild() bool {
+            return Driver.rebuild(self);
+        }
+        fn listen(irq: u32) void {
+            Driver.listen(self, irq);
+        }
+    };
+}
+
 /// One driven controller and what the bus knows about it.
 pub const Controller = struct {
     name: []const u8,
