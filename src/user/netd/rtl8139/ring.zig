@@ -8,9 +8,10 @@
 //! of the ring.
 //!
 //! CBR is where the chip writes next. CAPR is where the host reads next,
-//! less sixteen, and the chip does not write past the host's read position.
-//! BUFE says whether anything is unread, which tells a full ring from an
-//! empty one when CBR meets the read position.
+//! less sixteen, and the chip does not write past the host's read position,
+//! so no record is longer than the ring. BUFE says whether anything is
+//! unread, which tells a full ring from an empty one when CBR meets the read
+//! position.
 //!
 //! Pure over the ring memory. `Barrier` orders the host against the chip:
 //! `publish` before CAPR gives a record back, `consume` before reading what
@@ -36,8 +37,8 @@ pub const Size = enum(u2) {
         };
     }
 
-    /// The ring, the pad the chip documents after it, and the spill area:
-    /// the memory the chip is given, and the longest record the host walks.
+    /// The ring, the pad after it, and the spill area: the memory the chip
+    /// writes records into.
     pub fn area(self: Size) usize {
         return self.bytes() + PAD + SPILL;
     }
@@ -98,8 +99,9 @@ pub const Record = union(enum) {
     dropped: usize,
     /// The chip has not finished writing the record.
     unfinished,
-    /// A length no record in this ring can have. Where the next record
-    /// starts is unknown.
+    /// A length no record in this ring can have: shorter than the check
+    /// sequence, or one whose record is longer than the ring. Where the next
+    /// record starts is unknown.
     lost,
 
     pub const Span = struct {
@@ -113,8 +115,8 @@ pub const Record = union(enum) {
 pub fn judge(size: Size, header: Header, published: usize) Record {
     if (header.length == .unfinished) return .unfinished;
     const wire: usize = @intFromEnum(header.length);
-    if (wire < FCS or @sizeOf(Header) + wire > size.area()) return .lost;
     const record = std.mem.alignForward(usize, @sizeOf(Header) + wire, ALIGN);
+    if (wire < FCS or record > size.bytes()) return .lost;
     if (record > published) return .unfinished;
     const frame = wire - FCS;
     if (!header.good(frame)) return .{ .dropped = record };
@@ -258,10 +260,14 @@ test "each record at the read position is judged" {
         .{ .header = .{ .length = .of(64) }, .published = 68, .is = .{ .dropped = 68 } },
         .{ .header = .{ .ok = true, .crc_error = true, .length = .of(64) }, .published = 68, .is = .{ .dropped = 68 } },
         .{ .header = .{ .ok = true, .runt_frame = true, .length = .of(20) }, .published = 24, .is = .{ .dropped = 24 } },
-        // A length that cannot hold the check sequence, or runs past the spill.
+        // A record as long as the ring, which a full ring holds.
+        .{ .header = .{ .ok = true, .length = .of(@intCast(size.bytes() - @sizeOf(Header))) }, .published = size.bytes(), .is = .{ .dropped = size.bytes() } },
+        // A length shorter than the check sequence, or whose record is longer
+        // than the ring, within the area or past it.
         .{ .header = .{ .ok = true, .length = .of(FCS - 1) }, .published = 68, .is = .lost },
         .{ .header = .{ .ok = true, .length = .of(0) }, .published = 68, .is = .lost },
-        .{ .header = .{ .ok = true, .length = .of(@intCast(size.area() - @sizeOf(Header) + 1)) }, .published = size.bytes(), .is = .lost },
+        .{ .header = .{ .ok = true, .length = .of(@intCast(size.bytes() - @sizeOf(Header) + 1)) }, .published = size.bytes(), .is = .lost },
+        .{ .header = .{ .ok = true, .length = .of(@intCast(size.area() - @sizeOf(Header))) }, .published = size.bytes(), .is = .lost },
         .{ .header = .{ .ok = true, .length = .of(std.math.maxInt(u16)) }, .published = size.bytes(), .is = .lost },
     };
 
@@ -421,6 +427,16 @@ const ARRIVALS = [_]Arrival{ .faulty, .long, .fill } ++ [_]Arrival{.full} ** 2 +
 
 /// The status bits that mark a frame broken.
 const Fault = enum { frame_align, crc_error, long_frame, runt_frame, bad_symbol };
+
+/// A length no record can have, by range.
+const Garbage = enum {
+    /// Shorter than the check sequence.
+    short,
+    /// A record longer than the ring, within the area.
+    past_ring,
+    /// A record longer than the area.
+    past_area,
+};
 
 /// How much room the chip wants before it writes a record.
 const Room = enum {
@@ -605,12 +621,14 @@ const Chip = struct {
     /// A header with a length no record can have.
     fn breakSync(self: *Chip) void {
         if (!self.fits(@sizeOf(Header))) return;
+        const past_ring = Modelled.RING - @sizeOf(Header) + 1;
         const past_area = Modelled.AREA - @sizeOf(Header) + 1;
         const unfinished = @intFromEnum(Header.Length.unfinished);
-        const wire = if (self.from.odds(2))
-            self.from.below(FCS)
-        else
-            past_area + self.from.below(unfinished - past_area);
+        const wire = switch (self.from.one(Garbage)) {
+            .short => self.from.below(FCS),
+            .past_ring => past_ring + self.from.below(past_area - past_ring),
+            .past_area => past_area + self.from.below(unfinished - past_area),
+        };
         const record = Written{
             .at = self.writeAt(),
             .header = .{ .ok = self.from.odds(2), .length = .of(@intCast(wire)) },
