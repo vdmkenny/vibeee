@@ -487,60 +487,24 @@ fn reportStorage() void {
 }
 
 /// Take a USB controller away from the firmware's system management code.
-///
-/// Three shapes of the same eviction. A UHCI controller keeps its trap
-/// enables in one configuration word: zeros for the enables and ones over
-/// the latched statuses end it. An EHCI controller keeps a formal semaphore
-/// in its extended capabilities: the operating system asks, the BIOS
-/// releases, and a BIOS that will not is dispossessed, which is the sequence
-/// every operating system performs before touching the controller. An OHCI
-/// controller is asked through its own registers.
-fn handOverUsb(addr: libpci.Location, prog_if: u8) void {
-    switch (prog_if) {
-        0x00 => { // UHCI
-            const LEGSUP: u8 = 0xC0;
-            const RELEASED: u32 = 0x8F00; // enables zero, statuses cleared
-            const kept = pci.configRead32(addr, LEGSUP) & 0xFFFF_0000;
-            pci.configWrite32(addr, LEGSUP, kept | RELEASED);
-            var where: [8]u8 = undefined;
-            console.debug("usb", "uhci at {s} handed over", .{libpci.spell(addr, &where)});
-        },
-        0x20 => { // EHCI
-            const bar = pci.configRead32(addr, pci.BAR0_OFFSET) & ~@as(u32, 0xF);
-            if (bar == 0) return;
-            const regs = hal.mapMmio(bar, 0x1000, .uncached) catch return;
-            const hccparams: *const volatile u32 = @ptrFromInt(regs + 0x08);
-            const eecp: u8 = @truncate((hccparams.* >> 8) & 0xFF);
-            if (eecp < 0x40) return;
-
-            // The semaphore: the OS-owned bit asked for, the BIOS-owned bit
-            // waited out, and a BIOS that keeps holding is dispossessed.
-            const OS_OWNED: u32 = 1 << 24;
-            const BIOS_OWNED: u32 = 1 << 16;
-            var legsup = pci.configRead32(addr, eecp);
-            pci.configWrite32(addr, eecp, legsup | OS_OWNED);
-            var patience: u32 = 0;
-            while (patience < FIRMWARE_PATIENCE_MS) : (patience += 1) {
-                legsup = pci.configRead32(addr, eecp);
-                if (legsup & BIOS_OWNED == 0) break;
-                stallMillisecond();
-            }
-            if (legsup & BIOS_OWNED != 0) {
-                pci.configWrite32(addr, eecp, OS_OWNED);
-            }
-
-            // And the trap enables behind it, off; their statuses, cleared.
-            pci.configWrite32(addr, eecp + 4, 0xE000_0000);
-            var where: [8]u8 = undefined;
-            console.debug("usb", "ehci at {s} handed over", .{libpci.spell(addr, &where)});
-        },
-        0x10 => handOverOhci(addr),
-        else => {},
-    }
+fn handOverUsb(addr: libpci.Location, interface: libpci.UsbInterface) void {
+    const handed = switch (interface) {
+        .uhci => handOverUhci(addr),
+        .ehci => handOverEhci(addr),
+        .ohci => handOverOhci(addr),
+        _ => false,
+    };
+    if (!handed) return;
+    var where: [8]u8 = undefined;
+    console.debug("usb", "{s} at {s} handed over", .{ @tagName(interface), libpci.spell(addr, &where) });
 }
 
 /// How long the firmware is given to let a USB controller go.
 const FIRMWARE_PATIENCE_MS = 100;
+
+/// How much of a controller's memory window the handover maps: a page,
+/// which holds every register it reads.
+const HANDOVER_BYTES = 0x1000;
 
 /// A millisecond with nothing else able to run: the walk happens before
 /// the scheduler, and the firmware's answer is what it waits for.
@@ -549,24 +513,60 @@ fn stallMillisecond() void {
     while (clock.monotonicMicros() < until) std.atomic.spinLoopHint();
 }
 
+/// A controller's registers, mapped from its first base address register.
+fn mapRegisters(addr: libpci.Location, comptime Register: type) ?lib.mmio.Window(Register, u32) {
+    const window: libpci.MemoryBar = @bitCast(pci.configRead32(addr, pci.BAR0_OFFSET));
+    const upper = if (window.kind == .bits64) pci.configRead32(addr, pci.BAR0_OFFSET + @sizeOf(libpci.MemoryBar)) else 0;
+    const base = libpci.memoryWindowBase(window, upper) orelse return null;
+    const mapped = hal.mapMmio(base, HANDOVER_BYTES, .uncached) catch return null;
+    return .{ .base = @ptrFromInt(mapped) };
+}
+
+/// Every trap in the legacy support register off, and its statuses cleared.
+fn handOverUhci(addr: libpci.Location) bool {
+    const dword: lib.uhci.LegacySupportDword = @bitCast(pci.configRead32(addr, lib.uhci.LegacySupportDword.OFFSET));
+    pci.configWrite32(addr, lib.uhci.LegacySupportDword.OFFSET, @bitCast(dword.released()));
+    return true;
+}
+
+/// The ownership semaphore in the legacy support capability: the system's
+/// bit set, the firmware's bit waited for and seized if the firmware keeps
+/// it, then every interrupt into the firmware off. A controller with no
+/// extended capability has nothing to hand over.
+fn handOverEhci(addr: libpci.Location) bool {
+    const regs = mapRegisters(addr, lib.ehci.CapabilityRegister) orelse return false;
+    const capabilities: lib.ehci.Capabilities = @bitCast(regs.read(.capabilities));
+    const legacy = capabilities.legacy() orelse return false;
+
+    var support: lib.ehci.LegacySupport = @bitCast(pci.configRead32(addr, legacy.at(.support)));
+    support.system_owned = true;
+    pci.configWrite32(addr, legacy.at(.support), @bitCast(support));
+    for (0..FIRMWARE_PATIENCE_MS) |_| {
+        support = @bitCast(pci.configRead32(addr, legacy.at(.support)));
+        if (!support.firmware_owned) break;
+        stallMillisecond();
+    }
+    if (support.firmware_owned) {
+        pci.configWrite32(addr, legacy.at(.support), @bitCast(support.seized()));
+    }
+
+    pci.configWrite32(addr, legacy.at(.control), @bitCast(lib.ehci.LegacyControl.RELEASED));
+    return true;
+}
+
 /// The firmware is asked to let go through the controller's ownership
 /// change request. Whatever it leaves running is stopped: no interrupt on
 /// a line that may be shared, and no list walked through memory the
 /// firmware no longer owns. The driver resets the controller when it opens
 /// it.
-fn handOverOhci(addr: libpci.Location) void {
-    const window: libpci.MemoryBar = @bitCast(pci.configRead32(addr, pci.BAR0_OFFSET));
-    const upper = if (window.kind == .bits64) pci.configRead32(addr, pci.BAR0_OFFSET + 4) else 0;
-    const base = libpci.memoryWindowBase(window, upper) orelse return;
-    const mapped = hal.mapMmio(base, 0x1000, .uncached) catch return;
-    const regs = lib.mmio.Window(lib.ohci.Register, u32){ .base = @ptrFromInt(mapped) };
+fn handOverOhci(addr: libpci.Location) bool {
+    const regs = mapRegisters(addr, lib.ohci.Register) orelse return false;
 
     const control: lib.ohci.Control = @bitCast(regs.read(.control));
     if (control.firmware_routed) {
         regs.write(.interrupt_enable, @bitCast(lib.ohci.Interrupts{ .ownership_changed = true }));
         regs.write(.command_status, @bitCast(lib.ohci.CommandStatus{ .ownership_change = true }));
-        var patience: u32 = 0;
-        while (patience < FIRMWARE_PATIENCE_MS) : (patience += 1) {
+        for (0..FIRMWARE_PATIENCE_MS) |_| {
             const now: lib.ohci.Control = @bitCast(regs.read(.control));
             if (!now.firmware_routed) break;
             stallMillisecond();
@@ -574,9 +574,7 @@ fn handOverOhci(addr: libpci.Location) void {
     }
     regs.write(.interrupt_disable, @bitCast(lib.ohci.Interrupts.ALL));
     regs.write(.control, @bitCast(lib.ohci.Control{ .remote_wakeup_connected = control.remote_wakeup_connected }));
-
-    var where: [8]u8 = undefined;
-    console.debug("usb", "ohci at {s} handed over", .{libpci.spell(addr, &where)});
+    return true;
 }
 
 /// The chipset's power management block base, from the LPC bridge, or null
@@ -654,7 +652,7 @@ fn enumeratePci() void {
             // this machine's own keyboard is not USB, so nothing is lost
             // but the trap.
             if (code.class == .serial_bus and code.subclass == libpci.Subclass.usb and !handedOver(addr)) {
-                handOverUsb(addr, code.interface);
+                handOverUsb(addr, @enumFromInt(code.interface));
                 var where: [8]u8 = undefined;
                 handed_over.append(addr) catch console.warn(
                     "usb: more controllers than are remembered; {s} is handed over on every walk",

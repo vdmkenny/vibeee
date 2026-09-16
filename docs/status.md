@@ -232,8 +232,9 @@ driven. Modesetting belongs to the kernel; `firmware-set` keeps the firmware's m
   per watched endpoint, hung from every slot of the interrupt table. An endpoint's queue
   is in [`ohci/queue.zig`](../src/user/usbd/ohci/queue.zig), fuzzed against a model of
   the controller. OUT data is queued 32 packets at a time.
-- Registers are packed structs with bit positions checked at compile time. Descriptors
-  always use the 64-bit layout with upper halves zero.
+- Registers are packed structs with bit positions checked at compile time, or by host
+  tests for the shapes in `lib`. Descriptors always use the 64-bit layout with upper
+  halves zero.
 - `core.zig` enumerates: port reset, packet size, address, descriptors, configuration,
   driver lookup through `devmgd`. A device silent through two requests gets one more
   reset. A failed transfer logs each stage.
@@ -362,6 +363,7 @@ every build. Code used by one driver only stays with that driver, for example
 | [`audio.zig`](../src/lib/audio.zig) | Frames, periods, durations, integer volume scaling, clipping mix, fixed-point sine. A voice mixer: 8-bit signed or unsigned and 16-bit samples, loops, start offsets, pitch bend, linear interpolation. Period progress from a hardware position. A resampler between rates with exact integer steps. Host-tested; the resampler is fuzzed. |
 | [`text.zig`](../src/lib/text.zig) | Editable text: line index, cursor, insert and delete, UTF-8 safe, remembered column. Shared with the pager. Host-tested. |
 | [`usb.zig`](../src/lib/usb.zig) | Request types, descriptor parsing, configuration walk, pipes with data toggle, driver signatures. Host-tested. |
+| [`ehci.zig`](../src/lib/ehci.zig), [`uhci.zig`](../src/lib/uhci.zig), [`ohci.zig`](../src/lib/ohci.zig) | Host controller shapes the kernel's boot handover and `usbd` share: EHCI capability parameters and legacy support capability, the UHCI legacy support register, and the OHCI registers and descriptors. Host-tested. |
 | [`scsi.zig`](../src/lib/scsi.zig) | Bulk-only transport wrappers and the SCSI commands a disk needs. Host-tested. |
 | [`hid.zig`](../src/lib/hid.zig) | Boot-protocol keyboard and mouse reports, usage-to-key table built at comptime, report differencing. Host-tested. |
 | [`pci.zig`](../src/lib/pci.zig) | Device identity and capability shapes: link power states, maximum payload per direction. Host-tested. |

@@ -23,6 +23,7 @@ const ports = @import("ulib").ports;
 const std = @import("std");
 const sys = @import("sys");
 const table = @import("ulib").table;
+const uhci = @import("lib").uhci;
 const usb = @import("lib").usb;
 
 pub const name = "uhci";
@@ -145,14 +146,6 @@ comptime {
         @compileError("the port register's bits drifted");
     }
 }
-
-/// Where the firmware's own input emulation is switched off. Not a
-/// capability list like the fast controller's: one fixed word in
-/// configuration space, which is written to say the driver has the
-/// controller now.
-const LEGACY_OFFSET: u8 = 0xC0;
-/// Every status bit set, which clears them, and every trap disabled.
-const LEGACY_RELEASE: u16 = 0x8F00;
 
 // ---------------------------------------------------------------------------
 // The schedule
@@ -424,13 +417,11 @@ pub fn open(self: *Unit, loc: pci.Location) bool {
     return true;
 }
 
+/// Every trap in the legacy support register off, and its statuses cleared.
+/// One write, with no handshake.
 fn takeFromFirmware(loc: pci.Location) void {
-    // One word, written rather than negotiated: every status bit set,
-    // which clears them, and every trap disabled. The fast controller's
-    // handshake has no counterpart here.
-    const existing = pci.read(loc, LEGACY_OFFSET);
-    const written = (existing & 0xFFFF_0000) | LEGACY_RELEASE;
-    pci.write(loc, LEGACY_OFFSET, written);
+    const dword: uhci.LegacySupportDword = @bitCast(pci.read(loc, uhci.LegacySupportDword.OFFSET));
+    pci.write(loc, uhci.LegacySupportDword.OFFSET, @bitCast(dword.released()));
 }
 
 fn reset(self: *Unit) bool {

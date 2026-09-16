@@ -257,6 +257,9 @@ pub const HcOps = struct {
 
 ### 5.1 EHCI BIOS handoff (USBLEGSUP via EECP), first touch of any USB register
 
+Shapes in `lib/ehci.zig`. The kernel hands the controller over at boot and the driver
+again at open.
+
 ```
 bdf = 00:1d.7
 1. cmd = pci_cfg_read16(bdf, 0x04); pci_cfg_write16(bdf, 0x04, cmd | 0x0006)   // MEM + BusMaster
@@ -340,6 +343,9 @@ qTD (32 B): DW0 next · DW1 altnext · DW2 token: DT(31)|Bytes(30:16 ≤0x5000)|
 ```
 
 ### 5.6 UHCI companions (M2), legacy disable, init, structures
+
+LEGSUP's shape is in `lib/uhci.zig`. The kernel releases it at boot and the driver again
+at open.
 
 ```
 per controller (00:1d.0..3), I/O BAR at cfg 0x20 (32 ports), via ioport_grant:

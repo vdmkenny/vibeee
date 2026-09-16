@@ -23,6 +23,7 @@ const log = @import("ulib").log;
 const out = @import("ulib").out;
 const pci = @import("ulib").pci;
 const sys = @import("sys");
+const ehci = lib.ehci;
 const usb = lib.usb;
 
 pub const name = "ehci";
@@ -34,13 +35,6 @@ const MMIO_BYTES: u32 = 1024;
 // ---------------------------------------------------------------------------
 // Registers
 // ---------------------------------------------------------------------------
-
-/// The capability file, at the aperture's base.
-const Cap = enum(usize) {
-    length = 0x00,
-    structural = 0x04,
-    capabilities = 0x08,
-};
 
 const Length = packed struct(u32) {
     /// Where the operational registers begin, from the capability base.
@@ -73,18 +67,6 @@ const Structural = packed struct(u32) {
     _17: u7 = 0,
     debug_port: u4 = 0,
     _28: u4 = 0,
-};
-
-const Capabilities = packed struct(u32) {
-    addresses_64bit: bool = false,
-    programmable_frame_list: bool = false,
-    async_park: bool = false,
-    _3: u1 = 0,
-    isochronous_threshold: u4 = 0,
-    /// Where the extended capabilities begin in configuration space, and
-    /// with them the handshake that takes the controller from firmware.
-    extended_capabilities: u8 = 0,
-    _16: u16 = 0,
 };
 
 const Command = packed struct(u32) {
@@ -195,63 +177,6 @@ const Port = packed struct(u32) {
     }
 };
 
-/// The legacy support capability in configuration space: the handshake
-/// that takes the controller away from the firmware.
-const LegacySupport = packed struct(u32) {
-    id: u8 = 0,
-    next: u8 = 0,
-    /// The firmware owns the controller while this is set.
-    firmware_owned: bool = false,
-    _17: u7 = 0,
-    /// The system claims it by setting this and waiting.
-    system_owned: bool = false,
-    _25: u7 = 0,
-
-    const CAPABILITY_ID: u8 = 0x01;
-};
-
-/// The firmware's trap word, one register above the ownership word: which
-/// events it asked to be told about, and which it has been told about.
-/// The told-about latches clear by writing them back set.
-const LegacyControl = packed struct(u32) {
-    smi_enable: bool = false,
-    smi_on_error: bool = false,
-    smi_on_port_change: bool = false,
-    smi_on_rollover: bool = false,
-    smi_on_host_error: bool = false,
-    smi_on_async_advance: bool = false,
-    _6: u7 = 0,
-    smi_on_ownership: bool = false,
-    smi_on_command_write: bool = false,
-    smi_on_bar_write: bool = false,
-    told_transfer: bool = false,
-    told_error: bool = false,
-    told_port_change: bool = false,
-    told_rollover: bool = false,
-    told_host_error: bool = false,
-    told_async_advance: bool = false,
-    _22: u7 = 0,
-    ownership_changed: bool = false,
-    command_written: bool = false,
-    bar_written: bool = false,
-
-    /// Every bit that arms an interrupt into the firmware. The word
-    /// against this mask says whether the firmware is listening at all;
-    /// the told-about latches below record events armed or not, ours
-    /// included, and prove nothing.
-    const ARMED: u32 = @bitCast(LegacyControl{
-        .smi_enable = true,
-        .smi_on_error = true,
-        .smi_on_port_change = true,
-        .smi_on_rollover = true,
-        .smi_on_host_error = true,
-        .smi_on_async_advance = true,
-        .smi_on_ownership = true,
-        .smi_on_command_write = true,
-        .smi_on_bar_write = true,
-    });
-};
-
 comptime {
     if (@as(u32, @bitCast(Command{ .running = true })) != 0x01 or
         @as(u32, @bitCast(Command{ .reset = true })) != 0x02 or
@@ -262,19 +187,10 @@ comptime {
     if (@as(u32, @bitCast(Status{ .halted = true })) != 0x1000) {
         @compileError("the halted bit drifted");
     }
-    if (@as(u32, @bitCast(LegacyControl{ .smi_on_bar_write = true })) != 0x8000 or
-        @as(u32, @bitCast(LegacyControl{ .told_host_error = true })) != 0x10_0000 or
-        @as(u32, @bitCast(LegacyControl{ .bar_written = true })) != 0x8000_0000)
-    {
-        @compileError("the trap word's bits drifted");
-    }
     if (@as(u32, @bitCast(Port{ .reset = true })) != 0x100 or
         @as(u32, @bitCast(Port{ .owned_by_companion = true })) != 0x2000)
     {
         @compileError("the port register's bits drifted");
-    }
-    if (@as(u32, @bitCast(LegacySupport{ .system_owned = true })) != 0x0100_0000) {
-        @compileError("the legacy handshake's bits drifted");
     }
 }
 
@@ -477,9 +393,9 @@ const Arena = extern struct {
 };
 
 const Device = struct {
-    base: [*]volatile u8 = undefined,
-    /// Where the operational registers begin.
-    op: usize = 0,
+    capability: lib.mmio.Window(ehci.CapabilityRegister, u32) = undefined,
+    /// At the capability registers' base plus their length.
+    operational: lib.mmio.Window(Op, u32) = undefined,
     location: pci.Location = .{ .bus = 0, .device = 0, .function = 0 },
     arena: device.Dma(Arena) = undefined,
     ports: u8 = 0,
@@ -836,31 +752,29 @@ pub fn listenOn(irq: u32) void {
 // Register access
 // ---------------------------------------------------------------------------
 
-fn capRead(register: Cap) u32 {
-    const at: *const volatile u32 = @ptrCast(@alignCast(controller.base + @intFromEnum(register)));
-    return at.*;
+fn capRead(register: ehci.CapabilityRegister) u32 {
+    return controller.capability.read(register);
 }
 
 fn opRead(register: Op) u32 {
-    const at: *const volatile u32 = @ptrCast(@alignCast(controller.base + controller.op + @intFromEnum(register)));
-    return at.*;
+    return controller.operational.read(register);
 }
 
 fn opWrite(register: Op, value: u32) void {
-    const at: *volatile u32 = @ptrCast(@alignCast(controller.base + controller.op + @intFromEnum(register)));
-    at.* = value;
+    controller.operational.write(register, value);
+}
+
+/// Where port `index` is, from the operational registers.
+fn portOffset(index: u8) usize {
+    return @intFromEnum(Op.port_base) + @as(usize, index) * @sizeOf(Port);
 }
 
 fn portRead(index: u8) Port {
-    const offset = controller.op + @intFromEnum(Op.port_base) + @as(usize, index) * 4;
-    const at: *const volatile u32 = @ptrCast(@alignCast(controller.base + offset));
-    return @bitCast(at.*);
+    return @bitCast(controller.operational.readAt(portOffset(index)));
 }
 
 fn portWrite(index: u8, value: Port) void {
-    const offset = controller.op + @intFromEnum(Op.port_base) + @as(usize, index) * 4;
-    const at: *volatile u32 = @ptrCast(@alignCast(controller.base + offset));
-    at.* = @bitCast(value);
+    controller.operational.writeAt(portOffset(index), @bitCast(value));
 }
 
 // ---------------------------------------------------------------------------
@@ -888,9 +802,10 @@ fn open(loc: pci.Location) bool {
         return false;
     };
 
-    controller.base = @ptrCast(aperture);
+    controller.capability = .{ .base = @ptrCast(aperture) };
     controller.location = loc;
-    controller.op = @as(Length, @bitCast(capRead(.length))).operational;
+    const length: Length = @bitCast(capRead(.length));
+    controller.operational = .{ .base = controller.capability.base + length.operational };
 
     const structural: Structural = @bitCast(capRead(.structural));
     controller.ports = structural.ports;
@@ -903,7 +818,7 @@ fn open(loc: pci.Location) bool {
     // The firmware has been driving this controller to read the boot
     // medium. Taking it politely, before the first trapped word, is what
     // stops its management code from fighting us for the ports afterwards.
-    const capabilities: Capabilities = @bitCast(capRead(.capabilities));
+    const capabilities: ehci.Capabilities = @bitCast(capRead(.capabilities));
     controller.wide = capabilities.addresses_64bit;
     takeFromFirmware(capabilities);
     _ = pci.sizeWindow(loc, 0, MMIO_BYTES, name, "controller");
@@ -925,44 +840,31 @@ fn open(loc: pci.Location) bool {
 }
 
 /// The legacy handshake: claim the controller, wait for the firmware to
-/// let go, and silence the management interrupts it was using.
-fn takeFromFirmware(caps: Capabilities) void {
-    const at = caps.extended_capabilities;
-    if (at < 0x40) return;
+/// let go, and turn off every interrupt into the firmware.
+fn takeFromFirmware(caps: ehci.Capabilities) void {
+    const legacy = caps.legacy() orelse return;
 
-    var legacy: LegacySupport = @bitCast(pci.read(controller.location, at));
-    if (legacy.id != LegacySupport.CAPABILITY_ID) return;
+    var support: ehci.LegacySupport = @bitCast(pci.read(controller.location, legacy.at(.support)));
+    if (support.id != .legacy_support) return;
 
-    legacy.system_owned = true;
-    pci.write(controller.location, at, @bitCast(legacy));
+    support.system_owned = true;
+    pci.write(controller.location, legacy.at(.support), @bitCast(support));
 
-    const yielded = device.settles(100, 10_000, at, struct {
-        fn ready(offset: u8) bool {
-            const now: LegacySupport = @bitCast(pci.read(controller.location, offset));
+    const yielded = device.settles(100, 10_000, legacy, struct {
+        fn ready(place: ehci.LegacyPlace) bool {
+            const now: ehci.LegacySupport = @bitCast(pci.read(controller.location, place.at(.support)));
             return !now.firmware_owned;
         }
     }.ready);
 
     if (!yielded) {
-        // A firmware that will not let go is taken from: it has no
-        // business in a controller this system is about to reset, and
-        // the alternative is a machine that cannot use its own disk.
+        // The controller is reset next, so a firmware that keeps it is
+        // overridden.
         log.warn(name, "the firmware would not hand the controller over; taking it");
-        pci.write(controller.location, at, @bitCast(LegacySupport{
-            .id = legacy.id,
-            .next = legacy.next,
-            .system_owned = true,
-        }));
+        pci.write(controller.location, legacy.at(.support), @bitCast(support.seized()));
     }
 
-    // Whatever it was asking to be told about, it is not told any more,
-    // and whatever it was already told is taken back: the latches clear
-    // by being written back set.
-    pci.write(controller.location, at + 4, @bitCast(LegacyControl{
-        .ownership_changed = true,
-        .command_written = true,
-        .bar_written = true,
-    }));
+    pci.write(controller.location, legacy.at(.control), @bitCast(ehci.LegacyControl.RELEASED));
 }
 
 fn reset() bool {
@@ -1173,25 +1075,22 @@ fn hostError() void {
     pci.tellBusTrouble(controller.location);
     log.end();
 
-    // The one hand that can move this controller besides ours is the
-    // firmware's. Its trap word records every base-address and command
-    // write, ours included, so recordings prove nothing: what matters is
-    // whether anything is armed to interrupt it, or ownership moved. The
-    // rebuild reclaims the part either way.
-    const caps: Capabilities = @bitCast(capRead(.capabilities));
-    const at = caps.extended_capabilities;
-    if (at >= 0x40) {
-        const legacy: LegacySupport = @bitCast(pci.read(controller.location, at));
-        const traps = pci.read(controller.location, at + 4);
-        if (legacy.id == LegacySupport.CAPABILITY_ID and
-            (legacy.firmware_owned or !legacy.system_owned or
-                traps & LegacyControl.ARMED != 0))
+    // The firmware is the only other party that can move this controller.
+    // Its occurred bits record every base address and command write, this
+    // driver's included, so only an enabled event or a moved semaphore is
+    // reported. The rebuild takes the controller back either way.
+    const caps: ehci.Capabilities = @bitCast(capRead(.capabilities));
+    if (caps.legacy()) |legacy| {
+        const support: ehci.LegacySupport = @bitCast(pci.read(controller.location, legacy.at(.support)));
+        const traps: ehci.LegacyControl = @bitCast(pci.read(controller.location, legacy.at(.control)));
+        if (support.id == .legacy_support and
+            (support.firmware_owned or !support.system_owned or traps.armed()))
         {
             log.begin(name, .warn);
             out.text("the firmware is armed on the controller: owner bits ");
-            out.hex(@as(u32, @bitCast(legacy)), 8);
+            out.hex(@as(u32, @bitCast(support)), 8);
             out.text(", traps ");
-            out.hex(traps, 8);
+            out.hex(@as(u32, @bitCast(traps)), 8);
             log.end();
         }
     }

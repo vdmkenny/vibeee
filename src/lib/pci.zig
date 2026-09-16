@@ -212,8 +212,20 @@ pub const Subclass = struct {
     pub const usb: u8 = 0x03;
 };
 
+/// The USB subclass's programming interfaces: the specification a host
+/// controller's registers follow.
+pub const UsbInterface = enum(u8) {
+    uhci = 0x00,
+    ohci = 0x10,
+    ehci = 0x20,
+    _,
+};
+
 /// How much configuration space a device has, in bytes.
 pub const SPACE_BYTES: u16 = 256;
+
+/// How much of it the standard header takes. Capabilities sit past it.
+pub const HEADER_BYTES: u8 = 0x40;
 
 /// The space is that many bytes and a capability takes four, so a list
 /// longer than this is a list that points back into itself.
@@ -513,6 +525,12 @@ test "a class code names its parts where a dword had them shifted" {
     try testing.expectEqual(Class.serial_bus, ehci.class);
     try testing.expectEqual(@as(u8, Subclass.usb), ehci.subclass);
     try testing.expectEqual(@as(u8, 0x20), ehci.interface);
+    try testing.expectEqual(UsbInterface.ehci, @as(UsbInterface, @enumFromInt(ehci.interface)));
+
+    const ohci: ClassCode = @bitCast(@as(u32, 0x0C03_10_00));
+    try testing.expectEqual(UsbInterface.ohci, @as(UsbInterface, @enumFromInt(ohci.interface)));
+    const uhci: ClassCode = @bitCast(@as(u32, 0x0C03_00_01));
+    try testing.expectEqual(UsbInterface.uhci, @as(UsbInterface, @enumFromInt(uhci.interface)));
 }
 
 test "a capability chain is walked under a bound, and a field near the top does not wrap" {
