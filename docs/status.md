@@ -200,9 +200,16 @@ driven. Modesetting belongs to the kernel; `firmware-set` keeps the firmware's m
 - Ring depth is chosen by the opener: 1/6 s for live sound, 1/3 s for pre-written sound.
   A program producing sound per frame needs a ring at least one frame deep.
 - Paced by the hardware period interrupt: one bounded mix per wake, no polling.
-- `pcm.zig` is shared by both drivers: DMA arenas, bounded settling waits, period
-  slicing, hardware position to completed periods.
+- `pcm.zig` is shared by every driver: DMA arenas, bounded settling waits, each
+  direction's period buffers, hardware position to completed periods.
+- Everything is mixed at 48 kHz. A device declares its own rate; one at 44.1 kHz has
+  each period converted on the way out and in by `audio.Resampler`, exact integer
+  steps with comptime weights.
 - `ac97`: Intel controller, 32-entry descriptor ring.
+- `es1370`: Ensoniq AudioPCI with its AK4531 codec. DAC2 and the ADC loop over their
+  buffers at 44.1 kHz, the only rate its clock divides to near 48; periods are counted
+  from each engine's place in its buffer. Registers and codec setup in
+  [`es1370/regs.zig`](../src/user/sndd/es1370/regs.zig), host-tested.
 - `hda`: High Definition Audio. Walks the codec widget graph to find an output pin with
   a converter behind it, powers and unmutes that path. Verified against the emulator's
   wav capture and by ear on the 701's ALC662.
@@ -351,8 +358,8 @@ every build. Code used by one driver only stays with that driver, for example
 | [`syscalls.zig`](../src/lib/syscalls.zig) | The ABI as data: numbers, flags, wire formats. Generates the dispatcher binding and [`syscalls.md`](syscalls.md). |
 | [`ring.zig`](../src/lib/ring.zig) | SPSC ring layout, and a segment carrying one ring each way. Host-tested. |
 | [`civil.zig`](../src/lib/civil.zig) | Calendar arithmetic. |
-| [`mmio.zig`](../src/lib/mmio.zig) | Register windows: an enum names offsets, instantiation proves each offset aligned for the access width. |
-| [`audio.zig`](../src/lib/audio.zig) | Frames, periods, durations, integer volume scaling, clipping mix, fixed-point sine. A voice mixer: 8-bit signed or unsigned and 16-bit samples, loops, start offsets, pitch bend, linear interpolation. Host-tested. |
+| [`mmio.zig`](../src/lib/mmio.zig) | Register windows: an enum names offsets, instantiation proves each offset aligned for the access width. Port windows take each access's width from the value's type. |
+| [`audio.zig`](../src/lib/audio.zig) | Frames, periods, durations, integer volume scaling, clipping mix, fixed-point sine. A voice mixer: 8-bit signed or unsigned and 16-bit samples, loops, start offsets, pitch bend, linear interpolation. Period progress from a hardware position. A resampler between rates with exact integer steps. Host-tested; the resampler is fuzzed. |
 | [`text.zig`](../src/lib/text.zig) | Editable text: line index, cursor, insert and delete, UTF-8 safe, remembered column. Shared with the pager. Host-tested. |
 | [`usb.zig`](../src/lib/usb.zig) | Request types, descriptor parsing, configuration walk, pipes with data toggle, driver signatures. Host-tested. |
 | [`scsi.zig`](../src/lib/scsi.zig) | Bulk-only transport wrappers and the SCSI commands a disk needs. Host-tested. |
@@ -423,6 +430,8 @@ every build. Code used by one driver only stays with that driver, for example
     once and in order.
   - PRO/100 EEPROM, [`netd/e100/regs.zig`](../src/user/netd/e100/regs.zig): read exactly
     at either size; a glitching line still ends every read.
+  - Resampler, [`lib/audio.zig`](../src/lib/audio.zig): a stream gives the same output
+    however it is cut into periods.
   - OHCI endpoint queue, [`usbd/ohci/queue.zig`](../src/user/usbd/ohci/queue.zig): the
     controller model only ever processes what the host has finished writing, and each
     transfer settles to what the model made of it.
@@ -439,12 +448,13 @@ every build. Code used by one driver only stays with that driver, for example
   4. The image on a larger card: `/home` grows into it, keeps its data and checks clean;
      another volume is formatted and checks clean.
   5. Network: DHCP lease and echo on every emulated adapter.
-  6. USB serial adapter: enumerates, takes settings, carries typed data.
-  7. Serial console: the log reaches the port, including lines written after it opened.
-  8. Hub and bus rebuild: a disk behind a hub keeps its mount across `usb rebuild`, and
+  6. Sound: a tone through the AudioPCI is recorded at its pitch.
+  7. USB serial adapter: enumerates, takes settings, carries typed data.
+  8. Serial console: the log reaches the port, including lines written after it opened.
+  9. Hub and bus rebuild: a disk behind a hub keeps its mount across `usb rebuild`, and
      a disk and keyboard on an OHCI controller are read, written and typed on across it.
-  9. Suspend and resume: display, keyboard, disk and network work after waking.
-  10. Card reader boot: the volumes arrive through USB.
+  10. Suspend and resume: display, keyboard, disk and network work after waking.
+  11. Card reader boot: the volumes arrive through USB.
 - Boot self-tests: heap, syscall ABI, clock advance, IPC. Failures print `fail` in the
   boot log rather than hanging.
 - `make shot OUT=x.png TYPE="..."` boots headless, types at the shell, and writes a
@@ -500,7 +510,7 @@ syscalls, Ring 3, IPC, ramfs, VESA console, i8042 keyboard, `vsh`. Exercised eve
 |---|---|
 | `usbd` | EHCI, UHCI and OHCI, mass storage, keyboards, mice, hubs. Verified on the machine: a stick enumerates, mounts under `/media`, unmounts on removal. |
 | `platd` | uACPI, EC, battery, backlight, switchable parts, routing. Battery percent mislabel corrected by the quirk registry; `_BIF` read once per session. Hotkey decoding is written; notifications are gated off on the 701 (see [Platform service](#platform-service)). |
-| `sndd` | Routing graph over AC'97 and HDA. HDA verified by ear on the 701. |
+| `sndd` | Routing graph over AC'97, HDA and the Ensoniq AudioPCI. HDA verified by ear on the 701. |
 | `netd` | Wired networking with lwIP, DHCP, DNS, and SNTP (`timed`). Verified on the machine: lease, gateway and internet reachable. `nc`, `resolve`, `ping`; 127.0.0.1 without hardware. |
 | Pad, Monitor, Settings | Done. |
 
@@ -522,7 +532,7 @@ syscalls, Ring 3, IPC, ramfs, VESA console, i8042 keyboard, `vsh`. Exercised eve
 |---|---|
 | Persistent settings and home | The boot medium carries the system, `/cfg` and `/home`. Settings read from `/etc` then `/cfg`. The loader records the medium's partition signature so the right disk is used. On the 701, `/cfg` and `/home` mount when `usbd` brings up the card reader. Verified in the emulator across shutdowns and reboots. |
 | Volume check, format, grow | Clean-unmount flag, check at mount, `check`, `format`, `grow`. Verified in the emulator by the gate. |
-| Fuzz targets | Eleven targets with seeded counterparts in `make test`. See [Testing](#testing). |
+| Fuzz targets | Twelve targets with seeded counterparts in `make test`. See [Testing](#testing). |
 | Bus rebuild | A disk behind a hub keeps its mount across `usb rebuild`. Verified in the emulator. |
 | Serial console | The log reaches a USB serial port. Verified in the emulator; not tried on the machine. |
 | Serial adapters | FTDI verified in the emulator: enumeration, `ser`, typed data both ways, settings, unplug. `acm` not run against a device. |

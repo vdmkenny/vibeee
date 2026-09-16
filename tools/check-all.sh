@@ -21,6 +21,7 @@ cd "$(dirname "$0")/.."
 # the thing worked.
 rm -f "$BUILD"/check-boot*.png "$BUILD"/check-boot*.log "$BUILD"/check-boot*.log.txt
 rm -f "$BUILD"/check-net-*.png "$BUILD"/check-net-*.log "$BUILD"/check-net-*.log.txt
+rm -f "$BUILD"/check-audio.png "$BUILD"/check-audio.log "$BUILD"/check-audio.log.txt "$BUILD"/check-audio.wav
 rm -f "$BUILD"/check-serial.png "$BUILD"/check-serial.log "$BUILD"/check-serial.log.txt "$BUILD"/check-serial.out
 rm -f "$BUILD"/check-console.png "$BUILD"/check-console.log "$BUILD"/check-console.log.txt "$BUILD"/check-console.out
 rm -f "$BUILD"/check-bus.png "$BUILD"/check-bus.log "$BUILD"/check-bus.log.txt "$BUILD"/check-stick.img
@@ -195,6 +196,33 @@ ping 10.0.2.2"
     echo "$model: up, leased, answering"
 done
 echo "every modelled adapter carries traffic end to end"
+
+step "sound: a tone through the AudioPCI reaches the recording at its pitch"
+# The card's clock makes 44.1 kHz and the service mixes at 48, so the tone
+# only comes out at its pitch if every period was converted. The emulator
+# records what the card plays into a file, at 44.1 kHz behind a 44-byte
+# header; the pitch is read off the zero crossings of the left channel.
+WAV=$BUILD/check-audio.wav
+LOGSND=$BUILD/check-audio.log
+QEMU_CPU="$QEMU_CPU" tools/qemu-shot.sh "$BUILD/check-audio.png" -w 30 -p 5 -s 2 \
+    -t "tone 1000 2000" \
+    -- -drive if=ide,format=raw,file="$DEV_IMAGE" \
+    -audiodev wav,id=snd0,path="$WAV" -device ES1370,audiodev=snd0 >/dev/null \
+    || fail "the emulator did not run (see $LOGSND)"
+plain "$LOGSND" > "$LOGSND.txt"
+grep -q "es1370  codec ready" "$LOGSND.txt" || fail "the AudioPCI did not come up (see $LOGSND)"
+PITCH=$(od -An -v -t d2 -j 44 "$WAV" | awk '
+    { for (i = 1; i <= NF; i++) if (n++ % 2 == 0) {
+        v = $i
+        if (v > 50 || v < -50) loud++
+        below = v < 0
+        if (seen && below != was) crossed++
+        was = below; seen = 1
+    } }
+    END { print (loud ? int(crossed * 44100 / (2 * loud)) : 0) }')
+[ "$PITCH" -ge 990 ] && [ "$PITCH" -le 1010 ] ||
+    fail "the tone came out at $PITCH Hz rather than 1000 (see $WAV)"
+echo "a 1000 Hz tone came out at $PITCH Hz"
 
 # A serial adapter on a controller the default machine does not have. The
 # emulator's cable is the vendor part, so this proves that driver; the class

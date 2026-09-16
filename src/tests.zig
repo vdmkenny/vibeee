@@ -47,6 +47,10 @@ test {
     _ = @import("user/usbd/ftdi/regs.zig");
     // One OHCI endpoint's queue, against a model of the controller.
     _ = @import("user/usbd/ohci/queue.zig");
+    // The AudioPCI's registers, its clock and its codec's setup.
+    _ = @import("user/sndd/es1370/regs.zig");
+    // Which manifests the device manager keeps.
+    _ = @import("user/devmgd/book.zig");
     _ = @import("user/netd/attansic.zig");
     _ = @import("user/netd/cursor.zig");
     // The PRO/100's shapes, its configure block and its EEPROM's protocol,

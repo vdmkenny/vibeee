@@ -270,24 +270,7 @@ const Stepping = struct {
 
 /// Frames the part wrote and the host has not taken, oldest first: an id,
 /// or none for a descriptor the part finished empty.
-const Written = struct {
-    items: [SLOTS + 1]?u32 = undefined,
-    head: usize = 0,
-    len: usize = 0,
-
-    fn push(self: *Written, item: ?u32) void {
-        self.items[(self.head + self.len) % self.items.len] = item;
-        self.len += 1;
-    }
-
-    fn pop(self: *Written) ??u32 {
-        if (self.len == 0) return null;
-        const item = self.items[self.head];
-        self.head = (self.head + 1) % self.items.len;
-        self.len -= 1;
-        return item;
-    }
-};
+const Written = std.Deque(?u32);
 
 const Model = struct {
     from: Choices,
@@ -305,7 +288,7 @@ const Model = struct {
 
     receiver: regs.ReceiverState = .ready,
     rx_at: usize = 0,
-    written: Written = .{},
+    written: Written,
     next_frame: u32 = 1,
     arriving: bool = true,
 
@@ -378,7 +361,7 @@ const Model = struct {
             if (self.fence_finishes) {
                 descriptor.count = .{};
                 descriptor.header.status = .{ .complete = true, .ok = true };
-                self.written.push(null);
+                self.written.pushBackAssumeCapacity(null);
             }
             self.receiver = .no_resources;
             return;
@@ -387,7 +370,7 @@ const Model = struct {
         std.mem.writeInt(u32, descriptor.frame[0..4], self.next_frame, .little);
         descriptor.count = .{ .bytes = @intCast(4 + self.from.below(60)), .filled = true, .end_of_frame = true };
         descriptor.header.status = .{ .complete = true, .ok = true };
-        self.written.push(self.next_frame);
+        self.written.pushBackAssumeCapacity(self.next_frame);
         self.next_frame += 1;
         if (last) {
             self.receiver = .no_resources;
@@ -452,7 +435,7 @@ const Model = struct {
     }
 
     fn deliver(self: *Model, frame: ?[]const u8) void {
-        const expected = self.written.pop() orelse {
+        const expected = self.written.popFront() orelse {
             self.fault = "a frame was taken that the part never wrote";
             return;
         };
@@ -475,10 +458,12 @@ const Model = struct {
 fn runPart(from: Choices) anyerror!void {
     var descriptors: [SLOTS]regs.Receive = undefined;
     var blocks: [SLOTS]regs.Block = undefined;
+    var written: [SLOTS + 1]?u32 = undefined;
     var model = Model{
         .from = from,
         .descriptors = &descriptors,
         .blocks = &blocks,
+        .written = .initBuffer(&written),
         .fence_finishes = from.odds(2),
         .resume_looks_again = from.odds(2),
         .suspend_read_first = from.odds(2),

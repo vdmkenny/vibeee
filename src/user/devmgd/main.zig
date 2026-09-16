@@ -15,6 +15,7 @@
 //!
 //! `design/00-vibeee.md` §4.
 
+const book = @import("book.zig");
 const sys = @import("sys");
 const config = @import("ulib").config;
 const dir = @import("ulib").dir;
@@ -226,12 +227,11 @@ fn readOne(name: []const u8) void {
     if ((current.binary.len == 0) == (current.service.len == 0)) return;
     if (current.name.len > proto.NAME_MAX or current.service.len > proto.NAME_MAX) return;
 
-    // Reading again must not double an already-known driver, and a driver
-    // already known is not one there needs to be room for.
-    for (manifests[0..manifest_count]) |existing| {
-        if (std.mem.eql(u8, existing.name, current.name)) return;
+    switch (book.admit(manifests[0..manifest_count], current.name, MAX_DRIVERS)) {
+        .known => return,
+        .full => return say(name, "there is no room for another driver"),
+        .keep => {},
     }
-    if (manifest_count == MAX_DRIVERS) return say(name, "there is no room for another driver");
     if (!keep(&current)) return say(name, "there is no room left for what it says");
     manifests[manifest_count] = current;
     manifest_count += 1;

@@ -2,8 +2,10 @@
 
 > Where this document and [`00-vibeee.md`](00-vibeee.md) disagree, the master design wins.
 
-Status: implemented for AC'97 and HDA. AC'97 verified in QEMU against the wav backend
-(frequency, mixing, volume). HDA verified in QEMU and by ear on the 701's ALC662.
+Status: implemented for AC'97, HDA and the Ensoniq AudioPCI ES1370. AC'97 verified in
+QEMU against the wav backend (frequency, mixing, volume). HDA verified in QEMU and by
+ear on the 701's ALC662. The ES1370's clock makes 44.1 kHz; the service mixes at 48 kHz
+and converts that device's periods, and the gate records a tone through it at its pitch.
 
 **The architecture is a routing graph, not a fixed mixer.** The rest of this
 document predates that decision and describes the fixed-path mixer it replaced;

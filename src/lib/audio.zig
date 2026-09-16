@@ -1193,3 +1193,257 @@ test "a voice with nothing in it ends instead of dividing by zero" {
     try std.testing.expect(!mixer.playing(0));
     try std.testing.expectEqual(@as(i16, 0), out[0]);
 }
+
+/// How many periods a hardware position counter has passed since it was
+/// last asked. Controllers report where they are, not how far they came,
+/// so the difference is kept here and the wrap handled once.
+pub const Progress = struct {
+    /// How many slots the hardware's own index wraps at.
+    modulus: u32,
+    last: u32 = 0,
+
+    pub fn advance(self: *Progress, index: u32) u8 {
+        const now = index % self.modulus;
+        const moved = (now + self.modulus - self.last) % self.modulus;
+        self.last = now;
+        return @intCast(moved);
+    }
+
+    pub fn reset(self: *Progress) void {
+        self.last = 0;
+    }
+};
+
+test "progress counts the slots passed, across the wrap" {
+    var progress = Progress{ .modulus = 8 };
+    try std.testing.expectEqual(@as(u8, 1), progress.advance(1));
+    try std.testing.expectEqual(@as(u8, 0), progress.advance(1));
+    try std.testing.expectEqual(@as(u8, 6), progress.advance(7));
+    // Past the end and round: from seven to two is three slots.
+    try std.testing.expectEqual(@as(u8, 3), progress.advance(2));
+    // An index the hardware reports unwrapped is taken modulo the ring.
+    try std.testing.expectEqual(@as(u8, 1), progress.advance(11));
+    progress.reset();
+    try std.testing.expectEqual(@as(u8, 5), progress.advance(5));
+}
+
+// ---------------------------------------------------------------------------
+// Changing rate
+// ---------------------------------------------------------------------------
+
+/// A stream of interleaved frames taken from one rate to another, for a
+/// device whose clock cannot run at the rate everything else is mixed at.
+///
+/// Each output frame lies on the straight line between the input frames
+/// either side of it. The step from one output to the next is the ratio of
+/// the rates in lowest terms, kept whole, so the place never drifts however
+/// long the stream runs, and the weight for each place is a table made at
+/// compile time: a multiply and a shift per sample. The place carries from
+/// one call to the next, so a stream cut into periods has no seams.
+pub fn Resampler(comptime from: Rate, comptime to: Rate, comptime channels: u8) type {
+    const common = std.math.gcd(from.hertz(), to.hertz());
+    // How far the input moves per output frame, in `span`ths of a frame.
+    const step: u32 = from.hertz() / common;
+    const span: u32 = to.hertz() / common;
+
+    return struct {
+        const Self = @This();
+        const Frame = [channels]i16;
+
+        /// The places between two input frames.
+        pub const SPAN = span;
+
+        /// Where the next output lies past `before`, in `span`ths of a frame.
+        place: u32 = 0,
+        before: Frame = @splat(0),
+        after: Frame = @splat(0),
+
+        /// How far along from `before` to `after` each place is, out of
+        /// 32768: fifteen bits keep the product with a difference of two
+        /// samples inside thirty-two.
+        const weights: [span]u16 = built: {
+            var table: [span]u16 = undefined;
+            for (&table, 0..) |*weight, place| weight.* = @intCast(place * 32768 / span);
+            break :built table;
+        };
+
+        /// How many input frames the next `outputs` output frames take.
+        pub fn takes(self: Self, outputs: usize) usize {
+            return (self.place + outputs * step) / span;
+        }
+
+        /// How many output frames `inputs` input frames give, every one of
+        /// them taken.
+        pub fn gives(self: Self, inputs: usize) usize {
+            // The outputs whose place stays inside the frames given.
+            return ((inputs + 1) * span - self.place + step - 1) / step - 1;
+        }
+
+        pub const Ran = struct { taken: usize, made: usize };
+
+        /// Make as many output frames as `output` has room for and `input`
+        /// has frames to make them from, taking every input frame used.
+        pub fn run(self: *Self, input: []const i16, output: []i16) Ran {
+            const inputs = input.len / channels;
+            const outputs = output.len / channels;
+            var ran = Ran{ .taken = 0, .made = 0 };
+            while (ran.made < outputs and ran.taken + (self.place + step) / span <= inputs) : (ran.made += 1) {
+                const weight: i32 = weights[self.place];
+                for (0..channels) |channel| {
+                    const a: i32 = self.before[channel];
+                    const b: i32 = self.after[channel];
+                    output[ran.made * channels + channel] = @intCast(a + ((b - a) * weight >> 15));
+                }
+                self.place += step;
+                while (self.place >= span) : (self.place -= span) {
+                    self.before = self.after;
+                    self.after = input[ran.taken * channels ..][0..channels].*;
+                    ran.taken += 1;
+                }
+            }
+            return ran;
+        }
+    };
+}
+
+test "the same rate passes frames through two frames late" {
+    var same = Resampler(.hz48000, .hz48000, 2){};
+    const input = [_]i16{ 1, -1, 2, -2, 3, -3, 4, -4 };
+    var output: [8]i16 = undefined;
+    try std.testing.expectEqual(@as(usize, 4), same.takes(4));
+    const ran = same.run(&input, &output);
+    try std.testing.expectEqual(@as(usize, 4), ran.made);
+    try std.testing.expectEqual(@as(usize, 4), ran.taken);
+    try std.testing.expectEqualSlices(i16, &.{ 0, 0, 0, 0, 1, -1, 2, -2 }, &output);
+}
+
+test "a second at one rate is exactly a second at the other, either way" {
+    const Down = Resampler(.hz48000, .hz44100, 2);
+    const Up = Resampler(.hz44100, .hz48000, 2);
+    try std.testing.expectEqual(@as(usize, 48000), (Down{}).takes(44100));
+    try std.testing.expectEqual(@as(usize, 44100), (Up{}).takes(48000));
+
+    // Period by period, as the service asks: the frames taken add up to a
+    // second of input exactly, with nothing lost at the seams.
+    var down = Down{};
+    var taken: usize = 0;
+    var made: usize = 0;
+    var input: [600]i16 = @splat(0);
+    var output: [512]i16 = undefined;
+    while (made < 44100) {
+        const period: usize = @min(256, 44100 - made);
+        const frames = down.takes(period);
+        const ran = down.run(input[0 .. frames * 2], output[0 .. period * 2]);
+        try std.testing.expectEqual(frames, ran.taken);
+        try std.testing.expectEqual(period, ran.made);
+        taken += ran.taken;
+        made += ran.made;
+        @memset(&input, 0);
+    }
+    try std.testing.expectEqual(@as(usize, 48000), taken);
+}
+
+test "what a number of inputs gives is exactly what running them makes" {
+    const Up = Resampler(.hz44100, .hz48000, 2);
+    const Down = Resampler(.hz48000, .hz44100, 2);
+    const input: [600]i16 = @splat(0);
+    var output: [1400]i16 = undefined;
+    for ([_]u32{ 0, 1, 80, 146 }) |place| {
+        for ([_]usize{ 1, 7, 256 }) |frames| {
+            var up = Up{ .place = place };
+            const promised = up.gives(frames);
+            try std.testing.expectEqual(promised, up.run(input[0 .. frames * 2], &output).made);
+
+            var down = Down{ .place = place };
+            const offered = down.gives(frames);
+            try std.testing.expectEqual(offered, down.run(input[0 .. frames * 2], &output).made);
+        }
+    }
+}
+
+test "a tone keeps its pitch across the change, and the periods leave no seams" {
+    const source = Shape{ .rate = .hz48000, .channels = 2 };
+    var tone = Tone.at(1000, source, 16000);
+    var bytes: [48000 * 4]u8 = undefined;
+    tone.fill(&bytes, source);
+    const input: []const i16 = @alignCast(std.mem.bytesAsSlice(i16, &bytes));
+
+    var whole = Resampler(.hz48000, .hz44100, 2){};
+    var at_once: [44100 * 2]i16 = undefined;
+    const ran = whole.run(input, &at_once);
+    try std.testing.expectEqual(@as(usize, 44100), ran.made);
+
+    var cut = Resampler(.hz48000, .hz44100, 2){};
+    var in_periods: [44100 * 2]i16 = undefined;
+    var made: usize = 0;
+    var taken: usize = 0;
+    while (made < 44100) {
+        const period: usize = @min(256, 44100 - made);
+        const part = cut.run(input[taken * 2 ..], in_periods[made * 2 ..][0 .. period * 2]);
+        made += part.made;
+        taken += part.taken;
+    }
+    try std.testing.expectEqualSlices(i16, &at_once, &in_periods);
+
+    // A thousand cycles in the second: two thousand crossings of zero on
+    // one channel, give or take the one at the very start.
+    var crossings: usize = 0;
+    var frame: usize = 1;
+    while (frame < 44100) : (frame += 1) {
+        if ((at_once[(frame - 1) * 2] < 0) != (at_once[frame * 2] < 0)) crossings += 1;
+    }
+    try std.testing.expect(crossings >= 1998 and crossings <= 2001);
+}
+
+const fuzzing = @import("fuzzing.zig");
+
+/// Any samples, any rates this system has, cut into any periods: every
+/// output lies between the two inputs around it, the periods agree with one
+/// run, and nothing is taken that was not there.
+fn resampleOneStream(from: fuzzing.Choices) anyerror!void {
+    const rates = [_]Rate{ .hz22050, .hz44100, .hz48000 };
+    const source = rates[from.below(rates.len)];
+    const target = rates[from.below(rates.len)];
+    switch (source) {
+        inline .hz22050, .hz44100, .hz48000 => |in_rate| switch (target) {
+            inline .hz22050, .hz44100, .hz48000 => |out_rate| {
+                const Stream = Resampler(in_rate, out_rate, 2);
+                var input: [512]i16 = undefined;
+                for (&input) |*sample| sample.* = from.int(i16);
+
+                var whole = Stream{};
+                var at_once: [1200]i16 = undefined;
+                const all = whole.run(&input, &at_once);
+                try std.testing.expect(all.taken <= input.len / 2);
+
+                var cut = Stream{};
+                var pieces: [1200]i16 = undefined;
+                var made: usize = 0;
+                var taken: usize = 0;
+                while (made < all.made) {
+                    const want: usize = @min(all.made - made, from.upTo(64));
+                    const part = cut.run(input[taken * 2 ..], pieces[made * 2 ..][0 .. want * 2]);
+                    try std.testing.expect(part.made > 0);
+                    made += part.made;
+                    taken += part.taken;
+                }
+                try std.testing.expectEqualSlices(i16, at_once[0 .. all.made * 2], pieces[0 .. made * 2]);
+            },
+            else => unreachable,
+        },
+        else => unreachable,
+    }
+}
+
+test "fuzz: a resampled stream is the same however it is cut" {
+    const Target = struct {
+        fn one(_: void, smith: *std.testing.Smith) anyerror!void {
+            return resampleOneStream(.{ .fuzzer = smith });
+        }
+    };
+    try std.testing.fuzz({}, Target.one, .{});
+}
+
+test "streams resampled at random" {
+    try fuzzing.seeded(resampleOneStream, 0x44_100_48, 500);
+}

@@ -972,11 +972,7 @@ fn start(direction: dev.Direction) bool {
         return false;
     }
 
-    const frames = switch (direction) {
-        .playback => &device.arena.at.out_frames,
-        .capture => &device.arena.at.in_frames,
-    };
-    pcm.silence(frames);
+    pcm.silence(pcm.framesOf(device.arena.at, direction));
 
     const list = switch (direction) {
         .playback => device.arena.physOf("out_list"),
@@ -1065,10 +1061,7 @@ fn advanceOf(index: u8, progress: *pcm.Progress) u8 {
 }
 
 fn period(direction: dev.Direction, index: u32) []u8 {
-    return switch (direction) {
-        .playback => pcm.periodAt(&device.arena.at.out_frames, index),
-        .capture => pcm.periodAt(&device.arena.at.in_frames, index),
-    };
+    return pcm.period(device.arena.at, direction, index);
 }
 
 /// The descriptor list is cyclic and the engine wraps on its own, so

@@ -32,12 +32,52 @@ const Mixer = enum(u16) {
     record_gain = 0x1C,
 };
 
-/// The bus master window: two engines this driver runs, and the global
-/// pair. Each engine's registers sit at a fixed offset from its base.
-const ENGINE_PCM_IN: u16 = 0x00;
-const ENGINE_PCM_OUT: u16 = 0x10;
-const GLOBAL_CONTROL: u16 = 0x2C;
-const GLOBAL_STATUS: u16 = 0x30;
+/// The bus master window's own registers, beside the two engines in it.
+const Global = enum(u16) {
+    control = 0x2C,
+    status = 0x30,
+};
+
+/// Where each engine's registers begin in the bus master window.
+fn engineOffset(direction: dev.Direction) u16 {
+    return switch (direction) {
+        .capture => 0x00,
+        .playback => 0x10,
+    };
+}
+
+/// A mixer volume: attenuation per side in steps of one and a half
+/// decibels, zero loudest, and a mute over both.
+const Volume = packed struct(u16) {
+    right: u6 = 0,
+    _6: u2 = 0,
+    left: u6 = 0,
+    _14: u1 = 0,
+    muted: bool = false,
+
+    fn both(attenuation: u6) Volume {
+        return .{ .left = attenuation, .right = attenuation };
+    }
+};
+
+/// Where each side records from.
+const RecordSource = enum(u3) {
+    mic = 0,
+    cd = 1,
+    video = 2,
+    aux = 3,
+    line = 4,
+    stereo_mix = 5,
+    mono_mix = 6,
+    phone = 7,
+};
+
+const RecordSelect = packed struct(u16) {
+    right: RecordSource = .mic,
+    _3: u5 = 0,
+    left: RecordSource = .mic,
+    _11: u5 = 0,
+};
 
 /// One engine's registers, relative to its base.
 const Engine = enum(u16) {
@@ -107,6 +147,12 @@ const DescriptorFlags = packed struct(u16) {
 };
 
 comptime {
+    if (@as(u16, @bitCast(Volume.both(8))) != 0x0808 or @as(u16, @bitCast(Volume{ .muted = true })) != 0x8000) {
+        @compileError("the mixer volume bits drifted");
+    }
+    if (@as(u16, @bitCast(RecordSelect{ .left = .line, .right = .line })) != 0x0404) {
+        @compileError("the record select bits drifted");
+    }
     if (@sizeOf(Descriptor) != 8) @compileError("a buffer descriptor is eight bytes");
     if (@as(u8, @bitCast(Control{ .run = true })) != 0x01 or
         @as(u8, @bitCast(Control{ .completion_interrupt = true })) != 0x10)
@@ -133,8 +179,8 @@ const Arena = extern struct {
 };
 
 const Device = struct {
-    mixer_base: u16 = 0,
-    bus_base: u16 = 0,
+    mixer: ports.Window(Mixer) = .{ .base = 0 },
+    global: ports.Window(Global) = .{ .base = 0 },
     arena: pcm.Dma(Arena) = undefined,
     opened: bool = false,
     /// One per direction, counting periods from the engine's own index.
@@ -163,12 +209,12 @@ fn open(loc: pci.Location) bool {
         log.fail(name, "the controller's windows are not I/O");
         return false;
     }
-    device.mixer_base = @intCast(mixer_bar.base());
-    device.bus_base = @intCast(bus_bar.base());
+    device.mixer = .{ .base = @intCast(mixer_bar.base()) };
+    device.global = .{ .base = @intCast(bus_bar.base()) };
 
     for ([_]struct { base: u16, count: usize }{
-        .{ .base = device.mixer_base, .count = 256 },
-        .{ .base = device.bus_base, .count = 64 },
+        .{ .base = device.mixer.base, .count = 256 },
+        .{ .base = device.global.base, .count = 64 },
     }) |window| {
         sys.ioportGrant(window.base, window.count) catch {
             log.fail(name, "the port windows were refused");
@@ -209,12 +255,11 @@ fn open(loc: pci.Location) bool {
 /// Deassert cold reset, wait for the codec, and set its analog path to a
 /// known loudness: master and PCM at full, unmuted; software owns taste.
 fn resetCodec() bool {
-    ports.out32(device.bus_base + GLOBAL_CONTROL, @bitCast(GlobalControl{ .cold_reset = true }));
+    device.global.write(.control, GlobalControl{ .cold_reset = true });
 
     if (!pcm.settles(100, 1000, {}, struct {
         fn ready(_: void) bool {
-            const status: GlobalStatus = @bitCast(ports.in32(device.bus_base + GLOBAL_STATUS));
-            return status.codec_ready;
+            return device.global.read(GlobalStatus, .status).codec_ready;
         }
     }.ready)) {
         log.fail(name, "the codec never reported ready");
@@ -222,69 +267,59 @@ fn resetCodec() bool {
     }
 
     // Any write to the reset register returns the mixer to defaults.
-    ports.out16(device.mixer_base + @intFromEnum(Mixer.reset), 0);
-    ports.out16(device.mixer_base + @intFromEnum(Mixer.master), 0x0000);
-    ports.out16(device.mixer_base + @intFromEnum(Mixer.pcm_out), 0x0808);
+    device.mixer.write(.reset, @as(u16, 0));
+    device.mixer.write(.master, Volume{});
+    // The PCM gain register's zero is gain; eight steps down is unity.
+    device.mixer.write(.pcm_out, Volume.both(8));
     // Record from line-in, unity gain: what the emulator loops back and
     // what a bare machine's microphone pin arrives on.
-    ports.out16(device.mixer_base + @intFromEnum(Mixer.record_select), 0x0404);
-    ports.out16(device.mixer_base + @intFromEnum(Mixer.record_gain), 0x0000);
+    device.mixer.write(.record_select, RecordSelect{ .left = .line, .right = .line });
+    device.mixer.write(.record_gain, Volume{});
     return true;
 }
 
-fn engineBase(direction: dev.Direction) u16 {
-    return device.bus_base + switch (direction) {
-        .playback => ENGINE_PCM_OUT,
-        .capture => ENGINE_PCM_IN,
-    };
-}
-
-fn engineWrite8(direction: dev.Direction, register: Engine, value: u8) void {
-    ports.out8(engineBase(direction) + @intFromEnum(register), value);
+/// One engine's registers, as a window of their own.
+fn engine(direction: dev.Direction) ports.Window(Engine) {
+    return .{ .base = device.global.base + engineOffset(direction) };
 }
 
 fn start(direction: dev.Direction) bool {
     if (!device.opened) return false;
-    const base = engineBase(direction);
+    const registers = engine(direction);
 
     // Reset the engine's registers, point it at its list, and mark every
     // descriptor valid: the ring wraps and the service stays ahead of it.
-    engineWrite8(direction, .control, @bitCast(Control{ .reset = true }));
-    _ = pcm.settles(100, 100, base, struct {
-        fn ready(at: u16) bool {
-            const control: Control = @bitCast(ports.in8(at + @intFromEnum(Engine.control)));
-            return !control.reset;
+    registers.write(.control, Control{ .reset = true });
+    _ = pcm.settles(100, 100, registers, struct {
+        fn ready(at: ports.Window(Engine)) bool {
+            return !at.read(Control, .control).reset;
         }
     }.ready);
 
-    const list: u32 = switch (direction) {
+    registers.write(.list_base, @as(u32, switch (direction) {
         .playback => device.arena.physOf("out_list"),
         .capture => device.arena.physOf("in_list"),
-    };
-    ports.out32(base + @intFromEnum(Engine.list_base), list);
+    }));
 
     // Silence the buffers so a first period plays nothing rather than
     // stale memory, and mark the whole ring valid: the engine wraps its
     // thirty-two descriptors freely, and `queued` keeps the last-valid
     // mark ahead of the play position so it never catches up and halts.
-    switch (direction) {
-        .playback => pcm.silence(&device.arena.at.out_frames),
-        .capture => pcm.silence(&device.arena.at.in_frames),
-    }
-    engineWrite8(direction, .last_valid, BDL_ENTRIES - 1);
+    pcm.silence(pcm.framesOf(device.arena.at, direction));
+    registers.write(.last_valid, @as(u8, BDL_ENTRIES - 1));
     device.progress[@intFromEnum(direction)].reset();
-    engineWrite8(direction, .control, @bitCast(Control{
+    registers.write(.control, Control{
         .run = true,
         .completion_interrupt = true,
         .fifo_error_interrupt = true,
-    }));
+    });
     return true;
 }
 
 fn stop(direction: dev.Direction) void {
     if (!device.opened) return;
-    engineWrite8(direction, .control, @bitCast(Control{}));
-    engineWrite8(direction, .control, @bitCast(Control{ .reset = true }));
+    engine(direction).write(.control, Control{});
+    engine(direction).write(.control, Control{ .reset = true });
 }
 
 /// One delivery: read each engine's status, count what completed since
@@ -293,17 +328,13 @@ fn irq() dev.Completions {
     if (!device.opened) return .{};
     var done = dev.Completions{};
 
-    inline for ([_]dev.Direction{ .playback, .capture }) |direction| {
-        const base = engineBase(direction);
-        const status: EngineStatus = @bitCast(ports.in16(base + @intFromEnum(Engine.status)));
+    for ([_]dev.Direction{ .playback, .capture }) |direction| {
+        const registers = engine(direction);
+        const status = registers.read(EngineStatus, .status);
         if (status.completed or status.last_valid_done or status.fifo_error) {
-            const index = ports.in8(base + @intFromEnum(Engine.current_index));
-            const advanced = device.progress[@intFromEnum(direction)].advance(index);
-            switch (direction) {
-                .playback => done.playback = advanced,
-                .capture => done.capture = advanced,
-            }
-            ports.out16(base + @intFromEnum(Engine.status), @bitCast(EngineStatus.ACK));
+            const index = registers.read(u8, .current_index);
+            done.set(direction, device.progress[@intFromEnum(direction)].advance(index));
+            registers.write(.status, EngineStatus.ACK);
         }
     }
     return done;
@@ -314,31 +345,21 @@ fn irq() dev.Completions {
 /// ahead of the play position, so the engine always has somewhere to go.
 fn queued(direction: dev.Direction, index: u32) void {
     if (!device.opened) return;
-    engineWrite8(direction, .last_valid, @intCast(index % BDL_ENTRIES));
+    engine(direction).write(.last_valid, @as(u8, @intCast(index % BDL_ENTRIES)));
 }
 
 fn period(direction: dev.Direction, index: u32) []u8 {
-    return switch (direction) {
-        .playback => pcm.periodAt(&device.arena.at.out_frames, index),
-        .capture => pcm.periodAt(&device.arena.at.in_frames, index),
-    };
+    return pcm.period(device.arena.at, direction, index);
 }
 
 /// The master attenuator: sixty-three steps of one and a half decibels,
 /// zero loudest.
 const master = audio.Attenuator{ .steps = 0x3F, .quarter_db = 6 };
 
-/// Set the codec's own attenuator. Bit fifteen mutes; the rest is the
-/// step the shared volume curve asks for, counted down from loudest.
+/// Set the codec's own attenuator: the step the shared volume curve asks
+/// for, counted down from loudest, or the mute.
 fn setMaster(volume: audio.Volume) void {
     if (!device.opened) return;
-    if (volume.muted) {
-        ports.out16(device.mixer_base + @intFromEnum(Mixer.master), 0x8000);
-        return;
-    }
-    const attenuation: u16 = master.steps - volume.stepOf(master);
-    ports.out16(
-        device.mixer_base + @intFromEnum(Mixer.master),
-        attenuation << 8 | attenuation,
-    );
+    if (volume.muted) return device.mixer.write(.master, Volume{ .muted = true });
+    device.mixer.write(.master, Volume.both(@intCast(master.steps - volume.stepOf(master))));
 }

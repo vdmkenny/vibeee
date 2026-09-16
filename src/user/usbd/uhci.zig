@@ -335,7 +335,7 @@ const Arena = extern struct {
 // ---------------------------------------------------------------------------
 
 const Device = struct {
-    base: u16 = 0,
+    window: ports.Window(Reg) = .{ .base = 0 },
     location: pci.Location = .{ .bus = 0, .device = 0, .function = 0 },
     arena: device.Dma(Arena) = undefined,
     opened: bool = false,
@@ -368,24 +368,16 @@ pub var units: [MAX_UNITS]Unit = @splat(.{});
 // Register access
 // ---------------------------------------------------------------------------
 
-fn read16(self: *Unit, register: Reg) u16 {
-    return ports.in16(self.controller.base + @intFromEnum(register));
-}
-
-fn write16(self: *Unit, register: Reg, value: u16) void {
-    ports.out16(self.controller.base + @intFromEnum(register), value);
-}
-
 fn portRegister(index: u8) Reg {
     return if (index == 0) .port1 else .port2;
 }
 
 fn portRead(self: *Unit, index: u8) Port {
-    return @bitCast(read16(self, portRegister(index)));
+    return self.controller.window.read(Port, portRegister(index));
 }
 
 fn portWrite(self: *Unit, index: u8, value: Port) void {
-    write16(self, portRegister(index), @bitCast(value));
+    self.controller.window.write(portRegister(index), value);
 }
 
 // ---------------------------------------------------------------------------
@@ -394,12 +386,12 @@ fn portWrite(self: *Unit, index: u8, value: Port) void {
 
 pub fn open(self: *Unit, loc: pci.Location) bool {
     if (self.controller.opened) return false;
-    const window: pci.IoBar = @bitCast(pci.bar(loc, 4));
-    if (!window.io_space) {
+    const bar: pci.IoBar = @bitCast(pci.bar(loc, 4));
+    if (!bar.io_space) {
         log.fail(name, "the controller exposes no register ports");
         return false;
     }
-    const base = window.base();
+    const base = bar.base();
     if (base == 0) {
         log.fail(name, "cannot reach the controller's registers");
         return false;
@@ -409,7 +401,7 @@ pub fn open(self: *Unit, loc: pci.Location) bool {
         return false;
     };
 
-    self.controller.base = @intCast(base);
+    self.controller.window = .{ .base = @intCast(base) };
     self.controller.location = loc;
 
     // The firmware has been driving this controller to make a USB
@@ -444,20 +436,20 @@ fn takeFromFirmware(loc: pci.Location) void {
 fn reset(self: *Unit) bool {
     // Stop first. A controller reset while it is running leaves the
     // frame list half walked and the ports in a state nothing describes.
-    write16(self, .command, @bitCast(Command{}));
-    write16(self, .interrupts, @bitCast(Interrupts{}));
+    self.controller.window.write(.command, Command{});
+    self.controller.window.write(.interrupts, Interrupts{});
 
-    write16(self, .command, @bitCast(Command{ .global_reset = true }));
+    self.controller.window.write(.command, Command{ .global_reset = true });
     // The bus reset the specification asks for: ten milliseconds of it,
     // and every device on the bus is back at address zero afterwards.
     sys.sleepMicros(15_000);
-    write16(self, .command, @bitCast(Command{}));
+    self.controller.window.write(.command, Command{});
     sys.sleepMicros(10_000);
 
-    write16(self, .command, @bitCast(Command{ .reset = true }));
+    self.controller.window.write(.command, Command{ .reset = true });
     if (!device.settles(200, 1_000, self, struct {
         fn ready(unit: *Unit) bool {
-            const now: Command = @bitCast(read16(unit, .command));
+            const now = unit.controller.window.read(Command, .command);
             return !now.reset;
         }
     }.ready)) {
@@ -477,18 +469,17 @@ fn startSchedule(self: *Unit) void {
     for (&arena.watches) |*head| head.* = .{};
     chain(self);
 
-    write16(self, .frame_base, 0);
-    ports.out32(self.controller.base + @intFromEnum(Reg.frame_base), self.controller.arena.physOf("frames"));
-    write16(self, .frame_number, 0);
-    ports.out8(self.controller.base + @intFromEnum(Reg.start_of_frame), 64);
+    self.controller.window.write(.frame_base, self.controller.arena.physOf("frames"));
+    self.controller.window.write(.frame_number, @as(u16, 0));
+    self.controller.window.write(.start_of_frame, @as(u8, 64));
 
-    write16(self, .status, @bitCast(Status.ACK));
-    write16(self, .interrupts, @bitCast(Interrupts{
+    self.controller.window.write(.status, Status.ACK);
+    self.controller.window.write(.interrupts, Interrupts{
         .timeout = true,
         .on_complete = true,
         .short_packet = true,
-    }));
-    write16(self, .command, @bitCast(Command{ .running = true, .configured = true, .max_packet_64 = true }));
+    });
+    self.controller.window.write(.command, Command{ .running = true, .configured = true, .max_packet_64 = true });
 
     // The ports carry power already: this controller has no switch for
     // it, which is why there is nothing here to turn on.
@@ -618,11 +609,11 @@ pub fn rebuild(self: *Unit) bool {
 pub fn serviceIrq(self: *Unit) hc.Service {
     if (!self.controller.opened) return .quiet;
 
-    const status: Status = @bitCast(read16(self, .status));
+    const status = self.controller.window.read(Status, .status);
 
     // Write back only the bits that were set: a blanket acknowledgement
     // would swallow something that arrived between the read and the write.
-    write16(self, .status, @bitCast(status));
+    self.controller.window.write(.status, status);
 
     if (status.host_system_error or status.process_error) {
         stopped(self, status);

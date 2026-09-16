@@ -9,17 +9,16 @@
 //! in each of them.
 
 const std = @import("std");
-const str = @import("str.zig");
 
 /// One spec, read field by field.
 pub const Spec = struct {
-    fields: str.Splitter,
+    fields: std.mem.SplitIterator(u8, .scalar),
 
     /// A spec's fields, when it names `prefix`. Null when it names
     /// something else, which is how one bus passes over another's lines.
     pub fn under(text: []const u8, prefix: []const u8) ?Spec {
-        var fields = str.split(text, ':');
-        const named = str.trim(fields.next() orelse return null);
+        var fields = std.mem.splitScalar(u8, text, ':');
+        const named = trim(fields.next() orelse return null);
         if (!std.mem.eql(u8, named, prefix)) return null;
         return .{ .fields = fields };
     }
@@ -36,7 +35,7 @@ pub const Spec = struct {
     /// value of itself. That is how one driver serves a whole family
     /// without listing its members.
     pub fn isOrAbsent(self: *Spec, value: u32) bool {
-        const field = str.trim(self.fields.next() orelse return true);
+        const field = trim(self.fields.next() orelse return true);
         if (field.len == 0) return true;
         return lists(field, value);
     }
@@ -44,11 +43,16 @@ pub const Spec = struct {
 
 /// Whether a field names `value` among the numbers it separates with `|`.
 fn lists(field: []const u8, value: u32) bool {
-    var numbers = str.split(field, '|');
+    var numbers = std.mem.splitScalar(u8, field, '|');
     while (numbers.next()) |number| {
-        if (str.hex(str.trim(number)) == value) return true;
+        const listed = std.fmt.parseInt(u32, trim(number), 16) catch continue;
+        if (listed == value) return true;
     }
     return false;
+}
+
+fn trim(text: []const u8) []const u8 {
+    return std.mem.trim(u8, text, &std.ascii.whitespace);
 }
 
 /// Whether any spec in `match` fits, as `fits` decides. Specs are
@@ -59,9 +63,9 @@ pub fn any(
     context: anytype,
     comptime fits: fn (@TypeOf(context), []const u8) bool,
 ) bool {
-    var specs = str.split(match, ',');
+    var specs = std.mem.splitScalar(u8, match, ',');
     while (specs.next()) |spec| {
-        const trimmed = str.trim(spec);
+        const trimmed = trim(spec);
         if (trimmed.len != 0 and fits(context, trimmed)) return true;
     }
     return false;

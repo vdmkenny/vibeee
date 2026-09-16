@@ -166,7 +166,10 @@ traffic over the radio is not confirmed.
 Reports from other low-end x86 netbooks are welcome. Hardware support is selected by PCI
 discovery, ACPI and SMBIOS data, and driver manifests, not a fixed 701 profile. The Eee
 PC 900, 901 and 1000 carry an Attansic L1E wired port, which has a driver sharing code
-with the 701's L2; it has not been run. Firmware corrections are one module per family
+with the 701's L2; it has not been run. Older and other machines have drivers for the
+Intel PRO/100 (including the ICH2 to ICH7 and NM10 integrated LAN) and 8254x, the
+RealTek 8139, OHCI USB controllers and the Ensoniq AudioPCI, all tested in the emulator
+only. Firmware corrections are one module per family
 under `src/quirks/`; a vendor's control interface is one file under
 `src/user/platd/vendor/` plus a row in its registry. Expect gaps in graphics, embedded
 controller functions, wireless, audio codecs, touchpads and storage controllers.

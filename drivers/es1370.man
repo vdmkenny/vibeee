@@ -1,0 +1,8 @@
+# Generated from src/lib/driver.zig by `zig build driver-manifests`.
+# Do not edit: change what the driver answers for instead.
+#
+# The Ensoniq AudioPCI ES1370 and its AK4531 codec: the sound card of
+# many machines of the late nineties, and the emulator's `ES1370`.
+name    = es1370
+service = audio
+match   = pci:1274:5000

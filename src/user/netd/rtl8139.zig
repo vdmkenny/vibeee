@@ -53,41 +53,10 @@ const R = enum(u16) {
     basic_mode_status = 0x64,
 };
 
-/// A whole register file lives behind one port pair: the base port is
-/// granted once for the entire driver, and every access is a typed offset
-/// from it.
-///
-/// Port I/O, not a memory window, and deliberately not `lib.mmio.Window`:
-/// this part is reached with `in`/`out` on real hardware and on every
-/// emulator that bothers, so nothing here is ever a load from a mapped
-/// BAR and the two must not be unified.
-const Ports = struct {
-    base: u16,
-
-    fn out8(self: Ports, r: R, value: u8) void {
-        ports.out8(self.base + @intFromEnum(r), value);
-    }
-
-    fn in8(self: Ports, r: R) u8 {
-        return ports.in8(self.base + @intFromEnum(r));
-    }
-
-    fn out16(self: Ports, r: R, value: u16) void {
-        ports.out16(self.base + @intFromEnum(r), value);
-    }
-
-    fn in16(self: Ports, r: R) u16 {
-        return ports.in16(self.base + @intFromEnum(r));
-    }
-
-    fn out32(self: Ports, r: R, value: u32) void {
-        ports.out32(self.base + @intFromEnum(r), value);
-    }
-
-    fn in32(self: Ports, r: R) u32 {
-        return ports.in32(self.base + @intFromEnum(r));
-    }
-};
+/// The register file, a typed port window over the I/O BAR. Reached with
+/// `in` and `out` on real hardware and on every emulator that bothers, so
+/// nothing here is ever a load from a mapped BAR.
+const Ports = ports.Window(R);
 
 // ---------------------------------------------------------------------------
 // Register shapes, bit for bit
@@ -454,10 +423,10 @@ fn refuseArena() bool {
 /// refused after the same bounded ten milliseconds used by established 8139
 /// drivers rather than being configured through an unfinished reset.
 fn reset() bool {
-    device.ports.out16(.imr, 0);
-    device.ports.out8(.cmd, @bitCast(Cmd{ .reset = true }));
+    device.ports.write(.imr, Events{});
+    device.ports.write(.cmd, Cmd{ .reset = true });
     for (0..RESET_ATTEMPTS) |_| {
-        if (!@as(Cmd, @bitCast(device.ports.in8(.cmd))).reset) return true;
+        if (!device.ports.read(Cmd, .cmd).reset) return true;
         sys.sleepMicros(10);
     }
     log.fail("rtl8139", "reset did not complete");
@@ -472,7 +441,7 @@ fn reset() bool {
 fn readMac(dev: *NicDev) bool {
     var mac: [6]u8 = @splat(0);
     for (&mac, 0..) |*octet, i| {
-        octet.* = ports.in8(device.ports.base + @as(u16, @intCast(i)));
+        octet.* = device.ports.readAt(u8, @intCast(i));
     }
     if (!dev_mod.validMac(mac)) return false;
     dev.mac = mac;
@@ -483,34 +452,34 @@ pub fn start(_: *NicDev) bool {
     if (!attached) return false;
     if (device.started) return true;
 
-    device.ports.out16(.imr, 0);
-    const stale = device.ports.in16(.isr);
-    if (stale != std.math.maxInt(u16)) device.ports.out16(.isr, stale);
+    device.ports.write(.imr, Events{});
+    const stale = device.ports.read(u16, .isr);
+    if (stale != std.math.maxInt(u16)) device.ports.write(.isr, @as(u16, stale));
 
     device.rx_at = .{};
     device.tx_at = .{};
     device.pending = @splat(false);
-    device.ports.out32(.rbstart, device.rx_phys.addr());
+    device.ports.write(.rbstart, device.rx_phys.addr());
     inline for (0..TX_SLOTS) |i| {
-        device.ports.out32(txAddressRegister(i), device.tx_phys[i]);
+        device.ports.write(txAddressRegister(i), device.tx_phys[i]);
     }
 
     // TCR only accepts its transfer settings while the transmitter is on.
-    device.ports.out8(.cmd, @bitCast(Cmd{ .tx_enable = true, .rx_enable = true }));
-    device.ports.out32(.rcr, @bitCast(RxUp));
-    device.ports.out32(.tcr, @bitCast(TxUp));
+    device.ports.write(.cmd, Cmd{ .tx_enable = true, .rx_enable = true });
+    device.ports.write(.rcr, RxUp);
+    device.ports.write(.tcr, TxUp);
 
-    const running = @as(Cmd, @bitCast(device.ports.in8(.cmd)));
+    const running = device.ports.read(Cmd, .cmd);
     if (!running.tx_enable or !running.rx_enable) {
-        device.ports.out8(.cmd, 0);
+        device.ports.write(.cmd, Cmd{});
         log.fail("rtl8139", "receive/transmit engines did not start");
         return false;
     }
 
-    const pending = device.ports.in16(.isr);
-    if (pending != std.math.maxInt(u16)) device.ports.out16(.isr, pending);
+    const pending = device.ports.read(u16, .isr);
+    if (pending != std.math.maxInt(u16)) device.ports.write(.isr, @as(u16, pending));
     device.started = true;
-    device.ports.out16(.imr, @bitCast(EventsUp));
+    device.ports.write(.imr, EventsUp);
     return true;
 }
 
@@ -519,11 +488,11 @@ pub fn stop(nic: *NicDev) void {
 
     // Mask first, then stop both DMA directions and wait until the ownership
     // handoff is visible before software forgets which TX buffers were live.
-    device.ports.out16(.imr, 0);
-    device.ports.out8(.cmd, 0);
+    device.ports.write(.imr, Events{});
+    device.ports.write(.cmd, Cmd{});
     var stopped = false;
     for (0..RESET_ATTEMPTS) |_| {
-        const command = @as(Cmd, @bitCast(device.ports.in8(.cmd)));
+        const command = device.ports.read(Cmd, .cmd);
         if (!command.tx_enable and !command.rx_enable) {
             stopped = true;
             break;
@@ -533,8 +502,8 @@ pub fn stop(nic: *NicDev) void {
     if (!stopped) log.warn("rtl8139", "receive/transmit engines did not stop");
     dma.consume();
 
-    const pending = device.ports.in16(.isr);
-    if (pending != std.math.maxInt(u16)) device.ports.out16(.isr, pending);
+    const pending = device.ports.read(u16, .isr);
+    if (pending != std.math.maxInt(u16)) device.ports.write(.isr, @as(u16, pending));
     device.started = false;
     device.rx_at = .{};
     device.tx_at = .{};
@@ -545,10 +514,10 @@ pub fn stop(nic: *NicDev) void {
     // anything else fetches from where RBSTART still points, and the
     // address it holds is about to belong to somebody else: that is a
     // DMA write into whatever gets it next.
-    device.ports.out32(.rbstart, 0);
-    inline for (0..TX_SLOTS) |i| device.ports.out32(txAddressRegister(i), 0);
-    device.ports.out16(.capr, 0);
-    _ = device.ports.in8(.cmd); // flush the posted writes
+    device.ports.write(.rbstart, @as(u32, 0));
+    inline for (0..TX_SLOTS) |i| device.ports.write(txAddressRegister(i), @as(u32, 0));
+    device.ports.write(.capr, @as(u16, 0));
+    _ = device.ports.read(u8, .cmd); // flush the posted writes
 
     // Last of all: the adapter has no address left to fetch from, so the
     // segment is the process's alone and may be unmapped and closed. Any
@@ -571,7 +540,7 @@ pub fn irq(nic: *NicDev) bool {
 /// is also what clears it and what `service` is handed back.
 pub fn cause() u32 {
     if (!device.started) return 0;
-    const raw = device.ports.in16(.isr);
+    const raw = device.ports.read(u16, .isr);
     // Every bit set is what a read of nothing looks like: a shared line
     // driven by somebody else, or no adapter behind these ports at all.
     if (raw == 0 or raw == std.math.maxInt(u16)) return 0;
@@ -593,8 +562,8 @@ pub fn cause() u32 {
 /// driver needs from it.
 pub fn acknowledge(latched: u32, held: bool) void {
     const holding: bool = if (@TypeOf(held) == bool) held else held != 0;
-    device.ports.out16(.isr, @truncate(latched));
-    device.ports.out16(.imr, if (holding) 0 else @bitCast(EventsUp));
+    device.ports.write(.isr, @as(u16, @truncate(latched)));
+    device.ports.write(.imr, if (holding) Events{} else EventsUp);
 }
 
 pub fn service(latched: u32, nic: *NicDev) void {
@@ -626,12 +595,12 @@ pub fn poll(nic: *NicDev) bool {
 }
 
 fn reapRx(nic: *NicDev) void {
-    const command = @as(Cmd, @bitCast(device.ports.in8(.cmd)));
+    const command = device.ports.read(Cmd, .cmd);
     if (command.buffer_empty) return;
 
     // CBR is only the end of the snapshot, not the next packet. Consume at
     // most that finite snapshot so a busy wire cannot make one IRQ unbounded.
-    const write_at = cursor.wrapped(@as(usize, device.ports.in16(.cbr)), RX_RING);
+    const write_at = cursor.wrapped(@as(usize, device.ports.read(u16, .cbr)), RX_RING);
     var remaining = cursor.usedBetween(write_at, device.rx_at.at, RX_RING);
     if (remaining == 0) remaining = RX_RING; // BUFE distinguished full from empty
     dma.consume();
@@ -679,7 +648,7 @@ fn reapRx(nic: *NicDev) void {
         // CAPR is sixteen bytes behind the actual consumer. Publishing before
         // the write ensures all CPU reads finish before the device may reuse it.
         dma.publish();
-        device.ports.out16(.capr, @truncate(device.rx_at.at -% 16));
+        device.ports.write(.capr, @as(u16, @truncate(device.rx_at.at -% 16)));
     }
 }
 
@@ -704,15 +673,15 @@ fn rxWord(at: usize) u16 {
 /// offsets through the DMA arena.
 fn recoverRx(nic: *NicDev) void {
     dev_mod.deliverRx(nic, .{});
-    const command = @as(Cmd, @bitCast(device.ports.in8(.cmd)));
-    device.ports.out8(.cmd, @bitCast(Cmd{ .tx_enable = command.tx_enable }));
+    const command = device.ports.read(Cmd, .cmd);
+    device.ports.write(.cmd, Cmd{ .tx_enable = command.tx_enable });
 
     // The receiver does not stop the instant the write retires: the frame
     // in flight finishes first. Read the command back until it says so,
     // and give it time, before the ring's addresses are moved under it.
     var off = false;
     for (0..RESET_ATTEMPTS) |_| {
-        if (!@as(Cmd, @bitCast(device.ports.in8(.cmd))).rx_enable) {
+        if (!device.ports.read(Cmd, .cmd).rx_enable) {
             off = true;
             break;
         }
@@ -721,17 +690,17 @@ fn recoverRx(nic: *NicDev) void {
     if (!off) log.warn("rtl8139", "the receiver did not stop for its reset");
 
     device.rx_at = .{};
-    device.ports.out32(.rbstart, device.rx_phys.addr());
+    device.ports.write(.rbstart, device.rx_phys.addr());
     // CAPR is the hardware's own account of where the host has read to,
     // and reprogramming it is what made this a reset: with RBSTART back
     // at zero and CAPR left where it was, the two disagree and the
     // receiver fetches from one while the host drains the other.
-    device.ports.out16(.capr, @truncate(device.rx_at.at -% 16));
-    device.ports.out8(.cmd, @bitCast(Cmd{
+    device.ports.write(.capr, @as(u16, @truncate(device.rx_at.at -% 16)));
+    device.ports.write(.cmd, Cmd{
         .tx_enable = command.tx_enable,
         .rx_enable = command.rx_enable,
-    }));
-    device.ports.out32(.rcr, @bitCast(RxUp));
+    });
+    device.ports.write(.rcr, RxUp);
 }
 
 fn txStatusRegister(slot: usize) R {
@@ -747,7 +716,7 @@ fn reapTx(nic: *NicDev) void {
     // corresponding bounce buffer can be overwritten by a later transmit.
     for (&device.pending, 0..) |*pending, i| {
         if (!pending.*) continue;
-        const status: TxStatus = @bitCast(device.ports.in32(txStatusRegister(i)));
+        const status = device.ports.read(TxStatus, txStatusRegister(i));
         if (!status.host_owns) continue;
         dma.consume();
         pending.* = false;
@@ -769,7 +738,7 @@ pub fn transmit(nic: *NicDev, frame: []const u8) bool {
         nic.stats.tx_failed += 1;
         return false;
     }
-    const status: TxStatus = @bitCast(device.ports.in32(txStatusRegister(slot)));
+    const status = device.ports.read(TxStatus, txStatusRegister(slot));
     if (!status.host_owns) {
         nic.stats.tx_failed += 1;
         return false;
@@ -781,15 +750,15 @@ pub fn transmit(nic: *NicDev, frame: []const u8) bool {
     // below the ethernet minimum would leave here as a runt, which every
     // receiver on a real wire discards.
     @memcpy(device.arena.body().tx[slot][0..frame.len], frame);
-    device.ports.out32(txAddressRegister(slot), device.tx_phys[slot]);
+    device.ports.write(txAddressRegister(slot), device.tx_phys[slot]);
     device.pending[slot] = true;
 
     // The TSD write is the ownership handoff and transmission trigger.
     dma.publish();
-    device.ports.out32(txStatusRegister(slot), @bitCast(TxStatus{
+    device.ports.write(txStatusRegister(slot), TxStatus{
         .size = @intCast(frame.len),
         .early_threshold = 8, // 8 * 32 bytes: the established 256-byte threshold
-    }));
+    });
     device.tx_at.next();
 
     dev_mod.deliverTx(nic, frame.len);
@@ -804,7 +773,7 @@ pub fn link(_: *NicDev) dev_mod.Link {
     // frame: this driver has no bit-banged MDIO to do it with and does not
     // need one. What the standard says about that word is `mii`'s answer,
     // not this driver's.
-    const status: mii.Status = @bitCast(device.ports.in16(.basic_mode_status));
+    const status = device.ports.read(mii.Status, .basic_mode_status);
     const carrier = mii.outcome(status) orelse return .{};
 
     // Speed is the chip's own bit in its media status register: ten if it
@@ -818,7 +787,7 @@ pub fn link(_: *NicDev) dev_mod.Link {
     // it is left unknown rather than assumed full, because a half-duplex
     // wire called full is a link that loses frames with both ends certain
     // they are right.
-    const media: MediaStatus = @bitCast(device.ports.in8(.media_status));
+    const media = device.ports.read(MediaStatus, .media_status);
     if (media.link_fail) return .{};
     return .{
         .up = carrier.up,

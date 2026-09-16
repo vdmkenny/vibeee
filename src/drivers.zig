@@ -206,6 +206,13 @@ pub const table = [_]probe.Driver{
         .probe = &answering("ac97"),
     },
 
+    .{
+        .name = "es1370",
+        .kind = .audio,
+        .match = answersFor("es1370"),
+        .probe = &answering("es1370"),
+    },
+
     // -- Network ---------------------------------------------------------
     .{
         .name = "atl2",

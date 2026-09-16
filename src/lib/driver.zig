@@ -229,6 +229,12 @@ pub const answers = [_]Answers{
         },
     },
     .{
+        .name = "es1370",
+        .service = "audio",
+        .says = "The Ensoniq AudioPCI ES1370 and its AK4531 codec: the sound card of\nmany machines of the late nineties, and the emulator's `ES1370`.",
+        .matches = &.{.{ .part = .{ .vendor = 0x1274, .device = 0x5000 } }},
+    },
+    .{
         .name = "atl2",
         .service = "net",
         .says = "The Attansic L2 fast ethernet, which is the wired part of the Eee PC\n701 and of a good many machines beside it.",

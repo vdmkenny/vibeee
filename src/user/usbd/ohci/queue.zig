@@ -34,6 +34,18 @@ pub const Result = union(enum) {
     failed: ohci.Outcome,
 };
 
+/// The most packets of an OUT transfer queued at once. A controller may
+/// walk only so many packets of one endpoint in a pass and stop with an
+/// unrecoverable error past that, as QEMU's does past thirty-three, so a
+/// longer transfer goes a run at a time.
+pub const RUN_PACKETS = 32;
+
+/// How many of `remaining` OUT bytes the next run carries, on an endpoint
+/// whose packets are `max_packet` long.
+pub fn runBytes(remaining: usize, max_packet: u16) usize {
+    return @min(remaining, RUN_PACKETS * @as(usize, @max(max_packet, 1)));
+}
+
 pub fn Queue(comptime slots: usize, comptime Barrier: type) type {
     if (slots < 2) @compileError("a queue needs a descriptor to fill and one to be its tail");
 
@@ -323,6 +335,15 @@ test "fuzz: a queue exposes only what it filled, and every transfer settles to w
         }
     };
     try std.testing.fuzz({}, Target.one, .{});
+}
+
+test "an OUT transfer goes in runs of thirty-two packets" {
+    try testing.expectEqual(@as(usize, 2048), runBytes(4096, 64));
+    try testing.expectEqual(@as(usize, 100), runBytes(100, 64));
+    try testing.expectEqual(@as(usize, 256), runBytes(4096, 8));
+    try testing.expectEqual(@as(usize, 0), runBytes(0, 64));
+    // An endpoint that claims no packet size still moves.
+    try testing.expectEqual(@as(usize, 32), runBytes(4096, 0));
 }
 
 test "a queue against a modelled controller, at random" {

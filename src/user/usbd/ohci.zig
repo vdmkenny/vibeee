@@ -50,12 +50,6 @@ const REPORT_BYTES = 64;
 const CONTROL_BYTES = 1024;
 const BULK_BYTES = 4096;
 
-/// The most packets of an OUT transfer queued at once. A controller may
-/// walk only so many packets of one endpoint in a pass and stop with an
-/// unrecoverable error past that, as QEMU's does past thirty-three, so a
-/// longer transfer goes a run at a time.
-const RUN_PACKETS = 32;
-
 const Arena = extern struct {
     hcca: ohci.Hcca align(4096) = .{},
     control: ohci.Endpoint align(16) = .{},
@@ -453,7 +447,7 @@ pub fn control(self: *Unit, pipe: usb.Pipe, setup: usb.Setup, data: []u8) hc.Err
     const reading = setup.request_type.direction == .in;
     const carries = setup.length != 0 and data.len != 0;
     arena.setup = std.mem.toBytes(setup);
-    if (carries and !reading) @memcpy(bytesOf(self, "control_buffer")[0..data.len], data);
+    if (carries and !reading) @memcpy(self.arena.at.control_buffer[0..data.len], data);
 
     aim(&arena.control, pipe, 0);
     var stages: [CONTROL_SLOTS - 1]queue.Stage = undefined;
@@ -485,7 +479,7 @@ pub fn control(self: *Unit, pipe: usb.Pipe, setup: usb.Setup, data: []u8) hc.Err
     if (!carries) return 0;
 
     const taken = @min(moved, data.len);
-    if (reading) @memcpy(data[0..taken], bytesOf(self, "control_buffer")[0..taken]);
+    if (reading) @memcpy(data[0..taken], self.arena.at.control_buffer[0..taken]);
     return taken;
 }
 
@@ -494,10 +488,9 @@ pub fn bulk(self: *Unit, pipe: *usb.Pipe, data: []u8) hc.Error!usize {
     if (data.len > BULK_BYTES) return hc.Error.Refused;
     if (pipe.direction == .in) return carry(self, pipe, data);
 
-    const run_bytes = RUN_PACKETS * @as(usize, @max(pipe.max_packet, 1));
     var sent: usize = 0;
     while (true) {
-        const run = @min(data.len - sent, run_bytes);
+        const run = queue.runBytes(data.len - sent, pipe.max_packet);
         const moved = try carry(self, pipe, data[sent..][0..run]);
         sent += moved;
         if (moved < run or sent == data.len) return sent;
@@ -508,7 +501,7 @@ pub fn bulk(self: *Unit, pipe: *usb.Pipe, data: []u8) hc.Error!usize {
 fn carry(self: *Unit, pipe: *usb.Pipe, data: []u8) hc.Error!usize {
     const arena = self.arena.at;
     const writing = pipe.direction == .out;
-    if (writing) @memcpy(bytesOf(self, "bulk_buffer")[0..data.len], data);
+    if (writing) @memcpy(self.arena.at.bulk_buffer[0..data.len], data);
 
     aim(&arena.bulk, pipe.*, pipe.number);
     if (!self.bulk.append(&.{.{
@@ -522,7 +515,7 @@ fn carry(self: *Unit, pipe: *usb.Pipe, data: []u8) hc.Error!usize {
 
     const moved = @min(try finish(self, &self.bulk, &arena.bulk, 0, BULK_PATIENCE_US), data.len);
     pipe.advance(moved);
-    if (!writing) @memcpy(data[0..moved], bytesOf(self, "bulk_buffer")[0..moved]);
+    if (!writing) @memcpy(data[0..moved], self.arena.at.bulk_buffer[0..moved]);
     return moved;
 }
 
@@ -565,13 +558,6 @@ fn finish(
             };
         },
     };
-}
-
-/// A byte field of the arena, as plain bytes for copying through.
-fn bytesOf(self: *Unit, comptime field: []const u8) []u8 {
-    const place = &@field(self.arena.at, field);
-    const Field = @typeInfo(@TypeOf(place)).pointer.child;
-    return @as([*]u8, @ptrCast(@volatileCast(place)))[0..@sizeOf(Field)];
 }
 
 // ---------------------------------------------------------------------------

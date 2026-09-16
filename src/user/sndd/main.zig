@@ -16,6 +16,7 @@
 const ac97 = @import("ac97.zig");
 const audio = @import("lib").audio;
 const dev = @import("dev.zig");
+const es1370 = @import("es1370.zig");
 const graph_mod = @import("lib").audiograph;
 const hda = @import("hda.zig");
 const irqroute = @import("ulib").irqroute;
@@ -40,6 +41,7 @@ const Driver = struct {
 const DRIVERS = [_]Driver{
     .{ .name = ac97.name, .ops = ac97.ops },
     .{ .name = hda.name, .ops = hda.ops },
+    .{ .name = es1370.name, .ops = es1370.ops },
 };
 
 /// One driven device is this machine's world; the array exists so a second
@@ -142,6 +144,11 @@ fn attach(driver: Driver, location: pci.Location) void {
         .name = driver.name,
         .ops = driver.ops,
         .location = location,
+        .conversion = dev.Conversion.of(driver.ops.rate) orelse {
+            log.fail("sndd", "the device runs at a rate this service cannot convert");
+            sys.releaseDevice(location) catch {};
+            return;
+        },
     };
 
     if (!driver.ops.open(location)) {
@@ -322,6 +329,7 @@ fn startPlaybackIfFed(device: *dev.PcmDev, dports: *const DevicePorts) void {
     if (device.ops.start(.playback)) {
         playing.* = true;
         device.fill = dev.PERIODS;
+        device.conversion.restart(.playback);
     }
 }
 
@@ -336,6 +344,7 @@ fn syncCapture(device: *dev.PcmDev, dports: *const DevicePorts) void {
     const wanted = dports.source != graph_mod.NONE and sinksOf(dports.source) != 0;
     if (wanted and !capturing.*) {
         device.drain = 0;
+        device.conversion.restart(.capture);
         if (device.ops.start(.capture)) capturing.* = true;
     } else if (!wanted and capturing.*) {
         device.ops.stop(.capture);
@@ -378,14 +387,30 @@ fn indexOf(device: *dev.PcmDev) ?usize {
     return null;
 }
 
-/// One playback period: everything linked into the sink, mixed with each
-/// feeder's own volume, into the device's next slot.
+/// One playback period into the device's next slot, at the device's rate.
 fn mixPeriod(device: *dev.PcmDev, sink: graph_mod.PortId) void {
     const buf = device.ops.period(.playback, device.fill);
     const filled = device.fill;
     device.fill +%= 1;
     device.ops.queued(.playback, filled);
-    @memset(buf, 0);
+    const period: []i16 = @alignCast(std.mem.bytesAsSlice(i16, buf));
+
+    switch (device.conversion) {
+        .none => mix(device, sink, period),
+        .hz44100 => |*rates| {
+            var mixed: [dev.MIX_SAMPLES]i16 = undefined;
+            const frames = rates.playback.takes(dev.PERIOD_FRAMES);
+            const at_service_rate = mixed[0 .. frames * dev.SHAPE.channels];
+            mix(device, sink, at_service_rate);
+            _ = rates.playback.run(at_service_rate, period);
+        },
+    }
+}
+
+/// Everything linked into the sink, mixed with each feeder's own volume
+/// into `samples`, at the service's rate.
+fn mix(device: *dev.PcmDev, sink: graph_mod.PortId, samples: []i16) void {
+    @memset(samples, 0);
 
     if (sink == graph_mod.NONE) return;
     const sink_port = graph.portAt(sink) orelse return;
@@ -394,13 +419,12 @@ fn mixPeriod(device: *dev.PcmDev, sink: graph_mod.PortId) void {
     const feeding = graph.sourcesInto(sink, &feeders);
 
     var heard = false;
-    var scratch: [dev.PERIOD_FRAMES * 2]i16 = undefined;
+    var scratch: [dev.MIX_SAMPLES]i16 = undefined;
     for (feeding) |feeder| {
         const port = graph.portAt(feeder) orelse continue;
         const ring = rings[feeder].view orelse continue;
 
-        const scratch_bytes = std.mem.sliceAsBytes(&scratch);
-        const got = ring.frames.pop(scratch_bytes);
+        const got = ring.frames.pop(std.mem.sliceAsBytes(scratch[0..samples.len]));
         if (got == 0) {
             ring.ctrl.starved +%= 1;
             continue;
@@ -415,7 +439,6 @@ fn mixPeriod(device: *dev.PcmDev, sink: graph_mod.PortId) void {
         if (sink_port.muted) continue;
 
         const volume = audio.Volume{ .percent = port.volume, .muted = port.muted };
-        const samples: []i16 = @alignCast(std.mem.bytesAsSlice(i16, buf[0..got]));
         audio.blend(volume.amplitude(), scratch[0 .. got / 2], samples);
     }
 
@@ -424,9 +447,8 @@ fn mixPeriod(device: *dev.PcmDev, sink: graph_mod.PortId) void {
         // what a meter answers is "what is coming out", and what comes out
         // is the mix. The walk already touched every sample; the peak is a
         // comparison in a loop that exists.
-        const mixed: []const i16 = @alignCast(std.mem.bytesAsSlice(i16, buf));
-        peaks.left = @max(peaks.left, audio.level(mixed, 2, 0));
-        peaks.right = @max(peaks.right, audio.level(mixed, 2, 1));
+        peaks.left = @max(peaks.left, audio.level(samples, 2, 0));
+        peaks.right = @max(peaks.right, audio.level(samples, 2, 1));
         peaks.playing = 1;
     }
 
@@ -443,29 +465,32 @@ fn getLevels(token: u32) void {
     replyBody(token, .{ .levels = answer });
 }
 
-/// One capture period: the device's frames into every ring linked from
-/// its source port, each with the source's volume applied.
+/// One capture period: the device's frames, at the service's rate, into
+/// every ring linked from its source port, each with the source's volume
+/// applied.
 fn pourPeriod(device: *dev.PcmDev, source: graph_mod.PortId) void {
     const buf = device.ops.period(.capture, device.drain);
     device.drain +%= 1;
     if (source == graph_mod.NONE) return;
 
+    const captured: []const i16 = @alignCast(std.mem.bytesAsSlice(i16, buf));
+    var converted: [dev.MIX_SAMPLES]i16 = undefined;
+    const samples: []const i16 = switch (device.conversion) {
+        .none => captured,
+        .hz44100 => |*rates| converted[0 .. rates.capture.run(captured, &converted).made * dev.SHAPE.channels],
+    };
+
     const source_port = graph.portAt(source) orelse return;
     const volume = (audio.Volume{ .percent = source_port.volume, .muted = source_port.muted }).amplitude();
-
-    {
-        const samples: []const i16 = @alignCast(std.mem.bytesAsSlice(i16, buf));
-        peaks.capture = @max(peaks.capture, audio.level(samples, 1, 0));
-    }
+    peaks.capture = @max(peaks.capture, audio.level(samples, 1, 0));
 
     var listed: [graph_mod.MAX_LINKS]graph_mod.PortId = undefined;
     for (graph.sinksFrom(source, &listed)) |sink| {
         const ring = rings[sink].view orelse continue;
         if (volume == .unity) {
-            _ = ring.frames.push(buf);
+            _ = ring.frames.push(std.mem.sliceAsBytes(samples));
         } else {
-            var scaled: [dev.PERIOD_FRAMES * 2]i16 = undefined;
-            const samples: []const i16 = @alignCast(std.mem.bytesAsSlice(i16, buf));
+            var scaled: [dev.MIX_SAMPLES]i16 = undefined;
             audio.scale(volume, samples, &scaled);
             _ = ring.frames.push(std.mem.sliceAsBytes(scaled[0..samples.len]));
         }

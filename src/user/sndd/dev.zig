@@ -23,6 +23,51 @@ pub fn periodBytes() usize {
     return PERIOD_FRAMES * SHAPE.bytesPerFrame();
 }
 
+/// How a device's own clock is met. Everything is mixed at `SHAPE.rate`;
+/// a device that cannot run at it has each period converted on the way out
+/// and on the way in. A period at the device's rate is always
+/// `PERIOD_FRAMES` long.
+pub const Conversion = union(enum) {
+    none,
+    hz44100: struct {
+        playback: audio.Resampler(SHAPE.rate, .hz44100, SHAPE.channels) = .{},
+        capture: audio.Resampler(.hz44100, SHAPE.rate, SHAPE.channels) = .{},
+    },
+
+    pub fn of(rate: audio.Rate) ?Conversion {
+        return switch (rate) {
+            .hz48000 => .none,
+            .hz44100 => .{ .hz44100 = .{} },
+            else => null,
+        };
+    }
+
+    /// A stream starting afresh in one direction carries nothing of the
+    /// last one.
+    pub fn restart(self: *Conversion, direction: Direction) void {
+        switch (self.*) {
+            .none => {},
+            .hz44100 => |*rates| switch (direction) {
+                .playback => rates.playback = .{},
+                .capture => rates.capture = .{},
+            },
+        }
+    }
+};
+
+/// The most frames one period of mixing or capture can come to at the
+/// service's rate, whatever the device's.
+pub const MIX_FRAMES = PERIOD_FRAMES + PERIOD_FRAMES / 8;
+pub const MIX_SAMPLES = MIX_FRAMES * @as(usize, SHAPE.channels);
+
+comptime {
+    const Playback = @FieldType(@FieldType(Conversion, "hz44100"), "playback");
+    const Capture = @FieldType(@FieldType(Conversion, "hz44100"), "capture");
+    const longest_mix = (Playback{ .place = Playback.SPAN - 1 }).takes(PERIOD_FRAMES);
+    const longest_capture = (Capture{ .place = 0 }).gives(PERIOD_FRAMES);
+    if (longest_mix > MIX_FRAMES or longest_capture > MIX_FRAMES) @compileError("a converted period does not fit MIX_FRAMES");
+}
+
 pub const Direction = enum(u1) { playback, capture };
 
 /// What one interrupt delivery amounted to: how many periods each engine
@@ -35,9 +80,18 @@ pub const Completions = struct {
     pub fn any(self: Completions) bool {
         return self.playback != 0 or self.capture != 0;
     }
+
+    pub fn set(self: *Completions, direction: Direction, periods: u8) void {
+        switch (direction) {
+            .playback => self.playback = periods,
+            .capture => self.capture = periods,
+        }
+    }
 };
 
 pub const PcmOps = struct {
+    /// The rate the hardware's clock runs at.
+    rate: audio.Rate = SHAPE.rate,
     /// Map registers, reset the codec, allocate DMA. No engines running.
     open: *const fn (loc: pci.Location) bool,
     /// Start one engine at the fixed geometry above. The playback ring is
@@ -72,4 +126,5 @@ pub const PcmDev = struct {
     /// Consecutive playback periods that mixed pure silence, for stopping
     /// the engine instead of streaming zeroes forever.
     quiet_periods: u32 = 0,
+    conversion: Conversion = .none,
 };

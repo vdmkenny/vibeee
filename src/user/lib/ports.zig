@@ -12,3 +12,9 @@ pub const in32 = arch.in32;
 pub const out8 = arch.out8;
 pub const out16 = arch.out16;
 pub const out32 = arch.out32;
+
+/// A device's registers behind one base port, named by `Register`, each
+/// reached at the width of what is read or written.
+pub fn Window(comptime Register: type) type {
+    return @import("lib").mmio.PortWindow(Register, arch);
+}

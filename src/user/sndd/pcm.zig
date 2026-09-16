@@ -16,6 +16,28 @@ const device = @import("ulib").device;
 pub const Dma = device.Dma;
 pub const settles = device.settles;
 
+/// One direction's period buffers in a driver's arena, which names them
+/// `out_frames` and `in_frames`.
+pub fn framesOf(arena: anytype, direction: dev.Direction) @TypeOf(&arena.out_frames) {
+    return switch (direction) {
+        .playback => &arena.out_frames,
+        .capture => &arena.in_frames,
+    };
+}
+
+/// Where the device finds one direction's period buffers.
+pub fn framesAddress(dma: anytype, direction: dev.Direction) u32 {
+    return switch (direction) {
+        .playback => dma.physOf("out_frames"),
+        .capture => dma.physOf("in_frames"),
+    };
+}
+
+/// One period's bytes of one direction, in such an arena.
+pub fn period(arena: anytype, direction: dev.Direction, index: u32) []u8 {
+    return periodAt(framesOf(arena, direction), index);
+}
+
 /// One period's bytes inside a buffer of them, indexed by a free-running
 /// counter the caller keeps.
 pub fn periodAt(frames: anytype, index: u32) []u8 {
@@ -32,22 +54,5 @@ pub fn silence(frames: anytype) void {
     for (0..count) |i| samples[i] = 0;
 }
 
-/// How many periods a hardware position counter has passed since it was
-/// last asked. Controllers report where they are, not how far they came,
-/// so the difference is kept here and the wrap handled once.
-pub const Progress = struct {
-    /// How many slots the hardware's own index wraps at.
-    modulus: u32,
-    last: u32 = 0,
-
-    pub fn advance(self: *Progress, index: u32) u8 {
-        const now = index % self.modulus;
-        const moved = (now + self.modulus - self.last) % self.modulus;
-        self.last = now;
-        return @intCast(moved);
-    }
-
-    pub fn reset(self: *Progress) void {
-        self.last = 0;
-    }
-};
+/// How many periods a hardware position has passed since last asked.
+pub const Progress = @import("lib").audio.Progress;
