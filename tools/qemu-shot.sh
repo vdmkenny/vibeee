@@ -170,7 +170,17 @@ while [ $i -lt "$ticks" ]; do
 done
 sleep "$AFTER_READY"
 
-monitor() { printf '%s\n' "$1" | nc -U "$SOCK" >/dev/null 2>&1 || true; }
+# One monitor command. The monitor serves one connection at a time and refuses
+# a connection made while it is busy, so a refused one is made again, up to 50
+# times.
+monitor() {
+    refused=0
+    until printf '%s\n' "$1" | nc -U "$SOCK" >/dev/null 2>&1; do
+        refused=$((refused + 1))
+        [ "$refused" -lt 50 ] || return 0
+        sleep 0.05
+    done
+}
 
 # Translate a character to the QEMU monitor's key name. The monitor speaks
 # scancode names, not text, so anything typed has to be spelled out.
