@@ -86,7 +86,6 @@ pub fn run(ctx: *widget.Context, area: Rect, state: *State, menus: []const Menu)
     const before = state.shown;
     state.shown = null;
     var x = area.x + t.padding;
-    var storage: [MAX_ITEMS]widget.MenuItem = undefined;
     // The letters show while the key that uses them is held, and not
     // otherwise: an underline that is always there is decoration, and one
     // that appears when it becomes useful is an answer.
@@ -101,12 +100,12 @@ pub fn run(ctx: *widget.Context, area: Rect, state: *State, menus: []const Menu)
             if (is_open) {
                 close(state);
             } else {
-                dropDown(state, index, menu, &storage);
+                openAt(state, index, menu);
             }
         } else if (state.open != null and !is_open and hovering(ctx, title)) {
             // With one menu open, moving across the strip opens the next. What
             // every menu bar does, and what makes browsing them possible.
-            dropDown(state, index, menu, &storage);
+            openAt(state, index, menu);
         }
 
         // Asked again rather than from before the click: a title clicked
@@ -181,13 +180,13 @@ pub fn key(state: *State, code: KeyCode, mods: widget.Modifiers, menus: []const 
     // Left and right walk the strip, which the list itself has no idea about.
     switch (code) {
         .left => {
-            state.open = if (index == 0) menus.len - 1 else index - 1;
-            state.list.selectFirst(rowsOf(menus[state.open.?].items, &storage));
+            const to = if (index == 0) menus.len - 1 else index - 1;
+            openAt(state, to, menus[to]);
             return .taken;
         },
         .right => {
-            state.open = if (index + 1 == menus.len) 0 else index + 1;
-            state.list.selectFirst(rowsOf(menus[state.open.?].items, &storage));
+            const to = if (index + 1 == menus.len) 0 else index + 1;
+            openAt(state, to, menus[to]);
             return .taken;
         },
         else => return .ignored,
@@ -229,10 +228,7 @@ fn matchesChord(shortcut: []const u8, letter: u8, mods: widget.Modifiers) bool {
 pub fn altKey(state: *State, letter: u21, menus: []const Menu) bool {
     for (menus, 0..) |menu, index| {
         if (!mnemonicIs(menu.label, menu.mnemonic, letter)) continue;
-
-        var storage: [MAX_ITEMS]widget.MenuItem = undefined;
-        state.open = index;
-        state.list.selectFirst(rowsOf(menu.items, &storage));
+        openAt(state, index, menu);
         return true;
     }
     return false;
@@ -241,19 +237,21 @@ pub fn altKey(state: *State, letter: u21, menus: []const Menu) bool {
 /// Open the first menu, for the key that summons the bar.
 pub fn focus(state: *State, menus: []const Menu) void {
     if (menus.len == 0) return;
-    state.open = 0;
-    var storage: [MAX_ITEMS]widget.MenuItem = undefined;
-    state.list.selectFirst(rowsOf(menus[0].items, &storage));
+    openAt(state, 0, menus[0]);
 }
 
 pub fn isOpen(state: *const State) bool {
     return state.open != null;
 }
 
-fn dropDown(state: *State, index: usize, menu: Menu, storage: *[MAX_ITEMS]widget.MenuItem) void {
+/// Open one menu: which it is, how wide its items make it, and its first row
+/// selected. Every way in goes through here, so a menu opened by a key is as
+/// wide as the same menu opened by the pointer.
+fn openAt(state: *State, index: usize, menu: Menu) void {
+    var storage: [MAX_ITEMS]widget.MenuItem = undefined;
     state.open = index;
     state.width = widest(menu);
-    state.list.selectFirst(rowsOf(menu.items, storage));
+    state.list.selectFirst(rowsOf(menu.items, &storage));
 }
 
 fn close(state: *State) void {
