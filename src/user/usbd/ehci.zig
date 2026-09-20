@@ -479,13 +479,15 @@ fn arm(index: usize) void {
     const arena = controller.arena.at;
     const entry = &watches[index];
 
-    arena.watch_tds[index] = describe(
+    // A report is sixty-four bytes at most, which reaches two pages at
+    // most, so the descriptor always has the pointers for it.
+    arena.watch_tds[index] = (describe(
         .in,
         entry.pipe.toggle,
         controller.arena.physOfIndex("reports", index),
         @intCast(entry.wanted),
         true,
-    );
+    )) orelse unreachable;
     arena.watch_tds[index].next = Link.none;
 
     arena.watches[index].current = 0;
@@ -608,13 +610,13 @@ fn bulk(pipe: *usb.Pipe, data: []u8) hc.Error!usize {
         @memcpy(@as([*]u8, @ptrCast(@volatileCast(&arena.bulk_buffer)))[0..data.len], data);
     }
 
-    arena.payload = describe(
+    arena.payload = (describe(
         if (writing) .out else .in,
         pipe.toggle,
         controller.arena.physOf("bulk_buffer"),
         @intCast(data.len),
         true,
-    );
+    )) orelse return hc.Error.Refused;
     arena.payload.next = Link.none;
 
     feed(&arena.bulk, .{
@@ -1148,24 +1150,24 @@ fn control(pipe: usb.Pipe, setup: usb.Setup, data: []u8) hc.Error!usize {
     const data_page = setup_page + usb.Setup.BYTES;
 
     var stages: usize = 0;
-    arena.stages[0] = describe(.setup, false, setup_page, usb.Setup.BYTES, false);
+    arena.stages[0] = describe(.setup, false, setup_page, usb.Setup.BYTES, false) orelse return hc.Error.Refused;
     stages += 1;
 
     if (wants_data) {
-        arena.stages[1] = describe(
+        arena.stages[1] = (describe(
             if (reading) .in else .out,
             true,
             data_page,
             @intCast(data.len),
             false,
-        );
+        )) orelse return hc.Error.Refused;
         stages += 1;
     }
 
     // The status stage runs against the data stage, and the setup packet
     // is what knows which way that is. It alone interrupts: one transfer,
     // one wake, however many stages it took.
-    arena.stages[stages] = describe(
+    arena.stages[stages] = (describe(
         switch (setup.statusDirection()) {
             .in => .in,
             .out => .out,
@@ -1174,7 +1176,7 @@ fn control(pipe: usb.Pipe, setup: usb.Setup, data: []u8) hc.Error!usize {
         0,
         0,
         true,
-    );
+    )) orelse return hc.Error.Refused;
     stages += 1;
 
     // Chain them, and end the chain.
@@ -1199,26 +1201,8 @@ fn control(pipe: usb.Pipe, setup: usb.Setup, data: []u8) hc.Error!usize {
 }
 
 /// One stage of a control transfer.
-fn describe(pid: Pid, toggle: bool, page: u32, bytes: u15, interrupt: bool) Transfer {
-    var stage = Transfer{
-        .next = Link.none,
-        .alternate = Link.none,
-        .token = .{
-            .status = .{ .active = true },
-            .pid = pid,
-            .error_limit = 3,
-            .interrupt = interrupt,
-            .bytes = bytes,
-            .toggle = toggle,
-        },
-    };
-    if (bytes != 0) {
-        stage.pages[0] = page;
-        // A stage never crosses more than one page boundary here: the
-        // buffer is page aligned and shorter than two pages.
-        stage.pages[1] = (page & ~@as(u32, 0xFFF)) + 0x1000;
-    }
-    return stage;
+fn describe(pid: Pid, toggle: bool, page: u32, bytes: u15, interrupt: bool) ?Transfer {
+    return transfer.spanning(pid, toggle, page, bytes, interrupt);
 }
 
 /// How long one wait step lasts. Long enough that a transfer nobody

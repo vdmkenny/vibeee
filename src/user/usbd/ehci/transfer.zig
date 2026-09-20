@@ -111,6 +111,39 @@ comptime {
 
 /// Whether the controller has stopped working on `stages`: the last is no
 /// longer active, or has failed.
+/// A page, and how many one descriptor addresses.
+pub const PAGE: u32 = 4096;
+pub const PAGES = 5;
+
+/// One descriptor over `bytes` at physical address `at`, every page pointer
+/// the transfer reaches filled. Null when the pages run out: five from the
+/// one `at` is in, less what the offset into that one costs. A pointer the
+/// transfer reaches and does not name is pointer zero, and the controller
+/// moves that part of the transfer to physical page zero.
+pub fn spanning(pid: Pid, toggle: bool, at: u32, bytes: usize, interrupt: bool) ?Transfer {
+    if (bytes > std.math.maxInt(u15)) return null;
+    var stage = Transfer{
+        .next = Link.none,
+        .alternate = Link.none,
+        .token = .{
+            .status = .{ .active = true },
+            .pid = pid,
+            .error_limit = 3,
+            .interrupt = interrupt,
+            .bytes = @intCast(bytes),
+            .toggle = toggle,
+        },
+    };
+    if (bytes == 0) return stage;
+
+    const offset = at % PAGE;
+    const spanned = (offset + bytes + PAGE - 1) / PAGE;
+    if (spanned > PAGES) return null;
+    stage.pages[0] = at;
+    for (1..spanned) |i| stage.pages[i] = (at - offset) + @as(u32, @intCast(i)) * PAGE;
+    return stage;
+}
+
 pub fn settled(comptime Barrier: type, stages: []const volatile Transfer) bool {
     Barrier.consume();
     const last = stages[stages.len - 1].token;
@@ -201,6 +234,30 @@ test "each chain the controller can leave is read to what it came to" {
         reached.insert(is);
     }
     try testing.expect(reached.eql(.initFull()));
+}
+
+test "a descriptor fills every page pointer the transfer reaches" {
+    const aligned = spanning(.in, false, 0x10000, 16 * 1024, true).?;
+    try testing.expectEqual([5]u32{ 0x10000, 0x11000, 0x12000, 0x13000, 0 }, aligned.pages);
+    try testing.expectEqual(@as(u15, 16 * 1024), aligned.token.bytes);
+    try testing.expect(aligned.token.interrupt);
+    try testing.expect(aligned.token.status.active);
+
+    // Off a page boundary, the offset costs a page: seven kilobytes from
+    // halfway down one reach into a third.
+    const offset = spanning(.out, true, 0x10800, 7 * 1024, false).?;
+    try testing.expectEqual([5]u32{ 0x10800, 0x11000, 0x12000, 0, 0 }, offset.pages);
+    try testing.expect(offset.token.toggle);
+    // And six end exactly on the boundary, reaching no further.
+    try testing.expectEqual([5]u32{ 0x10800, 0x11000, 0, 0, 0 }, spanning(.out, true, 0x10800, 6 * 1024, false).?.pages);
+
+    // Five pages is the most, and the offset counts against them.
+    try testing.expect(spanning(.in, false, 0x10000, 20 * 1024, false) != null);
+    try testing.expect(spanning(.in, false, 0x10010, 20 * 1024, false) == null);
+    try testing.expect(spanning(.in, false, 0x10000, 20 * 1024 + 1, false) == null);
+
+    // Nothing to move names no page.
+    try testing.expectEqual([5]u32{ 0, 0, 0, 0, 0 }, spanning(.in, false, 0x10000, 0, false).?.pages);
 }
 
 test "a chain has settled once its last stage is done or failed" {
