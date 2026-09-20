@@ -76,6 +76,9 @@ pub const Board = struct {
     /// Cells without a mine that are revealed, which is what winning counts.
     opened: u16 = 0,
     flags: u16 = 0,
+    /// The mine that ended the game, where one did. Shown differently from
+    /// the mines that were merely there.
+    lost_at: ?u16 = null,
 
     pub fn init(difficulty: Difficulty) Board {
         return .{ .shape = difficulty.shape() };
@@ -133,6 +136,7 @@ pub const Board = struct {
 
         if (self.cells[first].mine) {
             self.state = .lost;
+            self.lost_at = @intCast(first);
             self.revealMines();
             return .lost;
         }
@@ -374,6 +378,7 @@ test "a mine ends the game, shows the others, and takes no further move" {
 
     try testing.expectEqual(Move.lost, board.reveal(0, 0, prng.random()));
     try testing.expectEqual(State.lost, board.state);
+    try testing.expectEqual(@as(?u16, @intCast(board.index(0, 0))), board.lost_at);
     try testing.expect(board.at(8, 8).revealed);
     try testing.expectEqual(Move.nothing, board.reveal(4, 4, prng.random()));
     try testing.expectEqual(Move.nothing, board.flag(4, 4));
@@ -462,6 +467,14 @@ fn disagrees(board: *const Board) ?[]const u8 {
 
     if (opened != board.opened) return "the count of opened cells is not what is opened";
     if (flags != board.flags) return "the count of flags is not what is flagged";
+
+    if ((board.lost_at != null) != (board.state == .lost)) {
+        return "a mine that ended the game is named on a game that is not lost, or missing from one that is";
+    }
+    if (board.lost_at) |where| {
+        const cell = board.cells[where];
+        if (!cell.mine or !cell.revealed) return "the mine that ended the game is not a mine that is shown";
+    }
 
     switch (board.state) {
         .fresh => {

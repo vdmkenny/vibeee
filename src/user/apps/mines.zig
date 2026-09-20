@@ -6,14 +6,18 @@
 //!
 //! Pointed at or typed at, whichever is to hand. The left button opens a
 //! cell and the right flags it; the keys move a cursor, open with the space
-//! bar, flag with F, start again with R, and choose a grid with 1, 2 and 3.
+//! bar and flag with F. The Game menu holds the grids and a fresh game, and
+//! the button over the grid says how many mines are left to find, or starts
+//! again once one has been stepped on.
 
 const eui = @import("eui");
 const mines = @import("lib").mines;
 const proto = @import("proto");
+const rgb = @import("lib").rgb;
 const std = @import("std");
 const sys = @import("sys");
 
+const Color = eui.Color;
 const KeyCode = proto.app.KeyCode;
 const Modifiers = proto.app.Modifiers;
 const Rect = eui.Rect;
@@ -25,9 +29,52 @@ const ctx = &proto.app.ctx;
 /// room around them. A window made smaller draws smaller cells.
 const CELL: i32 = 18;
 
+/// The sunken edge around the grid, and the raised edge on every shut cell.
+const FRAME: i32 = 2;
+
 /// The grid a game opens on.
 const OPENS_ON: mines.Difficulty = .beginner;
 
+/// The board's own colours, which are this game's rather than the theme's:
+/// the numbers only read on the grey they were chosen for, and that grey is
+/// what a minesweeper has looked like since the first one.
+const FIELD = rgb.Colour.hex(0xC0C0C0);
+const LIGHT = rgb.Colour.hex(0xFFFFFF);
+const SHADOW = rgb.Colour.hex(0x808080);
+/// The cell the game ended on, which is the one worth finding again.
+const STRUCK = rgb.Colour.hex(0xE03020);
+const MINE_INK = rgb.Colour.hex(0x101010);
+const FLAG_INK = rgb.Colour.hex(0xC00000);
+
+/// One colour per number, in the order they have always been.
+const NUMBERS = [8]Color{
+    rgb.Colour.hex(0x0000FF),
+    rgb.Colour.hex(0x007B00),
+    rgb.Colour.hex(0xFF0000),
+    rgb.Colour.hex(0x000080),
+    rgb.Colour.hex(0x800000),
+    rgb.Colour.hex(0x008080),
+    rgb.Colour.hex(0x000000),
+    rgb.Colour.hex(0x808080),
+};
+
+/// What the menu can ask for. Named rather than numbered: a menu that gains
+/// an entry must not change what the others mean.
+const Command = enum(u16) { new, beginner, intermediate, expert, close };
+
+const MENUS = [_]eui.menubar.Menu{
+    .{ .label = "Game", .items = &.{
+        .{ .label = "New", .id = @intFromEnum(Command.new), .shortcut = "R" },
+        eui.menubar.Item.separator,
+        .{ .label = "Beginner", .id = @intFromEnum(Command.beginner), .shortcut = "1" },
+        .{ .label = "Intermediate", .id = @intFromEnum(Command.intermediate), .shortcut = "2" },
+        .{ .label = "Expert", .id = @intFromEnum(Command.expert), .shortcut = "3" },
+        eui.menubar.Item.separator,
+        .{ .label = "Close", .id = @intFromEnum(Command.close), .shortcut = "Ctrl+Q" },
+    } },
+};
+
+var menus: eui.menubar.State = .{};
 var board = mines.Board.init(OPENS_ON);
 var cursor_column: u8 = 0;
 var cursor_row: u8 = 0;
@@ -51,18 +98,38 @@ export fn _start() callconv(.c) noreturn {
     });
 }
 
-/// The window a grid asks for: its cells, the line above them saying how it
-/// stands, and the padding around both.
+/// The window a grid asks for: the menu strip, the button under it, the
+/// cells in their frame, and the padding around them.
 fn wanted(shape: mines.Shape) struct { w: u16, h: u16 } {
     const t = theme.current();
+    const grid_w = @as(i32, shape.columns) * CELL + FRAME * 2;
+    const grid_h = @as(i32, shape.rows) * CELL + FRAME * 2;
     return .{
-        .w = @intCast(@as(i32, shape.columns) * CELL + t.padding * 2),
-        .h = @intCast(@as(i32, shape.rows) * CELL + statusHeight() + t.padding * 2),
+        .w = @intCast(@max(@max(grid_w + t.padding * 2, buttonWidth() + t.padding * 4), menuWidth())),
+        .h = @intCast(theme.stripHeight() + t.control_height + grid_h + t.padding * 3),
     };
 }
 
-fn statusHeight() i32 {
-    return eui.Surface.textHeight() + theme.current().padding;
+/// Wide enough for either of the two things the button says.
+fn buttonWidth() i32 {
+    const t = theme.current();
+    const most = @max(eui.Surface.textWidth(TRY_AGAIN), eui.Surface.textWidth("999 left"));
+    return most + t.padding * 4;
+}
+
+const TRY_AGAIN = "try again";
+
+/// Wide enough for the menu to drop without the window's own edge cutting
+/// it: the smallest grid is narrower than the menu over it.
+fn menuWidth() i32 {
+    const t = theme.current();
+    var widest: i32 = 0;
+    for (MENUS[0].items) |item| {
+        var w = eui.Surface.textWidth(item.label);
+        if (item.shortcut.len > 0) w += eui.Surface.textWidth(item.shortcut) + t.padding * 4;
+        widest = @max(widest, w);
+    }
+    return widest + t.padding * 8;
 }
 
 // ---------------------------------------------------------------------------
@@ -75,14 +142,62 @@ fn draw() void {
     const whole = Rect{ .x = 0, .y = 0, .w = surface.width, .h = surface.height };
     if (ctx.damaged) surface.fill(whole, t.surface);
 
-    const status = Rect{
-        .x = whole.x + t.padding,
-        .y = whole.y + t.padding,
-        .w = whole.w - t.padding * 2,
-        .h = eui.Surface.textHeight(),
+    const parts = eui.chrome.split(whole, .{ .top = true });
+    drawButton(parts.body);
+
+    // The grid sits in a sunken frame, as everything drawn in that era did:
+    // dark above and left, light below and right.
+    const cells = gridArea(parts.body);
+    bevel(.{
+        .x = cells.x - FRAME,
+        .y = cells.y - FRAME,
+        .w = cells.w + FRAME * 2,
+        .h = cells.h + FRAME * 2,
+    }, SHADOW, LIGHT);
+    play(cells);
+
+    // Last in the pass: an open menu hangs over the grid, and anything drawn
+    // after it would draw over the menu instead.
+    if (eui.menubar.run(ctx, parts.top, &menus, &MENUS)) |id| {
+        run(@enumFromInt(id));
+    }
+}
+
+/// The button over the grid: how many mines are still unaccounted for while
+/// a game is on, and the way back to a fresh one once it is over. Pressed
+/// either way, because a game somebody wants to leave is a game they want to
+/// start again.
+fn drawButton(body: Rect) void {
+    const t = theme.current();
+    var counted: [16]u8 = undefined;
+    const label = if (board.state.over())
+        TRY_AGAIN
+    else
+        std.fmt.bufPrint(&counted, "{d} left", .{board.remaining()}) catch TRY_AGAIN;
+
+    const width = buttonWidth();
+    const where = Rect{
+        .x = body.x + @divTrunc(body.w - width, 2),
+        .y = body.y + t.padding,
+        .w = width,
+        .h = t.control_height,
     };
-    drawStatus(status);
-    play(gridArea(whole, status));
+    const weight: eui.widget.Emphasis = if (board.state == .won) .strong else .plain;
+    if (ctx.buttonAs(where, label, weight)) {
+        board.restart();
+        aim(0, 0);
+        ctx.damage();
+    }
+}
+
+/// An edge around a rectangle: one colour above and left, another below and
+/// right. Raised or sunken is which way round they go.
+fn bevel(area: Rect, top_left: Color, bottom_right: Color) void {
+    const surface = ctx.surface;
+    surface.fill(.{ .x = area.x, .y = area.y, .w = area.w, .h = FRAME }, top_left);
+    surface.fill(.{ .x = area.x, .y = area.y, .w = FRAME, .h = area.h }, top_left);
+    surface.fill(.{ .x = area.x, .y = area.bottom() - FRAME, .w = area.w, .h = FRAME }, bottom_right);
+    surface.fill(.{ .x = area.right() - FRAME, .y = area.y, .w = FRAME, .h = area.h }, bottom_right);
 }
 
 /// How many mines are unaccounted for, and what the last move came to.
@@ -107,18 +222,19 @@ fn drawStatus(area: Rect) void {
 }
 
 /// Where the grid sits: square cells at the largest side that fits, centred
-/// in what the status line leaves.
-fn gridArea(whole: Rect, status: Rect) Rect {
+/// in what the button row leaves.
+fn gridArea(body: Rect) Rect {
     const t = theme.current();
-    const across = @divTrunc(whole.w - t.padding * 2, @as(i32, board.shape.columns));
-    const down = @divTrunc(whole.bottom() - status.bottom() - t.padding * 2, @as(i32, board.shape.rows));
+    const top = body.y + t.padding * 2 + t.control_height;
+    const across = @divTrunc(body.w - (t.padding + FRAME) * 2, @as(i32, board.shape.columns));
+    const down = @divTrunc(body.bottom() - top - (t.padding + FRAME) * 2, @as(i32, board.shape.rows));
     const side = @max(@min(@min(across, down), CELL), 1);
 
     const w = side * @as(i32, board.shape.columns);
     const h = side * @as(i32, board.shape.rows);
     return .{
-        .x = whole.x + @divTrunc(whole.w - w, 2),
-        .y = status.bottom() + t.padding + @divTrunc(whole.bottom() - status.bottom() - t.padding - h, 2),
+        .x = body.x + @divTrunc(body.w - w, 2),
+        .y = top + FRAME + @divTrunc(body.bottom() - top - t.padding - h, 2),
         .w = w,
         .h = h,
     };
@@ -159,40 +275,43 @@ fn under(area: Rect, side: i32) ?struct { column: u8, row: u8 } {
 }
 
 fn drawCell(area: Rect, side: i32, column: u8, row: u8) void {
-    const t = theme.current();
     const cell = board.at(column, row);
-
     const whole = Rect{
         .x = area.x + @as(i32, column) * side,
         .y = area.y + @as(i32, row) * side,
         .w = side,
         .h = side,
     };
-    // The hairline between cells is the ground showing through, which is
-    // one fill rather than a line drawn on four edges.
-    ctx.surface.fill(whole, t.line);
-    const face = Rect{ .x = whole.x, .y = whole.y, .w = side - 1, .h = side - 1 };
-    // Opened cells are the lighter face and shut ones the darker: at this
-    // size a border tells them apart at a glance and a shade does not.
-    ctx.surface.fill(face, if (cell.revealed) t.surface_hot else t.surface_pressed);
 
-    if (cell.flagged) {
-        ctx.surface.iconCentred(face, .flag, t.accent);
-    } else if (cell.revealed and cell.mine) {
-        ctx.surface.iconCentred(face, .mine, t.warning);
-    } else if (cell.revealed and cell.around != 0) {
-        const digit = [_]u8{'0' + @as(u8, cell.around)};
-        ctx.surface.text(
-            face.x + @divTrunc(face.w - eui.Surface.textWidth(&digit), 2),
-            face.y + @divTrunc(face.h - eui.Surface.textHeight(), 2),
-            &digit,
-            t.text,
-        );
+    if (cell.revealed) {
+        const struck = board.lost_at != null and board.lost_at.? == board.index(column, row);
+        ctx.surface.fill(whole, if (struck) STRUCK else FIELD);
+        // An opened cell is flat, with the grid showing along its top and
+        // left: the sunken side of the same edge the shut ones are raised by.
+        ctx.surface.fill(.{ .x = whole.x, .y = whole.y, .w = whole.w, .h = 1 }, SHADOW);
+        ctx.surface.fill(.{ .x = whole.x, .y = whole.y, .w = 1, .h = whole.h }, SHADOW);
+
+        if (cell.mine) {
+            ctx.surface.iconCentred(whole, .mine, MINE_INK);
+        } else if (cell.around != 0) {
+            const digit = [_]u8{'0' + @as(u8, cell.around)};
+            ctx.surface.text(
+                whole.x + @divTrunc(whole.w - eui.Surface.textWidth(&digit), 2),
+                whole.y + @divTrunc(whole.h - eui.Surface.textHeight(), 2),
+                &digit,
+                NUMBERS[cell.around - 1],
+            );
+        }
+    } else {
+        ctx.surface.fill(whole, FIELD);
+        bevel(whole, LIGHT, SHADOW);
+        if (cell.flagged) ctx.surface.iconCentred(whole, .flag, FLAG_INK);
     }
 
     if (column == cursor_column and row == cursor_row) {
-        const inside = Rect{ .x = face.x + 1, .y = face.y + 1, .w = face.w - 2, .h = face.h - 2 };
-        ctx.surface.fillAround(face, inside, t.accent);
+        const t = theme.current();
+        const inside = Rect{ .x = whole.x + 1, .y = whole.y + 1, .w = whole.w - 2, .h = whole.h - 2 };
+        ctx.surface.fillAround(whole, inside, t.accent);
     }
 }
 
@@ -201,7 +320,22 @@ fn drawCell(area: Rect, side: i32, column: u8, row: u8) void {
 // ---------------------------------------------------------------------------
 
 fn key(code: KeyCode, mods: Modifiers) bool {
-    _ = mods;
+    if (mods.control and code == .q) {
+        run(.close);
+        return true;
+    }
+    switch (eui.menubar.key(&menus, code, mods, &MENUS)) {
+        .ignored => {},
+        .taken => {
+            ctx.damage();
+            return true;
+        },
+        .chosen => |id| {
+            run(@enumFromInt(id));
+            return true;
+        },
+    }
+
     switch (code) {
         .left => step(-1, 0),
         .right => step(1, 0),
@@ -209,14 +343,29 @@ fn key(code: KeyCode, mods: Modifiers) bool {
         .down => step(0, 1),
         .space, .enter => _ = board.reveal(cursor_column, cursor_row, prng.random()),
         .f => _ = board.flag(cursor_column, cursor_row),
-        .r => board.restart(),
-        .n1 => choose(.beginner),
-        .n2 => choose(.intermediate),
-        .n3 => choose(.expert),
+        .r => run(.new),
+        .n1 => run(.beginner),
+        .n2 => run(.intermediate),
+        .n3 => run(.expert),
         else => return false,
     }
     ctx.damage();
     return true;
+}
+
+/// What the menu asked for.
+fn run(command: Command) void {
+    switch (command) {
+        .new => {
+            board.restart();
+            aim(0, 0);
+        },
+        .beginner => choose(.beginner),
+        .intermediate => choose(.intermediate),
+        .expert => choose(.expert),
+        .close => sys.exit(0),
+    }
+    ctx.damage();
 }
 
 /// Move the cursor, stopping at the edges. A wrap on a grid this size takes
