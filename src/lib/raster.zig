@@ -12,12 +12,6 @@ const rgb = @import("rgb.zig");
 
 pub const Colour = rgb.Colour;
 
-/// Whether two colours are the same to the eye. The unused byte is not part
-/// of a colour, and a picture decoded from a file may carry anything in it.
-pub fn same(a: Colour, b: Colour) bool {
-    return a.r == b.r and a.g == b.g and a.b == b.b;
-}
-
 /// A shape's outline, or the whole of it.
 pub const Fill = enum { outline, solid };
 
@@ -237,7 +231,7 @@ pub const Canvas = struct {
     pub fn flood(self: Canvas, from_x: i32, from_y: i32, colour: Colour, seeds: []Seed) Spread {
         if (!self.holds(from_x, from_y)) return .done;
         const target = self.pixels[self.at(from_x, from_y)];
-        if (same(target, colour)) return .done;
+        if (target.eql(colour)) return .done;
         if (seeds.len == 0) return .ran_out;
 
         var pending: usize = 1;
@@ -248,12 +242,12 @@ pub const Canvas = struct {
             pending -= 1;
             const seed = seeds[pending];
             const row: i32 = seed.y;
-            if (!same(self.pixels[self.at(seed.x, row)], target)) continue;
+            if (!self.pixels[self.at(seed.x, row)].eql(target)) continue;
 
             var left: i32 = seed.x;
-            while (left > 0 and same(self.pixels[self.at(left - 1, row)], target)) left -= 1;
+            while (left > 0 and self.pixels[self.at(left - 1, row)].eql(target)) left -= 1;
             var right: i32 = seed.x;
-            while (right + 1 < self.width and same(self.pixels[self.at(right + 1, row)], target)) right += 1;
+            while (right + 1 < self.width and self.pixels[self.at(right + 1, row)].eql(target)) right += 1;
 
             var column = left;
             while (column <= right) : (column += 1) self.pixels[self.at(column, row)] = colour;
@@ -262,7 +256,7 @@ pub const Canvas = struct {
                 if (near_row < 0 or near_row >= self.height) continue;
                 var scan = left;
                 while (scan <= right) : (scan += 1) {
-                    if (!same(self.pixels[self.at(scan, near_row)], target)) continue;
+                    if (!self.pixels[self.at(scan, near_row)].eql(target)) continue;
                     if (pending == seeds.len) {
                         spread = .ran_out;
                         break;
@@ -271,7 +265,7 @@ pub const Canvas = struct {
                     // run is reached from it.
                     seeds[pending] = .{ .x = @intCast(scan), .y = @intCast(near_row) };
                     pending += 1;
-                    while (scan + 1 <= right and same(self.pixels[self.at(scan + 1, near_row)], target)) scan += 1;
+                    while (scan + 1 <= right and self.pixels[self.at(scan + 1, near_row)].eql(target)) scan += 1;
                 }
             }
         }
@@ -303,7 +297,7 @@ const Small = struct {
 fn tally(canvas: Canvas, colour: Colour) usize {
     var found: usize = 0;
     for (canvas.pixels[0..canvas.count()]) |pixel| {
-        if (same(pixel, colour)) found += 1;
+        if (pixel.eql(colour)) found += 1;
     }
     return found;
 }
@@ -379,7 +373,7 @@ test "a line joins its ends, whichever way it is drawn" {
         var found = false;
         var column: i32 = 0;
         while (column < 16) : (column += 1) {
-            if (same(forward.get(column, row).?, BLACK)) found = true;
+            if (forward.get(column, row).?.eql(BLACK)) found = true;
         }
         try testing.expect(found);
     }
@@ -508,7 +502,7 @@ fn drawOneCanvas(from: Choices) anyerror!void {
         }
 
         for (canvas.pixels) |pixel| {
-            if (!same(pixel, WHITE) and !same(pixel, BLACK)) {
+            if (!pixel.eql(WHITE) and !pixel.eql(BLACK)) {
                 return error.TestUnexpectedResult;
             }
         }

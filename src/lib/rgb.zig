@@ -44,8 +44,11 @@ pub const Colour = packed struct(u32) {
         return @bitCast(self);
     }
 
+    /// Whether two colours are equal. The fourth byte is not part of the
+    /// colour: the panel ignores it, and a decoder leaves whatever it likes
+    /// there.
     pub fn eql(self: Colour, other: Colour) bool {
-        return self.word() == other.word();
+        return self.r == other.r and self.g == other.g and self.b == other.b;
     }
 
     /// How light this reads, nought to two hundred and fifty-five.
@@ -147,6 +150,10 @@ test "a colour is three channels, and the word is what the panel takes" {
 
     // Which is the same value written the way a table writes it.
     try testing.expect(slate.eql(Colour.hex(0x2B3138)));
+    // The byte the panel ignores does not make it another colour.
+    var carried = slate;
+    carried._unused = 0xFF;
+    try testing.expect(carried.eql(slate));
 }
 
 test "the hash is optional and the digits are not" {
