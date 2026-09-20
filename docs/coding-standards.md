@@ -137,6 +137,12 @@ redundant syscalls.
   take 500 ms.
 - Busy-wait only for deadlines under one tick, with a comment.
 - Redraw on state change only, damaged regions only.
+- Every pixel a control paints is reported as damage in the same pass. A fill with no
+  damage leaves the surface and the screen apart until the next whole blit of the window.
+- A control of rows keeps a mark of what each row showed and repaints the rows whose mark
+  differs; the whole only when the ground under them changed: scroll, width, focus.
+- Nothing walked per pass that the pass cannot have changed: a count over the whole text
+  is kept until the text, the caret or the width differs.
 - Constant tables: comptime or generated, not computed at runtime.
 
 ## Memory and limits
