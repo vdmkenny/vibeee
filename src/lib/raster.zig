@@ -46,7 +46,7 @@ pub const Canvas = struct {
     stride: u16,
 
     pub fn of(pixels: []Colour, width: u16, height: u16) Canvas {
-        return .{ .pixels = pixels, .width = width, .height = height, .stride = width };
+        return over(pixels, width, height, width);
     }
 
     /// A canvas over part of something wider. Marks are clipped to the
@@ -78,15 +78,23 @@ pub const Canvas = struct {
         return @as(usize, @intCast(y)) * self.stride + @as(usize, @intCast(x));
     }
 
+    /// A run of one row between two columns, either way round, clipped to
+    /// the canvas. What every solid shape below is filled out of.
+    pub fn span(self: Canvas, row: i32, from_x: i32, to_x: i32, colour: Colour) void {
+        if (row < 0 or row >= self.height) return;
+        const first = @max(@min(from_x, to_x), 0);
+        const last = @min(@max(from_x, to_x), @as(i32, self.width) - 1);
+        if (last < first) return;
+        const start = self.at(first, row);
+        @memset(self.pixels[start..][0..@intCast(last - first + 1)], colour);
+    }
+
     /// The whole picture in one colour, which is what a new one is. A row at
     /// a time, since the rows of a canvas over something wider are not one
     /// run of pixels.
     pub fn clear(self: Canvas, colour: Colour) void {
-        var row: u16 = 0;
-        while (row < self.height) : (row += 1) {
-            const start = @as(usize, row) * self.stride;
-            @memset(self.pixels[start .. start + self.width], colour);
-        }
+        var row: i32 = 0;
+        while (row < self.height) : (row += 1) self.span(row, 0, @as(i32, self.width) - 1, colour);
     }
 
     /// The brush: a square of `size` pixels about the point. What a pencil
@@ -147,17 +155,12 @@ pub const Canvas = struct {
         const bottom = @max(near(from_y), near(to_y));
 
         if (fill == .solid) {
-            // Only the part on the canvas is walked: a rectangle dragged far
+            // Only the rows on the canvas are walked: a rectangle dragged far
             // outside it is still a rectangle, and iterating the rest of it
             // would be counting to a number nobody can see.
             var row = @max(top, 0);
             const last_row = @min(bottom, @as(i32, self.height) - 1);
-            const first = @max(left, 0);
-            const last = @min(right, @as(i32, self.width) - 1);
-            while (row <= last_row) : (row += 1) {
-                var column = first;
-                while (column <= last) : (column += 1) self.set(column, row, colour);
-            }
+            while (row <= last_row) : (row += 1) self.span(row, left, right, colour);
             return;
         }
 
@@ -205,9 +208,7 @@ pub const Canvas = struct {
             const half: i64 = @intCast(std.math.sqrt(@as(u64, @intCast(@divTrunc(sx * (sy - away * away), sy)))));
 
             if (fill == .solid) {
-                var column = @max(@as(i32, @intCast(centre_x - half)), 0);
-                const stop = @min(@as(i32, @intCast(centre_x + half)), @as(i32, self.width) - 1);
-                while (column <= stop) : (column += 1) self.set(column, row, colour);
+                self.span(row, @intCast(centre_x - half), @intCast(centre_x + half), colour);
                 above = half;
                 continue;
             }
