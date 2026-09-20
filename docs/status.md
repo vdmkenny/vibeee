@@ -350,6 +350,7 @@ window, resizing, theme changes, draw pass and commit; a program supplies a draw
 | Viewer | [`user/apps/eimg.zig`](../src/user/apps/eimg.zig) | One picture at a time at fit, actual or double size, rotated by hand in quarter turns on top of the EXIF orientation. EXIF sidebar, off by default. |
 | Calc | [`user/apps/calc.zig`](../src/user/apps/calc.zig) | Floating calculator. Arithmetic from `lib/calc.zig`. Every pad key has a keyboard key; Tab and Space work as on every control. |
 | Mines | [`user/apps/mines.zig`](../src/user/apps/mines.zig) | Minesweeper on three grids, in a floating window that asks to be the size of the grid chosen. The Game menu holds the grids and a fresh game; the button over the grid counts the mines still unaccounted for, and starts again once the game is over. Drawn as the game always has been: raised cells on a white and a shadow edge, a sunken frame, the eight number colours on their own grey, a black mine and a red one where the game ended. The board is [`lib/mines.zig`](../src/lib/mines.zig), host-tested: mines laid around the first cell opened, the space opened out to its numbered edge, flags, and the two ends of a game. |
+| Draw | [`user/apps/draw.zig`](../src/user/apps/draw.zig) | A picture 480 by 320, drawn with a pencil, a rubber, a line, a box, an oval and a fill, in sixteen colours and three brush widths. Shapes are shown over the picture while the button is held. One step back. PNG and BMP in, PNG out, through the file dialog. What the tools do to the pixels is [`lib/raster.zig`](../src/lib/raster.zig). |
 | Screenshot | [`user/apps/screenshot.zig`](../src/user/apps/screenshot.zig) | PNG of the display or the focused window, into `/home`. A command, spawned by `Super+S` and `Super+Shift+S`. The manager copies pixels; encoding happens in this process. |
 
 ## Programs that are not the system
@@ -378,6 +379,7 @@ every build. Code used by one driver only stays with that driver, for example
 | [`ring.zig`](../src/lib/ring.zig) | SPSC ring layout, and a segment carrying one ring each way. Host-tested. |
 | [`civil.zig`](../src/lib/civil.zig) | Calendar arithmetic. |
 | [`mmio.zig`](../src/lib/mmio.zig) | Register windows: an enum names offsets, instantiation proves each offset aligned for the access width. Port windows take each access's width from the value's type. |
+| [`raster.zig`](../src/lib/raster.zig) | Drawing into a picture: a brush, lines, boxes, ellipses and a flood fill, every mark clipped to the canvas. Host-tested and fuzzed. |
 | [`audio.zig`](../src/lib/audio.zig) | Frames, periods, durations, integer volume scaling, clipping mix, fixed-point sine. A voice mixer: 8-bit signed or unsigned and 16-bit samples, loops, start offsets, pitch bend, linear interpolation. Period progress from a hardware position. A resampler between rates with exact integer steps. Host-tested; the resampler is fuzzed. |
 | [`text.zig`](../src/lib/text.zig) | Editable text: line index, cursor, insert and delete, UTF-8 safe, remembered column. Shared with the pager. Host-tested. |
 | [`usb.zig`](../src/lib/usb.zig) | Request types, descriptor parsing, configuration walk, pipes with data toggle, driver signatures. Host-tested. |
@@ -470,6 +472,8 @@ every build. Code used by one driver only stays with that driver, for example
     was asked.
   - Minesweeper board, [`lib/mines.zig`](../src/lib/mines.zig): a game played at random
     keeps its own account of what is opened, flagged and left.
+  - Drawing tools, [`lib/raster.zig`](../src/lib/raster.zig): every mark lands on the
+    canvas and nowhere else, whatever it is aimed at.
   - Page table, [`arch/x86/pagetable.zig`](../src/arch/x86/pagetable.zig): agrees with a
     walk without shortcuts.
 - `make check-all` is the gate. It runs `zig fmt` check, `zig build check`,
@@ -563,7 +567,7 @@ syscalls, Ring 3, IPC, ramfs, VESA console, i8042 keyboard, `vsh`. Exercised eve
 | UVC webcam | Not started. |
 | Turbo mode | Not started. |
 | Mines | Done: three grids, keyboard and pointer, the window sized to the grid. |
-| Draw | Not started. |
+| Draw | Done: the tools above, and PNG in and out. No selection, and one picture size. |
 
 ### Not on the roadmap, done
 
@@ -571,7 +575,7 @@ syscalls, Ring 3, IPC, ramfs, VESA console, i8042 keyboard, `vsh`. Exercised eve
 |---|---|
 | Persistent settings and home | The boot medium carries the system, `/cfg` and `/home`. Settings read from `/etc` then `/cfg`. The loader records the medium's partition signature so the right disk is used. On the 701, `/cfg` and `/home` mount when `usbd` brings up the card reader. Verified in the emulator across shutdowns and reboots. |
 | Volume check, format, grow | Clean-unmount flag, check at mount, `check`, `format`, `grow`. Verified in the emulator by the gate. |
-| Fuzz targets | Sixteen targets with seeded counterparts in `make test`. See [Testing](#testing). |
+| Fuzz targets | Seventeen targets with seeded counterparts in `make test`. See [Testing](#testing). |
 | Bus rebuild | A disk behind a hub keeps its mount across `usb rebuild`. Verified in the emulator. |
 | Serial console | The log reaches a USB serial port. Verified in the emulator; not tried on the machine. |
 | Serial adapters | FTDI verified in the emulator: enumeration, `ser`, typed data both ways, settings, unplug. `acm` not run against a device. |

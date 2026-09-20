@@ -41,6 +41,8 @@ fn imageFormats(name: []const u8) ?[]const []const u8 {
     // because naming none compiles every decoder in; nothing calls it, and
     // what nothing calls is collected out again.
     if (std.mem.eql(u8, name, "screenshot")) return &.{"-DSTBI_ONLY_PNG"};
+    // `draw` opens what it can write and the other lossless format beside it.
+    if (std.mem.eql(u8, name, "draw")) return &.{ "-DSTBI_ONLY_PNG", "-DSTBI_ONLY_BMP" };
     return null;
 }
 
@@ -620,6 +622,7 @@ pub fn build(b: *std.Build) void {
             .{ .name = "pad", .root = "src/user/apps/pad.zig" },
             .{ .name = "calc", .root = "src/user/apps/calc.zig" },
             .{ .name = "mines", .root = "src/user/apps/mines.zig" },
+            .{ .name = "draw", .root = "src/user/apps/draw.zig" },
             .{ .name = "eimg", .root = "src/user/apps/eimg.zig" },
             .{ .name = "efm", .root = "src/user/efm/main.zig" },
             .{ .name = "screenshot", .root = "src/user/apps/screenshot.zig" },

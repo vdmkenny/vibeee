@@ -191,6 +191,7 @@ pub const items = [_]Item{
     .{ .label = "Calc", .category = .tools, .action = .{ .run = .{ .path = "/bin/calc", .name = "calc" } } },
     .{ .label = "Viewer", .category = .tools, .action = .{ .run = .{ .path = "/bin/eimg", .name = "eimg" } } },
     .{ .label = "Mines", .category = .tools, .action = .{ .run = .{ .path = "/bin/mines", .name = "mines" } } },
+    .{ .label = "Draw", .category = .tools, .action = .{ .run = .{ .path = "/bin/draw", .name = "draw" } } },
     .{ .label = "Monitor", .category = .system, .action = .{ .run = .{ .path = "/bin/monitor", .name = "monitor" } } },
     .{ .label = "Settings", .category = .system, .action = .{ .run = .{ .path = "/bin/settings", .name = "settings" } } },
     .{ .label = "About this computer", .category = .system, .mark = .icon(.about), .action = .{ .run = .{ .path = "/bin/settings", .name = "settings", .arg = "about" } } },

@@ -343,7 +343,7 @@ test "the default image has every system program and no extra application" {
     const plan: Plan = .init(.{});
     try plan.makefile(&.{}, &out);
     const text = out.buffered();
-    try testing.expect(std.mem.indexOf(u8, text, "ROOTFS_PROGRAMS := init vsh tools devmgd netd timed sndd usbd logd platd cfgd eeewm eterm pad efm calc mines eimg monitor settings screenshot\n") != null);
+    try testing.expect(std.mem.indexOf(u8, text, "ROOTFS_PROGRAMS := init vsh tools devmgd netd timed sndd usbd logd platd cfgd eeewm eterm pad efm calc mines draw eimg monitor settings screenshot\n") != null);
     try testing.expect(std.mem.indexOf(u8, text, "ROOTFS_SHARE := fonts.pack ca.store\n") != null);
     try testing.expect(std.mem.indexOf(u8, text, "HOME_APPS :=\n") != null);
     try testing.expect(std.mem.indexOf(u8, text, "CONFIG_MCPU := pentium_m\n") != null);

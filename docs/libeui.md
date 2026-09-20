@@ -65,6 +65,7 @@ with it this pass.
 |---|---|
 | `button` | `fn (*widget.Context, draw.Rect, []const u8) bool` |
 | `tool` | `fn (*widget.Context, draw.Rect, icon.Icon, bool) bool` |
+| `toolChosen` | `fn (*widget.Context, draw.Rect, icon.Icon, bool) bool` |
 | `buttonAs` | `fn (*widget.Context, draw.Rect, []const u8, widget.Emphasis) bool` |
 | `choice` | `fn (*widget.Context, draw.Rect, anytype) anytype` |
 | `choiceOf` | `fn (*widget.Context, draw.Rect, anytype, []const []const u8) anytype` |
@@ -1224,6 +1225,90 @@ flag
       ########            
     ############          
                           
+                          
+
+pencil
+                          
+                    ####  
+                  ########
+                ########  
+              ########    
+            ########      
+          ########        
+        ########          
+      ########            
+    ########              
+    ######                
+                          
+
+eraser
+                          
+                          
+                  ######  
+                ##########
+              ##########  
+            ##########    
+          ##########      
+        ##########        
+      ##########          
+      ########            
+      ####                
+                          
+
+stroke
+                          
+                      ####
+                    ####  
+                  ####    
+                ####      
+              ####        
+            ####          
+          ####            
+        ####              
+      ####                
+    ####                  
+                          
+
+rectangle
+                          
+                          
+    ####################  
+    ##                ##  
+    ##                ##  
+    ##                ##  
+    ##                ##  
+    ##                ##  
+    ####################  
+                          
+                          
+                          
+
+oval
+                          
+                          
+        ############      
+      ####        ####    
+    ####            ####  
+    ##                ##  
+    ##                ##  
+    ####            ####  
+      ####        ####    
+        ############      
+                          
+                          
+
+bucket
+                          
+            ####          
+          ########        
+        ############      
+      ################    
+    ####################  
+    ####################  
+      ################    
+        ############      
+          ########        
+                    ####  
                           
 
 ```
