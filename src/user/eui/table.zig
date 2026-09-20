@@ -6,6 +6,7 @@
 //! the rest of the controls put together and shares nothing with them beyond
 //! the pass machinery.
 
+const std = @import("std");
 const draw = @import("draw.zig");
 const icons = @import("icon.zig");
 const scroll = @import("scroll.zig");
@@ -79,7 +80,18 @@ pub const State = struct {
     /// only the caller knows whether a column of text is a number, a size or
     /// a name.
     sort: ?Sort = null,
+    /// What each row showed when it was last painted, hashed, so a pass that
+    /// moved the selection one row paints two rows.
+    row_marks: [ROWS_MAX]i32 = @splat(0),
+    /// What the rows were painted under: the columns, the scroll, the
+    /// headings and whether the table has the keyboard. A row is compared
+    /// with its mark only while this holds; a change to any of it moves or
+    /// recolours every row.
+    ground_mark: i32 = 0,
 };
+
+/// The most rows painted one by one. A taller table paints whole.
+const ROWS_MAX = 64;
 
 pub const Sort = struct {
     column: usize,
@@ -197,18 +209,22 @@ pub fn run(
     if (state.selected >= state.scroll + visible) state.scroll = state.selected + 1 - visible;
     if (state.scroll + visible > rows.len) state.scroll = rows.len -| visible;
 
-    // Repaint when anything visible differs from last pass. A table's contents
-    // change under it constantly, so comparing what would be drawn is the only
-    // check that is both cheap and right. A change of selection or scroll asks
-    // the window for another pass and nothing more: the table repaints itself
-    // from this comparison, and whatever follows the cursor, a preview beside
-    // the listing, sees the new selection on that pass.
-    const signature = fingerprint(rows, state, hovered, act.focused, visible);
-    if (ctx.needsPaint(entry, .idle) or entry.detail != signature) {
-        entry.detail = signature;
+    // Whole when the frame, the headings or every row has to be painted:
+    // the table is newly placed or damaged, focus moved, the rows scrolled,
+    // a column changed. Otherwise only the rows that would
+    // show something else than they did: two for a selection moved one
+    // row, and two for the pointer crossing from one row to the next. A
+    // change of selection or scroll asks the window for another pass and
+    // nothing more; whatever follows the cursor, a preview beside the
+    // listing, sees the new selection on that pass.
+    const ground = groundMark(area, listed, columns, rows, state, act.focused, visible);
+    if (ctx.needsPaint(entry, .idle) or state.ground_mark != ground or visible > ROWS_MAX) {
         entry.visual = .idle;
+        state.ground_mark = ground;
         paint(ctx.surface, area, listed, columns, rows, state, hovered, act.focused, visible);
         ctx.addDamage(area);
+    } else {
+        paintChanged(ctx, area, listed, columns, rows, state, hovered, act.focused, visible);
     }
 
     // After the rows, or they would be drawn over it.
@@ -287,71 +303,79 @@ fn wheeled(at: usize, wheel: i8, count: usize, visible: usize) usize {
     return @min(moved, limit);
 }
 
-/// Everything the table would draw, hashed.
-fn fingerprint(
+/// What every row is painted under, hashed: the table's size and where the
+/// rows sit, the columns, the scroll, the headings, and whether the table
+/// has the keyboard.
+fn groundMark(
+    area: Rect,
+    listed: Rect,
+    columns: []const Column,
     rows: []const Row,
     state: *const State,
-    hovered: ?usize,
     focused: bool,
     visible: usize,
 ) i32 {
     var h = widget.Fingerprint{};
+    h.number(@intCast(area.w));
+    h.number(@intCast(area.h));
+    h.number(@intCast(listed.w));
     h.number(state.scroll);
-    h.number(state.selected);
     h.flag(state.striped);
+    h.flag(state.headings);
     h.flag(state.head_accent);
     if (state.sort) |by| {
         h.number(by.column);
         h.flag(by.descending);
     }
-    h.number(hovered orelse ~@as(usize, 0));
+    h.flag(state.sort != null);
     h.flag(focused);
-    h.number(rows.len);
-
-    const last = @min(state.scroll + visible, rows.len);
-    for (rows[@min(state.scroll, rows.len)..last]) |row| {
-        for (row.cells) |cell| h.text(cell);
-        h.number(row.depth);
-        // What is drawn about a row besides its text: the accent it may be
-        // in, and the picture before it. Left out, a caller that moved the
-        // mark to another row without changing a word left the old row
-        // accented and the new one plain.
-        h.flag(row.marked);
-        h.flag(row.mark != null);
-        if (row.mark) |which| h.text(which.bits());
+    h.number(visible);
+    for (columns) |column| {
+        h.text(column.title);
+        h.number(@intCast(column.width));
+        h.flag(column.right);
+        h.flag(column.tree);
+        h.flag(column.flex);
     }
     // The first column is indented when any row in the table has a picture,
     // so a picture arriving anywhere moves every row's text.
     h.flag(anyPictured(rows));
-
     return h.done();
 }
 
-fn paint(
-    surface: Surface,
-    area: Rect,
-    body: Rect,
-    columns: []const Column,
-    rows: []const Row,
-    state: *const State,
-    hovered: ?usize,
-    focused: bool,
-    visible: usize,
-) void {
+/// A row hashed: its cells, what is drawn about it besides them, and the
+/// ground it is picked out on. Nothing past the last row hashes the same
+/// whatever is selected, since nothing is drawn there.
+fn rowMark(row: ?*const Row, selected: bool, hovered: bool) i32 {
+    var h = widget.Fingerprint{};
+    if (row) |r| {
+        for (r.cells) |cell| h.text(cell);
+        h.number(r.depth);
+        // What is drawn about a row besides its text: the accent it may be
+        // in, and the picture before it. Left out, a caller that moved the
+        // mark to another row without changing a word would leave the old
+        // row accented and the new one plain.
+        h.flag(r.marked);
+        h.flag(r.mark != null);
+        if (r.mark) |which| h.text(which.bits());
+        h.flag(selected);
+        h.flag(hovered);
+    }
+    h.flag(row != null);
+    return h.done();
+}
+
+/// The headings and the rule under them.
+fn paintHead(surface: Surface, area: Rect, columns: []const Column, state: *const State, widths: Widths) void {
+    if (!state.headings) return;
     const t = theme.current();
     const row_h = rowHeight();
-    const widths = Widths.measure(columns, area.w);
 
-    surface.fill(area, t.surface);
-
-    // Headings, then a rule. A heading that scrolled with the rows would be
-    // worse than none.
     const head = Rect{ .x = area.x, .y = area.y, .w = area.w, .h = row_h };
-    if (state.headings) surface.fill(head, if (state.head_accent) t.accent else t.surface_pressed);
+    surface.fill(head, if (state.head_accent) t.accent else t.surface_pressed);
 
     var x = area.x + 2;
     for (columns, 0..) |column, i| {
-        if (!state.headings) break;
         const w = widths.of[i];
         const ordered = if (state.sort) |by| by.column == i else false;
         const head_ink = if (state.head_accent)
@@ -376,61 +400,147 @@ fn paint(
         }
         x += w;
     }
-    if (state.headings) surface.fill(.{ .x = area.x, .y = area.y + row_h, .w = area.w, .h = 1 }, t.line);
+    surface.fill(.{ .x = area.x, .y = area.y + row_h, .w = area.w, .h = 1 }, t.line);
+}
+
+/// One row: its ground when it is picked out or when asked for, its
+/// picture, and every cell to its own column's width.
+fn paintRow(
+    surface: Surface,
+    body: Rect,
+    y: i32,
+    columns: []const Column,
+    widths: Widths,
+    pictured: bool,
+    row: ?*const Row,
+    index: usize,
+    state: *const State,
+    hovered: ?usize,
+    focused: bool,
+    ground: ?draw.Color,
+) void {
+    const t = theme.current();
+    const line = Rect{ .x = body.x, .y = y, .w = body.w, .h = rowHeight() };
+    const r = row orelse {
+        if (ground) |colour| surface.fill(line, colour);
+        return;
+    };
+
+    const selected = index == state.selected;
+    const fill: ?draw.Color = if (selected)
+        (if (focused) t.accent else t.surface_pressed)
+    else if (hovered == index)
+        t.surface_hot
+    else if (state.striped and index % 2 == 1)
+        t.surface_hot
+    else
+        ground;
+    if (fill) |colour| surface.fill(line, colour);
+
+    const ink = if (selected and focused)
+        t.accent_text
+    else if (r.marked)
+        t.accent
+    else
+        t.text;
+
+    if (r.mark) |which| {
+        surface.mark(line.x + 3, Surface.iconTopFor(y + 2), which, ink);
+    }
+
+    var cx = line.x + 2;
+    for (columns, 0..) |column, i| {
+        const w = widths.of[i];
+        const cell = r.cells[i];
+        const indent: i32 = (if (column.tree) @as(i32, r.depth) * 10 else 0) +
+            (if (i == 0 and pictured) Surface.iconSize() + 4 else 0);
+
+        // Every cell is drawn to its own column's width. One that
+        // overran would paint across the cell beside it, and two values
+        // run together read as one.
+        const room = w - INSET * 2 - indent;
+        if (column.right) {
+            const text_w = @min(Surface.textWidth(cell), room);
+            surface.textFitted(cx + w - text_w - INSET, y + 2, room, cell, ink);
+        } else {
+            surface.textFitted(cx + INSET + indent, y + 2, room, cell, ink);
+        }
+        cx += w;
+    }
+}
+
+/// The frame, the headings and every row, and a mark of each row for the
+/// passes after.
+fn paint(
+    surface: Surface,
+    area: Rect,
+    body: Rect,
+    columns: []const Column,
+    rows: []const Row,
+    state: *State,
+    hovered: ?usize,
+    focused: bool,
+    visible: usize,
+) void {
+    const t = theme.current();
+    const row_h = rowHeight();
+    const widths = Widths.measure(columns, area.w);
+
+    surface.fill(area, t.surface);
+
+    // Headings, then a rule. A heading that scrolled with the rows would be
+    // worse than none.
+    paintHead(surface, area, columns, state, widths);
 
     // One row with a picture indents them all, so the names line up whether
     // or not the row above has one.
     const pictured = anyPictured(rows);
 
-    const last = @min(state.scroll + visible, rows.len);
-    var y = body.y;
-    for (rows[@min(state.scroll, rows.len)..last], state.scroll..) |row, index| {
-        const line = Rect{ .x = body.x, .y = y, .w = body.w, .h = row_h };
-        const selected = index == state.selected;
-
-        if (selected) {
-            surface.fill(line, if (focused) t.accent else t.surface_pressed);
-        } else if (hovered == index) {
-            surface.fill(line, t.surface_hot);
-        } else if (state.striped and index % 2 == 1) {
-            surface.fill(line, t.surface_hot);
-        }
-
-        const ink = if (selected and focused)
-            t.accent_text
-        else if (row.marked)
-            t.accent
-        else
-            t.text;
-
-        if (row.mark) |which| {
-            surface.mark(line.x + 3, Surface.iconTopFor(y + 2), which, ink);
-        }
-
-        var cx = line.x + 2;
-        for (columns, 0..) |column, i| {
-            const w = widths.of[i];
-            const cell = row.cells[i];
-            const indent: i32 = (if (column.tree) @as(i32, row.depth) * 10 else 0) +
-                (if (i == 0 and pictured) Surface.iconSize() + 4 else 0);
-
-            // Every cell is drawn to its own column's width. One that
-            // overran would paint across the cell beside it, and two values
-            // run together read as one.
-            const room = w - INSET * 2 - indent;
-            if (column.right) {
-                const text_w = @min(Surface.textWidth(cell), room);
-                surface.textFitted(cx + w - text_w - INSET, y + 2, room, cell, ink);
-            } else {
-                surface.textFitted(cx + INSET + indent, y + 2, room, cell, ink);
-            }
-            cx += w;
-        }
-
-        y += row_h;
+    for (0..visible) |slot| {
+        const index = state.scroll + slot;
+        const row: ?*const Row = if (index < rows.len) &rows[index] else null;
+        const y = body.y + @as(i32, @intCast(slot)) * row_h;
+        paintRow(surface, body, y, columns, widths, pictured, row, index, state, hovered, focused, null);
+        if (slot < ROWS_MAX) state.row_marks[slot] = rowMark(row, index == state.selected, hovered == index);
     }
 
     surface.frame(area, if (focused) t.accent else t.line);
+}
+
+/// The rows that would show something else than they did, and only those.
+fn paintChanged(
+    ctx: *widget.Context,
+    area: Rect,
+    body: Rect,
+    columns: []const Column,
+    rows: []const Row,
+    state: *State,
+    hovered: ?usize,
+    focused: bool,
+    visible: usize,
+) void {
+    const t = theme.current();
+    const row_h = rowHeight();
+    const widths = Widths.measure(columns, area.w);
+    const pictured = anyPictured(rows);
+
+    var touched = false;
+    for (0..visible) |slot| {
+        const index = state.scroll + slot;
+        const row: ?*const Row = if (index < rows.len) &rows[index] else null;
+        const mark = rowMark(row, index == state.selected, hovered == index);
+        if (mark == state.row_marks[slot]) continue;
+        state.row_marks[slot] = mark;
+
+        const y = body.y + @as(i32, @intCast(slot)) * row_h;
+        paintRow(ctx.surface, body, y, columns, widths, pictured, row, index, state, hovered, focused, t.surface);
+        ctx.addDamage(.{ .x = body.x, .y = y, .w = body.w, .h = row_h });
+        touched = true;
+    }
+
+    // A row is as wide as the table, frame included, so the frame's sides
+    // are drawn again over whatever was painted.
+    if (touched) ctx.surface.frame(area, if (focused) t.accent else t.line);
 }
 
 /// Every column's width, worked out once.
@@ -467,4 +577,72 @@ fn flexColumn(columns: []const Column) usize {
         if (c.flex) return i;
     }
     return columns.len -| 1;
+}
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+const testing = std.testing;
+
+fn named(name: []const u8) Row {
+    var row = Row{};
+    row.cells[0] = name;
+    return row;
+}
+
+test "moving the selection paints the row it left and the row it reached" {
+    draw.ui_font = &@import("lib").font.spleen_8x16;
+    const W = 200;
+    const H = 80;
+    var pixels: [W * H]draw.Color = @splat(.{});
+    var ctx = widget.Context.init(Surface.init(&pixels, W, H, W));
+    var state = State{ .headings = false };
+    const columns = [_]Column{.{ .title = "name", .width = 100 }};
+    const rows = [_]Row{ named("a"), named("b"), named("c") };
+    const row_h = rowHeight();
+    const area = Rect{ .x = 0, .y = 0, .w = W, .h = 3 * row_h + 2 };
+
+    const pass = struct {
+        fn quiet(c: *widget.Context, a: Rect, s: *State, cols: []const Column, rs: []const Row, y: i32) usize {
+            c.begin(20, y, .{});
+            _ = run(c, a, s, cols, rs);
+            c.end();
+            return c.damageList().len;
+        }
+    }.quiet;
+
+    // A press on the first row selects it and gives the table the keyboard,
+    // and the passes after it paint nothing.
+    const first_y = @divTrunc(row_h, 2);
+    ctx.postPress(20, first_y, 1_000_000);
+    ctx.begin(20, first_y, .{ .left = true });
+    _ = run(&ctx, area, &state, &columns, &rows);
+    ctx.end();
+    var settled = false;
+    for (0..3) |_| {
+        if (pass(&ctx, area, &state, &columns, &rows, first_y) == 0) {
+            settled = true;
+            break;
+        }
+    }
+    try testing.expect(settled);
+    try testing.expectEqual(@as(usize, 0), state.selected);
+
+    // A pixel of the third row's ground, set to something no paint uses.
+    const sentinel = draw.Color.hex(0x123456);
+    const third_y = 2 * row_h + 4;
+    const watched = @as(usize, @intCast(third_y)) * W + 150;
+    pixels[watched] = sentinel;
+
+    ctx.postKey(.down, .{});
+    ctx.begin(20, first_y, .{});
+    _ = run(&ctx, area, &state, &columns, &rows);
+    ctx.end();
+
+    try testing.expectEqual(@as(usize, 1), state.selected);
+    try testing.expectEqual(sentinel, pixels[watched]);
+    const damage = ctx.damageList();
+    try testing.expect(damage.len > 0);
+    for (damage) |r| try testing.expect(r.bottom() <= 2 * row_h);
 }
