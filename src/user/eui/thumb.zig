@@ -155,14 +155,35 @@ fn indexOf(at: Point, width: u16) i32 {
 pub fn paint(surface: Surface, into: Rect, source: Source, turn: exif.Orientation) void {
     const target = into.intersect(surface.clip);
     if (target.isEmpty() or source.width == 0 or source.height == 0) return;
-    if (into.w <= 0 or into.h <= 0 or target.w > COLUMNS_MAX) return;
+    if (into.w <= 0 or into.h <= 0) return;
+
+    const skipped = target.x - into.x;
+
+    // At its own size and the right way up, a row of the picture is a row of
+    // the window: a copy per row, rather than a read and two comparisons per
+    // pixel. What a program drawing its own pixels asks for, and a picture
+    // shown at full size.
+    if (turn == .up and into.w == @as(i32, source.width) and into.h == @as(i32, source.height) and
+        source.pixels.len >= @as(usize, source.width) * source.height)
+    {
+        const across: usize = @intCast(target.w);
+        var y: i32 = 0;
+        while (y < target.h) : (y += 1) {
+            const row: usize = @intCast((target.y - into.y) + y);
+            const from = row * @as(usize, source.width) + @as(usize, @intCast(skipped));
+            const line = surface.pixels + @as(usize, @intCast((target.y + y) * surface.stride + target.x));
+            @memcpy(line[0..across], source.pixels[from..][0..across]);
+        }
+        return;
+    }
+
+    if (target.w > COLUMNS_MAX) return;
 
     const upright = uprightSize(source.width, source.height, turn);
     const walk = Walk.of(source.width, source.height, turn);
 
     // One entry per column drawn: how far into the picture that column reads.
     var columns: [COLUMNS_MAX]i32 = undefined;
-    const skipped = target.x - into.x;
     for (columns[0..@intCast(target.w)], 0..) |*offset, i| {
         const dx = skipped + @as(i32, @intCast(i));
         const up_x = @divTrunc(dx * @as(i32, upright.w), into.w);
@@ -404,5 +425,38 @@ test "a picture one pixel across does not step off the end of itself" {
         try testing.expect(flat.across == 0 or flat.down == 0);
         try testing.expectEqual(@as(i32, 0), dot.across);
         try testing.expectEqual(@as(i32, 0), dot.down);
+    }
+}
+
+test "at its own size a picture is copied across, clip and all" {
+    const w: u16 = 8;
+    const h: u16 = 6;
+    var picture: [w * h]draw.Color = undefined;
+    for (&picture, 0..) |*pixel, i| pixel.* = draw.Color.hex(@intCast(0x010203 + i * 7));
+
+    const WIDE = 12;
+    const HIGH = 10;
+    var screen: [WIDE * HIGH]draw.Color = undefined;
+    const ground = draw.Color.hex(0x2B3138);
+    @memset(&screen, ground);
+    const surface = Surface.init(&screen, WIDE, HIGH, WIDE);
+
+    // Clipped on two sides, so a row that starts partway into the picture
+    // has to read from partway into it as well.
+    const into = Rect{ .x = 2, .y = 3, .w = w, .h = h };
+    const clip = Rect{ .x = 4, .y = 4, .w = 5, .h = 4 };
+    paint(surface.clipped(clip), into, .{ .pixels = &picture, .width = w, .height = h }, .up);
+
+    for (0..HIGH) |y| {
+        for (0..WIDE) |x| {
+            const across: i32 = @intCast(x);
+            const down: i32 = @intCast(y);
+            const drawn = into.contains(across, down) and clip.contains(across, down);
+            const want = if (drawn)
+                picture[@intCast((down - into.y) * w + (across - into.x))]
+            else
+                ground;
+            try testing.expectEqual(want, screen[y * WIDE + x]);
+        }
     }
 }
