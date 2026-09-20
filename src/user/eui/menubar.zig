@@ -79,8 +79,18 @@ pub const State = struct {
 /// anything drawn afterwards would draw over the menu instead.
 pub fn run(ctx: *widget.Context, area: Rect, state: *State, menus: []const Menu) ?u16 {
     const t = theme.current();
-    ctx.surface.fill(area, t.surface);
-    ctx.surface.fill(.{ .x = area.x, .y = area.bottom() - 1, .w = area.w, .h = 1 }, t.line);
+
+    // The strip's ground and the rule under it, on a pass that paints the
+    // window whole. A title paints its own ground when its look changes, and
+    // the ground between titles is as it was. Filled on every pass, the
+    // strip would be blank in the surface after any pass in which no title
+    // repainted, with no damage to say so, until the next whole blit of the
+    // window put the blank on the screen.
+    if (ctx.damaged) {
+        ctx.surface.fill(area, t.surface);
+        ctx.surface.fill(.{ .x = area.x, .y = area.bottom() - 1, .w = area.w, .h = 1 }, t.line);
+        ctx.addDamage(area);
+    }
 
     var chosen: ?u16 = null;
     const before = state.shown;
@@ -384,4 +394,51 @@ fn widest(menu: Menu) i32 {
         out = @max(out, w);
     }
     return out;
+}
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+const testing = std.testing;
+
+/// How many pixels of `area` are in `colour`.
+fn tally(pixels: []const draw.Color, width: usize, area: Rect, colour: draw.Color) usize {
+    var found: usize = 0;
+    var y: usize = @intCast(area.y);
+    while (y < @as(usize, @intCast(area.bottom()))) : (y += 1) {
+        var x: usize = @intCast(area.x);
+        while (x < @as(usize, @intCast(area.right()))) : (x += 1) {
+            if (pixels[y * width + x].eql(colour)) found += 1;
+        }
+    }
+    return found;
+}
+
+test "a pass that repaints no title leaves the titles in the surface" {
+    draw.ui_font = &@import("lib").font.spleen_8x16;
+    const W = 200;
+    const H = 30;
+    var pixels: [W * H]draw.Color = @splat(.{});
+    var ctx = widget.Context.init(Surface.init(&pixels, W, H, W));
+    var state = State{};
+    const menus = [_]Menu{.{ .label = "File", .items = &.{} }};
+    const area = Rect{ .x = 0, .y = 0, .w = W, .h = H };
+    const ink = theme.current().text;
+
+    // The first pass paints the window whole, titles included.
+    ctx.damageNow();
+    ctx.begin(-1, -1, .{});
+    _ = run(&ctx, area, &state, &menus);
+    ctx.end();
+    const lettered = tally(&pixels, W, area, ink);
+    try testing.expect(lettered > 0);
+
+    // A pass with the pointer elsewhere and nothing changed paints nothing,
+    // and the letters are where they were.
+    ctx.begin(-1, -1, .{});
+    _ = run(&ctx, area, &state, &menus);
+    ctx.end();
+    try testing.expectEqual(@as(usize, 0), ctx.damageList().len);
+    try testing.expectEqual(lettered, tally(&pixels, W, area, ink));
 }
