@@ -9,6 +9,11 @@
 //! shown over the picture while the button is held and put into it when the
 //! button comes up, so a rectangle can be aimed before it is kept. One step
 //! back is remembered, which is the step that was just taken.
+//!
+//! The window takes its place in the tiling like any other. The picture is
+//! always at its own size: a window with room for it centres it, and one
+//! without shows its top left corner rather than a squeezed copy, so what is
+//! drawn lands where the pointer is.
 
 const eui = @import("eui");
 const heap = @import("ulib").heap;
@@ -123,6 +128,10 @@ var size_index: usize = 0;
 /// held down.
 var stroke: ?struct { x: i32, y: i32, last_x: i32, last_y: i32 } = null;
 
+/// Where the pointer was over the picture, in its own pixels, or nothing
+/// when it was somewhere else. What the bar along the bottom reports.
+var pointer_at: ?struct { x: i32, y: i32 } = null;
+
 var dialog: proto.FileDialog = .{};
 var asking: proto.dialog.Purpose = .open;
 var path_storage: [256]u8 = @splat(0);
@@ -156,7 +165,6 @@ export fn _start() callconv(.c) noreturn {
         .draw = draw,
         .key = key,
         .event = own,
-        .opens = .floating,
     });
 }
 
@@ -166,7 +174,7 @@ fn wanted() struct { w: u16, h: u16 } {
     const t = theme.current();
     return .{
         .w = @intCast(WIDE + railWidth() + t.padding * 3),
-        .h = @intCast(theme.stripHeight() + HIGH + paletteHeight() + t.padding * 3),
+        .h = @intCast(theme.stripHeight() + HIGH + paletteHeight() + eui.statusbar.height() + t.padding * 3),
     };
 }
 
@@ -190,7 +198,7 @@ fn draw() void {
     const whole = Rect{ .x = 0, .y = 0, .w = surface.width, .h = surface.height };
     if (ctx.damaged) surface.fill(whole, t.surface);
 
-    const parts = eui.chrome.split(whole, .{ .top = true });
+    const parts = eui.chrome.split(whole, .{ .top = true, .bottom = true });
     const body = parts.body;
 
     const strip = Rect{
@@ -216,6 +224,7 @@ fn draw() void {
         .h = strip.h,
     };
     picture(room);
+    bar(parts.bottom);
 
     // Last in the pass: an open menu hangs over the picture.
     if (eui.menubar.run(ctx, parts.top, &menus, &MENUS)) |id| {
@@ -293,36 +302,42 @@ fn palette(area: Rect) void {
             ctx.damage();
         }
     }
+}
 
-    if (status.len != 0) {
-        ctx.surface.text(
-            area.x + 8 * (side + 2) + t.padding,
-            area.y + @divTrunc(side * 2 - eui.Surface.textHeight(), 2),
-            status,
-            t.text_dim,
-        );
-    }
+/// What the picture is, where the pointer is on it, and what just happened.
+fn bar(area: Rect) void {
+    var at_text: [24]u8 = undefined;
+    const pointer = if (pointer_at) |on|
+        std.fmt.bufPrint(&at_text, "{d}, {d}", .{ on.x, on.y }) catch ""
+    else
+        "";
+
+    eui.statusbar.run(ctx, area, &.{
+        .{ .text = if (path_len > 0) path() else "untitled" },
+        .{ .text = status, .width = 128 },
+        .{ .text = pointer, .width = 72, .right = true },
+        .{ .text = std.fmt.comptimePrint("{d} x {d}", .{ WIDE, HIGH }), .width = 72, .right = true },
+    });
 }
 
 /// The picture, and the pointer over it.
 fn picture(room: Rect) void {
     const t = theme.current();
-    const shown = Rect{
-        .x = room.x + @divTrunc(room.w - WIDE, 2),
-        .y = room.y + @divTrunc(room.h - HIGH, 2),
-        .w = @min(@as(i32, WIDE), room.w),
-        .h = @min(@as(i32, HIGH), room.h),
-    };
-    // A sunken edge around it, so the paper is plainly a thing on a desk.
+    const at = placed(room);
+    const seen = room.intersect(at);
+    if (seen.w <= 0 or seen.h <= 0) return;
+
+    // A sunken edge around what is shown, so the paper is plainly a thing
+    // on a desk.
     ctx.surface.fillAround(
-        .{ .x = shown.x - 1, .y = shown.y - 1, .w = shown.w + 2, .h = shown.h + 2 },
-        shown,
+        .{ .x = seen.x - 1, .y = seen.y - 1, .w = seen.w + 2, .h = seen.h + 2 },
+        seen,
         t.line,
     );
 
-    hand(shown);
+    hand(at, seen);
 
-    eui.thumb.paint(ctx.surface, shown, .{
+    eui.thumb.paint(ctx.surface.clipped(seen), at, .{
         .pixels = pixels,
         .width = WIDE,
         .height = HIGH,
@@ -331,22 +346,37 @@ fn picture(room: Rect) void {
     // What the shape would be, over the picture rather than in it.
     if (stroke) |began| {
         if (tool.spans()) {
-            const now = pointerOn(shown);
-            const over = ctx.surface.clipped(shown);
-            preview(over, shown, began.x, began.y, now.x, now.y);
+            const now = pointerOn(at);
+            preview(seen, at, began.x, began.y, now.x, now.y);
         }
     }
 }
 
-/// Where the pointer is in the picture's own pixels.
-fn pointerOn(shown: Rect) struct { x: i32, y: i32 } {
-    return .{ .x = ctx.pointer_x - shown.x, .y = ctx.pointer_y - shown.y };
+/// Where the picture sits: at its own size, centred in the room when there
+/// is enough of it and against the top left when there is not.
+fn placed(room: Rect) Rect {
+    return .{
+        .x = room.x + @max(@divTrunc(room.w - WIDE, 2), 0),
+        .y = room.y + @max(@divTrunc(room.h - HIGH, 2), 0),
+        .w = WIDE,
+        .h = HIGH,
+    };
 }
 
-/// The stroke being made: begun, carried on, and finished.
-fn hand(shown: Rect) void {
-    const over = shown.contains(ctx.pointer_x, ctx.pointer_y);
-    const now = pointerOn(shown);
+/// Where the pointer is in the picture's own pixels.
+fn pointerOn(at: Rect) struct { x: i32, y: i32 } {
+    return .{ .x = ctx.pointer_x - at.x, .y = ctx.pointer_y - at.y };
+}
+
+/// The stroke being made: begun, carried on, and finished. A stroke starts
+/// only on the part of the picture that is shown, and goes on wherever the
+/// pointer takes it.
+fn hand(at: Rect, seen: Rect) void {
+    const over = seen.contains(ctx.pointer_x, ctx.pointer_y);
+    const now = pointerOn(at);
+    const told = pointer_at;
+    pointer_at = if (over or stroke != null) .{ .x = now.x, .y = now.y } else null;
+    if (!std.meta.eql(told, pointer_at)) ctx.damage();
 
     if (stroke == null and ctx.pressedThisPass() and over) {
         keep();
@@ -399,16 +429,25 @@ fn shape(into: raster.Canvas, from_x: i32, from_y: i32, to_x: i32, to_y: i32) vo
 }
 
 /// The shape as it would be, drawn into the window rather than the picture.
-/// The surface is the same kind of thing a canvas is: pixels in rows.
-fn preview(over: eui.Surface, shown: Rect, from_x: i32, from_y: i32, to_x: i32, to_y: i32) void {
-    const start = @as(usize, @intCast(shown.y)) * @as(usize, @intCast(over.stride)) + @as(usize, @intCast(shown.x));
-    const rows: usize = @intCast(@max(shown.h, 0));
-    const window = raster.Canvas{
-        .pixels = over.pixels[start .. start + rows * @as(usize, @intCast(over.stride))],
-        .width = @intCast(over.stride),
-        .height = @intCast(rows),
-    };
-    shape(window, from_x, from_y, to_x, to_y);
+/// The window's pixels are a canvas like any other, over rows wider than the
+/// part of the picture on show.
+fn preview(seen: Rect, at: Rect, from_x: i32, from_y: i32, to_x: i32, to_y: i32) void {
+    const surface = ctx.surface;
+    const span: usize = @intCast(surface.stride);
+    const start = @as(usize, @intCast(seen.y)) * span + @as(usize, @intCast(seen.x));
+    const rows: usize = @intCast(seen.h);
+    const window = raster.Canvas.over(
+        surface.pixels[start .. start + (rows - 1) * span + @as(usize, @intCast(seen.w))],
+        @intCast(seen.w),
+        @intCast(seen.h),
+        @intCast(span),
+    );
+
+    // The view begins at the corner of the picture that is on show, so the
+    // shape is drawn in the picture's own coordinates less that corner.
+    const across = seen.x - at.x;
+    const down = seen.y - at.y;
+    shape(window, from_x - across, from_y - down, to_x - across, to_y - down);
 }
 
 // ---------------------------------------------------------------------------
