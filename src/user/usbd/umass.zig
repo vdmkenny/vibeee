@@ -196,7 +196,7 @@ fn complain(what: []const u8) bool {
 fn ready(disk: *Disk) bool {
     var attempts: u8 = 0;
     while (attempts < 10) : (attempts += 1) {
-        if (command(disk, scsi.testUnitReady(), .out, &.{})) |verdict| {
+        if (command(disk, scsi.testUnitReady(), .out, &.{}, null)) |verdict| {
             if (verdict == .passed) break;
             const why = sense(disk);
             if (why.mediumGone()) return complain("no medium in the unit");
@@ -208,14 +208,14 @@ fn ready(disk: *Disk) bool {
     } else return complain("the unit will not come ready");
 
     var told: [scsi.Inquiry.BYTES]u8 = @splat(0);
-    if (command(disk, scsi.inquiry(told.len), .in, &told)) |verdict| {
+    if (command(disk, scsi.inquiry(told.len), .in, &told, null)) |verdict| {
         if (verdict == .passed) {
             if (scsi.Inquiry.parse(&told)) |answer| disk.inquiry = answer;
         }
     } else |_| {}
 
     var size: [scsi.Capacity.BYTES]u8 = @splat(0);
-    const verdict = command(disk, scsi.readCapacity(), .in, &size) catch
+    const verdict = command(disk, scsi.readCapacity(), .in, &size, null) catch
         return complain("the unit will not say how big it is");
     if (verdict != .passed) {
         _ = sense(disk);
@@ -228,7 +228,7 @@ fn ready(disk: *Disk) bool {
 
 fn sense(disk: *Disk) scsi.SenseData {
     var told: [scsi.SenseData.BYTES]u8 = @splat(0);
-    if (command(disk, scsi.requestSense(told.len), .in, &told)) |verdict| {
+    if (command(disk, scsi.requestSense(told.len), .in, &told, null)) |verdict| {
         if (verdict == .passed) {
             if (scsi.SenseData.parse(&told)) |answer| {
                 disk.sense = answer;
@@ -261,23 +261,26 @@ fn sectorsPerCommand(disk: *const Disk) u32 {
     return @max(limit / size, 1);
 }
 
-pub fn read(disk: *Disk, lba: u64, into: []u8) Error!void {
-    try move(disk, lba, into, false);
+/// `phys` is where the buffer is in physical memory when a controller can
+/// be pointed at it, and null for a buffer the controller has to be handed
+/// through its own.
+pub fn read(disk: *Disk, lba: u64, into: []u8, phys: ?u32) Error!void {
+    try move(disk, lba, into, phys, false);
 }
 
-pub fn write(disk: *Disk, lba: u64, from: []u8) Error!void {
-    try move(disk, lba, from, true);
+pub fn write(disk: *Disk, lba: u64, from: []u8, phys: ?u32) Error!void {
+    try move(disk, lba, from, phys, true);
 }
 
 /// Commit whatever the device is holding. A device that refuses is a
 /// device that was holding nothing, which is the documented behaviour of
 /// the cheap readers and not an error to report.
 pub fn flush(disk: *Disk) void {
-    _ = command(disk, scsi.synchronizeCache(), .out, &.{}) catch {};
+    _ = command(disk, scsi.synchronizeCache(), .out, &.{}, null) catch {};
 }
 
 /// Whole sectors, one command for each bulk transfer's worth.
-fn move(disk: *Disk, lba: u64, buffer: []u8, writing: bool) Error!void {
+fn move(disk: *Disk, lba: u64, buffer: []u8, phys: ?u32, writing: bool) Error!void {
     const size = @max(disk.sectorBytes(), 1);
     if (buffer.len % size != 0) return Error.Refused;
     if (lba + buffer.len / size > disk.sectors()) return Error.Refused;
@@ -287,13 +290,14 @@ fn move(disk: *Disk, lba: u64, buffer: []u8, writing: bool) Error!void {
     while (done < buffer.len) {
         const length: usize = @min(most, buffer.len - done);
         const piece = buffer[done..][0..length];
-        try moveOnce(disk, lba + done / size, @intCast(length / size), piece, writing);
+        const piece_phys: ?u32 = if (phys) |base| base + @as(u32, @intCast(done)) else null;
+        try moveOnce(disk, lba + done / size, @intCast(length / size), piece, piece_phys, writing);
         done += length;
     }
 }
 
 /// One read or write command, no longer than one bulk transfer.
-fn moveOnce(disk: *Disk, lba: u64, sectors: u16, piece: []u8, writing: bool) Error!void {
+fn moveOnce(disk: *Disk, lba: u64, sectors: u16, piece: []u8, piece_phys: ?u32, writing: bool) Error!void {
     const at_lba: u32 = @intCast(lba);
     const block = if (writing) scsi.write10(at_lba, sectors) else scsi.read10(at_lba, sectors);
 
@@ -302,6 +306,7 @@ fn moveOnce(disk: *Disk, lba: u64, sectors: u16, piece: []u8, writing: bool) Err
         block,
         if (writing) .out else .in,
         piece,
+        piece_phys,
     ) catch |err| return switch (err) {
         hc.Error.Timeout => Error.Gone,
         else => Error.Confused,
@@ -325,6 +330,7 @@ fn command(
     block: scsi.Block,
     direction: scsi.Direction,
     data: []u8,
+    data_phys: ?u32,
 ) hc.Error!scsi.Verdict {
     disk.tag +%= 1;
     const tag = disk.tag;
@@ -332,11 +338,11 @@ fn command(
     var wrapper = scsi.Command.wrap(tag, disk.unit, direction, @intCast(data.len), block.slice());
     var wire: [scsi.Command.BYTES]u8 = @splat(0);
     @memcpy(&wire, std.mem.asBytes(&wrapper)[0..scsi.Command.BYTES]);
-    _ = try disk.ops.bulk(&disk.writing, &wire);
+    _ = try disk.ops.bulk(&disk.writing, &wire, null);
 
     if (data.len != 0) {
         const pipe = if (direction == .in) &disk.reading else &disk.writing;
-        _ = disk.ops.bulk(pipe, data) catch |err| {
+        _ = disk.ops.bulk(pipe, data, data_phys) catch |err| {
             // A stalled data pipe is the device saying no to this
             // command, not the end of the conversation: clear the halt
             // and the status wrapper still explains itself.
@@ -356,7 +362,7 @@ fn status(disk: *Disk, tag: u32) hc.Error!scsi.Verdict {
 
     var attempt: u8 = 0;
     while (attempt < 2) : (attempt += 1) {
-        if (disk.ops.bulk(&disk.reading, &wire)) |moved| {
+        if (disk.ops.bulk(&disk.reading, &wire, null)) |moved| {
             if (moved < scsi.Status.BYTES) continue;
             const answer = scsi.Status.parse(&wire) orelse break;
             if (!answer.answers(tag)) break;

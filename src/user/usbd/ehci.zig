@@ -295,10 +295,15 @@ const WATCHES = 8;
 /// protocol reports are eight bytes and fit many times over.
 const REPORT_BYTES = 512;
 
-/// The largest bulk transfer carried in one go. A transfer descriptor
-/// addresses five pages, so one descriptor covers this whole buffer and
-/// a bulk transfer is always a single descriptor.
-const BULK_BYTES = 16 * 1024;
+/// The largest bulk transfer carried in one command: a chain of descriptors
+/// over memory the controller is pointed at, a slot of the volume bridge
+/// above all.
+const BULK_BYTES = 64 * 1024;
+const BULK_DESCRIPTORS = BULK_BYTES / transfer.PER_DESCRIPTOR;
+
+/// What a caller without such memory may send in one go, bounced through
+/// the arena: a mass-storage wrapper or status, a run of serial bytes.
+const BOUNCE_BYTES = 4096;
 
 /// The largest answer a device gives during enumeration. A configuration
 /// with every descriptor it carries fits comfortably; anything longer is
@@ -317,9 +322,9 @@ const Arena = extern struct {
     /// request-and-answer, and a second request waits for the first.
     bulk: QueueHead align(64) = .{},
     stages: [STAGES]Transfer align(32) = @splat(.{}),
-    payload: Transfer align(32) = .{},
+    payload: [BULK_DESCRIPTORS]Transfer align(32) = @splat(.{}),
     buffer: [BUFFER_BYTES]u8 align(4096) = @splat(0),
-    bulk_buffer: [BULK_BYTES]u8 align(4096) = @splat(0),
+    bulk_buffer: [BOUNCE_BYTES]u8 align(4096) = @splat(0),
     /// One head and one descriptor per watched endpoint, chained into
     /// every frame so the controller visits them once a millisecond.
     watches: [WATCHES]QueueHead align(64) = @splat(.{}),
@@ -600,24 +605,32 @@ fn reclaim(head: *volatile QueueHead) void {
     scheduleRunning(.asynchronous, true);
 }
 
-fn bulk(pipe: *usb.Pipe, data: []u8) hc.Error!usize {
+fn bulk(pipe: *usb.Pipe, data: []u8, phys: ?u32) hc.Error!usize {
     if (!controller.opened) return hc.Error.Refused;
     if (data.len > BULK_BYTES) return hc.Error.Refused;
 
     const arena = controller.arena.at;
     const writing = pipe.direction == .out;
-    if (writing and data.len != 0) {
-        @memcpy(@as([*]u8, @ptrCast(@volatileCast(&arena.bulk_buffer)))[0..data.len], data);
-    }
 
-    arena.payload = (describe(
+    // Memory the controller can be pointed at is used where it is; anything
+    // else is bounced through the arena.
+    const at: u32 = phys orelse blk: {
+        if (data.len > BOUNCE_BYTES) return hc.Error.Refused;
+        if (writing and data.len != 0) {
+            @memcpy(@as([*]u8, @ptrCast(@volatileCast(&arena.bulk_buffer)))[0..data.len], data);
+        }
+        break :blk controller.arena.physOf("bulk_buffer");
+    };
+
+    const count = transfer.chain(
+        (&arena.payload)[0..],
+        controller.arena.physOf("payload"),
         if (writing) .out else .in,
         pipe.toggle,
-        controller.arena.physOf("bulk_buffer"),
-        @intCast(data.len),
-        true,
-    )) orelse return hc.Error.Refused;
-    arena.payload.next = Link.none;
+        pipe.max_packet,
+        at,
+        data.len,
+    ) orelse return hc.Error.Refused;
 
     feed(&arena.bulk, .{
         .address = pipe.address,
@@ -628,10 +641,10 @@ fn bulk(pipe: *usb.Pipe, data: []u8) hc.Error!usize {
         .reload = 4,
     }, reach(pipe.*), controller.arena.physOf("payload"));
 
-    const moved = try awaitPayload(data.len);
+    const moved = try awaitPayload(count, data.len);
     pipe.advance(moved);
 
-    if (!writing and moved != 0) {
+    if (!writing and phys == null and moved != 0) {
         const from: [*]const u8 = @ptrCast(@volatileCast(&arena.bulk_buffer));
         @memcpy(data[0..moved], from[0..moved]);
     }
@@ -640,15 +653,14 @@ fn bulk(pipe: *usb.Pipe, data: []u8) hc.Error!usize {
 
 /// Wait for the one descriptor a bulk transfer uses, on the controller's
 /// interrupt rather than on the clock.
-fn awaitPayload(asked: usize) hc.Error!usize {
+fn awaitPayload(count: usize, asked: usize) hc.Error!usize {
     defer releasePorts();
     const arena = controller.arena.at;
-    const payload = (&arena.payload)[0..1];
+    const payload = (&arena.payload)[0..count];
 
     var waited_us: u32 = 0;
     const DEADLINE_US: u32 = 5_000_000;
     while (waited_us < DEADLINE_US) {
-        // A rebuild discards the schedule the payload was on.
         if (rest() == .reborn) return hc.Error.Refused;
         waited_us += REST_US;
         if (transfer.settled(Barrier, payload)) break;

@@ -310,8 +310,10 @@ fn send(which: serial.Which, bytes: []u8) usize {
 
     var moved: usize = 0;
     while (moved < bytes.len) {
-        const take = @min(bytes.len - moved, limit);
-        const sent = device.ops.bulk(&device.writing, bytes[moved..][0..take]) catch break;
+        // From this driver's own memory, which the controller bounces: a
+        // high speed packet at a time.
+        const take = @min(bytes.len - moved, @min(limit, 512));
+        const sent = device.ops.bulk(&device.writing, bytes[moved..][0..take], null) catch break;
         moved += sent;
         if (sent < take) break;
     }
@@ -319,7 +321,7 @@ fn send(which: serial.Which, bytes: []u8) usize {
     const packet = @max(device.writing.max_packet, 1);
     if (moved != 0 and moved % packet == 0) {
         var nothing: [0]u8 = .{};
-        _ = device.ops.bulk(&device.writing, &nothing) catch {};
+        _ = device.ops.bulk(&device.writing, &nothing, null) catch {};
     }
     return moved;
 }

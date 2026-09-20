@@ -224,6 +224,8 @@ pub fn attach(server: u32, name: []const u8, info: *Attach) Error!usize {
 
     info.slots = DEPTH;
     info.slot_bytes = SLOT_BYTES;
+    // Contiguous by construction, so the first frame places every slot.
+    info.data_phys = @intCast(data.frames[0]);
     return index;
 }
 

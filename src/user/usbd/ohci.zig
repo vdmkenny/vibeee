@@ -46,10 +46,16 @@ const WATCH_SLOTS = 2;
 const WATCHES = 8;
 /// A full speed interrupt endpoint's largest packet.
 const REPORT_BYTES = 64;
-/// The largest control answer, and the largest bulk transfer this driver
-/// carries in one call.
+/// The largest control answer.
 const CONTROL_BYTES = 1024;
-const BULK_BYTES = 4096;
+/// The largest bulk transfer carried in one call, a descriptor at a time
+/// over memory the controller is pointed at.
+const BULK_BYTES = 64 * 1024;
+/// What a caller without such memory may send in one go, bounced through
+/// the arena.
+const BOUNCE_BYTES = 4096;
+/// A descriptor spans two pages: eight kilobytes from a page boundary.
+const DIRECT_RUN = 8192;
 
 const Arena = extern struct {
     hcca: ohci.Hcca align(4096) = .{},
@@ -61,7 +67,7 @@ const Arena = extern struct {
     watch_tds: [WATCHES][WATCH_SLOTS]ohci.Transfer align(16) = @splat(@splat(.{})),
     setup: [usb.Setup.BYTES]u8 = @splat(0),
     control_buffer: [CONTROL_BYTES]u8 = @splat(0),
-    bulk_buffer: [BULK_BYTES]u8 = @splat(0),
+    bulk_buffer: [BOUNCE_BYTES]u8 = @splat(0),
     reports: [WATCHES][REPORT_BYTES]u8 = @splat(@splat(0)),
 };
 
@@ -515,31 +521,34 @@ pub fn control(self: *Unit, pipe: usb.Pipe, setup: usb.Setup, data: []u8) hc.Err
     return taken;
 }
 
-pub fn bulk(self: *Unit, pipe: *usb.Pipe, data: []u8) hc.Error!usize {
+pub fn bulk(self: *Unit, pipe: *usb.Pipe, data: []u8, phys: ?u32) hc.Error!usize {
     if (!self.opened) return hc.Error.Refused;
     if (data.len > BULK_BYTES) return hc.Error.Refused;
-    if (pipe.direction == .in) return carry(self, pipe, data);
+    if (phys == null and data.len > BOUNCE_BYTES) return hc.Error.Refused;
 
     var sent: usize = 0;
     while (true) {
-        const run = queue.runBytes(data.len - sent, pipe.max_packet);
-        const moved = try carry(self, pipe, data[sent..][0..run]);
+        const left = data.len - sent;
+        const most: usize = if (phys != null) DIRECT_RUN else BOUNCE_BYTES;
+        const run = if (pipe.direction == .in) @min(left, most) else queue.runBytes(left, pipe.max_packet);
+        const piece_phys: ?u32 = if (phys) |at| at + @as(u32, @intCast(sent)) else null;
+        const moved = try carry(self, pipe, data[sent..][0..run], piece_phys);
         sent += moved;
         if (moved < run or sent == data.len) return sent;
     }
 }
 
 /// One bulk transfer, as one descriptor.
-fn carry(self: *Unit, pipe: *usb.Pipe, data: []u8) hc.Error!usize {
+fn carry(self: *Unit, pipe: *usb.Pipe, data: []u8, phys: ?u32) hc.Error!usize {
     const arena = self.arena.at;
     const writing = pipe.direction == .out;
-    if (writing) @memcpy(self.arena.at.bulk_buffer[0..data.len], data);
+    if (writing and phys == null) @memcpy(self.arena.at.bulk_buffer[0..data.len], data);
 
     aim(&arena.bulk, pipe.*, pipe.number);
     if (!self.bulk.append(&.{.{
         .pid = if (writing) .out else .in,
         .toggle = toggle(pipe.toggle),
-        .buffer = self.arena.physOf("bulk_buffer"),
+        .buffer = phys orelse self.arena.physOf("bulk_buffer"),
         .length = @intCast(data.len),
         .short_ok = !writing,
     }})) return hc.Error.Refused;
@@ -547,7 +556,7 @@ fn carry(self: *Unit, pipe: *usb.Pipe, data: []u8) hc.Error!usize {
 
     const moved = @min(try finish(self, &self.bulk, &arena.bulk, 0, BULK_PATIENCE_US), data.len);
     pipe.advance(moved);
-    if (!writing) @memcpy(data[0..moved], self.arena.at.bulk_buffer[0..moved]);
+    if (!writing and phys == null) @memcpy(data[0..moved], self.arena.at.bulk_buffer[0..moved]);
     return moved;
 }
 

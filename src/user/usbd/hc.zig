@@ -88,7 +88,10 @@ pub const HcOps = struct {
     /// One bulk transfer on an open pipe, in whichever direction the pipe
     /// runs. The pipe's toggle is advanced by what actually moved, so a
     /// short answer leaves it where the device thinks it is.
-    bulk: *const fn (pipe: *usb.Pipe, data: []u8) Error!usize,
+    /// `phys` is the data's physical address when the controller can be
+    /// pointed at it, and null for data it has to be handed through a
+    /// buffer of its own, which carries less.
+    bulk: *const fn (pipe: *usb.Pipe, data: []u8, phys: ?u32) Error!usize,
     /// The largest bulk transfer this controller will carry in one go.
     /// A driver moving more than this splits it and keeps its own place.
     bulkLimit: *const fn () usize,
@@ -194,8 +197,8 @@ fn Bound(comptime Driver: type, comptime unit: usize) type {
         fn control(pipe: usb.Pipe, setup: usb.Setup, data: []u8) Error!usize {
             return Driver.control(self, pipe, setup, data);
         }
-        fn bulk(pipe: *usb.Pipe, data: []u8) Error!usize {
-            return Driver.bulk(self, pipe, data);
+        fn bulk(pipe: *usb.Pipe, data: []u8, phys: ?u32) Error!usize {
+            return Driver.bulk(self, pipe, data, phys);
         }
         fn bulkLimit() usize {
             return Driver.bulkLimit(self);

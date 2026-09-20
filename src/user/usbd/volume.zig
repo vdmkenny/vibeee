@@ -32,6 +32,9 @@ pub const Offer = struct {
     doorbell: u32 = 0,
     area: [*]u8 = undefined,
     area_len: usize = 0,
+    /// Where the area is in physical memory, for a controller to be pointed
+    /// at a slot.
+    area_phys: u32 = 0,
     name: [8]u8 = @splat(0),
     name_len: u8 = 0,
 
@@ -79,6 +82,7 @@ pub fn offer(disk: *umass.Disk) bool {
         .doorbell = @intCast(info.doorbell),
         .area = area,
         .area_len = info.slots * info.slot_bytes,
+        .area_phys = info.data_phys,
         .name = slot.name,
         .name_len = slot.name_len,
     };
@@ -172,9 +176,10 @@ fn carry(slot: *Offer, disk: *umass.Disk, request: abi.Request) Answer {
     if (at + bytes > slot.area_len) return .{ .status = .io_error, .sectors = 0 };
 
     const window = slot.area[at..][0..bytes];
+    const window_phys = slot.area_phys + @as(u32, @intCast(at));
     const result = switch (request.op) {
-        .read => umass.read(disk, request.lba, window),
-        .write => umass.write(disk, request.lba, window),
+        .read => umass.read(disk, request.lba, window, window_phys),
+        .write => umass.write(disk, request.lba, window, window_phys),
         .flush => unreachable,
     };
 

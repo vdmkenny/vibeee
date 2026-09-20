@@ -22,9 +22,10 @@ pub const MAX_VOLUMES = 4;
 /// the shared area stays small.
 pub const DEPTH = 4;
 
-/// The largest transfer one request carries. A longer read is split by
+/// The largest transfer one request carries, and so what one mass-storage
+/// command moves: a copy is a command per slot. A longer read is split by
 /// the kernel rather than by whatever asked for it.
-pub const SLOT_BYTES = 16 * 1024;
+pub const SLOT_BYTES = 64 * 1024;
 
 /// What the server is asked to do.
 pub const Op = enum(u8) {
@@ -79,11 +80,14 @@ pub const Attach = extern struct {
     data: i32 = -1,
     slots: u32 = 0,
     slot_bytes: u32 = 0,
+    /// Where the slots are in physical memory, so the server can point a
+    /// controller at a slot rather than copy through a buffer of its own.
+    data_phys: u32 = 0,
 };
 
 comptime {
     if (@sizeOf(Request) != 24) @compileError("a volume request is twenty-four bytes");
-    if (@sizeOf(Attach) != 32) @compileError("a volume attachment is thirty-two bytes");
+    if (@sizeOf(Attach) != 36) @compileError("a volume attachment is thirty-six bytes");
 }
 
 test "a request is laid out the way both sides read it" {

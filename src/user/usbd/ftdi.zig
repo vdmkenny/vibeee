@@ -297,8 +297,10 @@ fn send(which: serial.Which, bytes: []u8) usize {
 
     var moved: usize = 0;
     while (moved < bytes.len) {
-        const take = @min(bytes.len - moved, limit);
-        const sent = port.ops.bulk(&port.writing, bytes[moved..][0..take]) catch break;
+        // From this driver's own memory, which the controller bounces: a
+        // high speed packet at a time.
+        const take = @min(bytes.len - moved, @min(limit, 512));
+        const sent = port.ops.bulk(&port.writing, bytes[moved..][0..take], null) catch break;
         moved += sent;
         if (sent < take) break;
     }

@@ -316,6 +316,10 @@ const REPORT_BYTES = 64;
 /// the longest answer either can give.
 const CHAIN = BUFFER_BYTES / 8 + STAGES;
 
+/// The largest bulk transfer: what the chain carries in full speed packets,
+/// in whole sectors so that a disk command is whole sectors.
+const BULK_BYTES = (CHAIN * 64 / 512) * 512;
+
 const Arena = extern struct {
     /// The frame list: a thousand and twenty-four entries the controller
     /// walks one per millisecond, every one pointing at the same place.
@@ -685,13 +689,12 @@ fn packets(
     at: usize,
     pid: Pid,
     pipe: Aim,
-    offset: u32,
+    base: u32,
     bytes: usize,
     toggle: *bool,
 ) usize {
     const arena = self.controller.arena.at;
     const size: usize = @max(@min(pipe.max_packet, 64), 1);
-    const base = self.controller.arena.physOf("buffer") + offset;
 
     var used: usize = 0;
     var done: usize = 0;
@@ -769,13 +772,14 @@ pub fn control(self: *Unit, pipe: usb.Pipe, setup: usb.Setup, data: []u8) hc.Err
     // alternates, and the status stage is always DATA1.
 
     var toggle = false;
-    var used = packets(self, 0, .setup, endpoint, 0, usb.Setup.BYTES, &toggle);
+    const buffer = self.controller.arena.physOf("buffer");
+    var used = packets(self, 0, .setup, endpoint, buffer, usb.Setup.BYTES, &toggle);
 
     var data_at: usize = 0;
     if (wants_data) {
         toggle = true;
         data_at = used;
-        used += packets(self, used, if (reading) .in else .out, endpoint, usb.Setup.BYTES, data.len, &toggle);
+        used += packets(self, used, if (reading) .in else .out, endpoint, buffer + usb.Setup.BYTES, data.len, &toggle);
     }
 
     toggle = true;
@@ -813,25 +817,32 @@ pub fn control(self: *Unit, pipe: usb.Pipe, setup: usb.Setup, data: []u8) hc.Err
 }
 
 pub fn bulkLimit(_: *Unit) usize {
-    return BUFFER_BYTES;
+    return BULK_BYTES;
 }
 
 pub fn watchLimit(_: *Unit) usize {
     return REPORT_BYTES;
 }
 
-pub fn bulk(self: *Unit, pipe: *usb.Pipe, data: []u8) hc.Error!usize {
+pub fn bulk(self: *Unit, pipe: *usb.Pipe, data: []u8, phys: ?u32) hc.Error!usize {
     if (!self.controller.opened) return hc.Error.Refused;
-    if (data.len > BUFFER_BYTES) return hc.Error.Refused;
+    if (data.len > BULK_BYTES) return hc.Error.Refused;
 
     const arena = self.controller.arena.at;
     const writing = pipe.direction == .out;
-    if (writing and data.len != 0) {
-        @memcpy(@as([*]u8, @ptrCast(@volatileCast(&arena.buffer)))[0..data.len], data);
-    }
 
-    // The same for a bulk transfer: one longer than the descriptor chain
-    // can carry is refused, not sent with the tail quietly missing.
+    // Memory the controller can be pointed at is used where it is; anything
+    // else is bounced through the arena's buffer.
+    const base: u32 = phys orelse blk: {
+        if (data.len > BUFFER_BYTES) return hc.Error.Refused;
+        if (writing and data.len != 0) {
+            @memcpy(@as([*]u8, @ptrCast(@volatileCast(&arena.buffer)))[0..data.len], data);
+        }
+        break :blk self.controller.arena.physOf("buffer");
+    };
+
+    // One longer than the descriptor chain can carry is refused, not sent
+    // with the tail quietly missing.
     if (packetsFor(pipe.max_packet, data.len) > CHAIN) return hc.Error.Refused;
 
     var toggle = pipe.toggle;
@@ -840,7 +851,7 @@ pub fn bulk(self: *Unit, pipe: *usb.Pipe, data: []u8) hc.Error!usize {
         .endpoint = pipe.number,
         .low_speed = pipe.speed == .low,
         .max_packet = pipe.max_packet,
-    }, 0, data.len, &toggle);
+    }, base, data.len, &toggle);
 
     queue(self, used);
     try settle(self, used, 5_000_000);
@@ -850,7 +861,7 @@ pub fn bulk(self: *Unit, pipe: *usb.Pipe, data: []u8) hc.Error!usize {
     moved = @min(moved, data.len);
 
     pipe.advance(moved);
-    if (!writing and moved != 0) {
+    if (!writing and phys == null and moved != 0) {
         const from: [*]const u8 = @ptrCast(@volatileCast(&arena.buffer));
         @memcpy(data[0..moved], from[0..moved]);
     }

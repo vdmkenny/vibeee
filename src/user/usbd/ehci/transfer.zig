@@ -152,7 +152,9 @@ pub fn settled(comptime Barrier: type, stages: []const volatile Transfer) bool {
 
 /// The stage whose bytes a result counts, and how many it was armed with.
 pub const Counted = struct {
-    stage: usize = 0,
+    /// Which stage's bytes count, or null for every stage's: a bulk chain
+    /// is one transfer over all of them.
+    stage: ?usize = null,
     asked: usize,
 };
 
@@ -169,16 +171,56 @@ pub const Result = union(enum) {
 /// Read `stages` in order. The first that is not done decides; when all are,
 /// the bytes of the stage `counted` names.
 pub fn result(comptime Barrier: type, stages: []const volatile Transfer, counted: ?Counted) Result {
-    var moved: usize = 0;
+    var remaining: usize = 0;
     for (stages, 0..) |*stage, index| {
         Barrier.consume();
         const token = stage.token;
         if (token.status.failed()) return .failed;
         if (token.status.active) return .unfinished;
         const count = counted orelse continue;
-        if (count.stage == index) moved = count.asked -| token.bytes;
+        if (count.stage == null or count.stage.? == index) remaining += token.bytes;
     }
-    return .{ .moved = moved };
+    const count = counted orelse return .{ .moved = 0 };
+    return .{ .moved = count.asked -| remaining };
+}
+
+/// What one descriptor of a chain covers: four pages, so a chain over
+/// page-aligned memory is page-aligned descriptors, each with every pointer
+/// but the fifth in use.
+pub const PER_DESCRIPTOR: usize = 4 * PAGE;
+
+/// A chain of descriptors over `bytes` at physical address `at`, linked in
+/// order into `into`, whose own physical address is `into_phys`. The
+/// interrupt is on the last; each descriptor's toggle is the one the
+/// packets before it leave. Null when the chain has no room.
+pub fn chain(
+    into: []volatile Transfer,
+    into_phys: u32,
+    pid: Pid,
+    toggle: bool,
+    max_packet: u16,
+    at: u32,
+    bytes: usize,
+) ?usize {
+    const size: usize = @max(max_packet, 1);
+    var covered: usize = 0;
+    var count: usize = 0;
+    var flipped = false;
+    while (count == 0 or covered < bytes) {
+        if (count == into.len) return null;
+        const take = @min(bytes - covered, PER_DESCRIPTOR);
+        const last = covered + take >= bytes;
+        const stage = spanning(pid, toggle != flipped, at + @as(u32, @intCast(covered)), take, last) orelse return null;
+        into[count] = stage;
+        if (count > 0) {
+            into[count - 1].next = Link.to(into_phys + @as(u32, @intCast(count)) * @sizeOf(Transfer), .isochronous);
+        }
+        if (((take + size - 1) / size) % 2 == 1) flipped = !flipped;
+        covered += take;
+        count += 1;
+        if (bytes == 0) break;
+    }
+    return count;
 }
 
 // ---------------------------------------------------------------------------
@@ -258,6 +300,51 @@ test "a descriptor fills every page pointer the transfer reaches" {
 
     // Nothing to move names no page.
     try testing.expectEqual([5]u32{ 0, 0, 0, 0, 0 }, spanning(.in, false, 0x10000, 0, false).?.pages);
+}
+
+test "a chain covers a transfer in page-aligned descriptors, linked, the interrupt on the last" {
+    var stages: [4]Transfer = undefined;
+    const count = chain(&stages, 0x2000, .in, false, 512, 0x10000, 64 * 1024).?;
+    try testing.expectEqual(@as(usize, 4), count);
+    for (stages, 0..) |stage, i| {
+        const base: u32 = 0x10000 + @as(u32, @intCast(i)) * 16 * 1024;
+        try testing.expectEqual(@as(u15, 16 * 1024), stage.token.bytes);
+        try testing.expectEqual([5]u32{ base, base + 0x1000, base + 0x2000, base + 0x3000, 0 }, stage.pages);
+        try testing.expectEqual(i == 3, stage.token.interrupt);
+        try testing.expect(!stage.token.toggle);
+        if (i < 3) {
+            try testing.expectEqual(Link.to(0x2000 + (@as(u32, @intCast(i)) + 1) * 64, .isochronous), stage.next);
+        } else {
+            try testing.expect(stage.next.terminate);
+        }
+    }
+
+    // Fewer bytes are fewer descriptors, the last one short; and the
+    // toggle a descriptor starts with is the one an even run of packets
+    // leaves, which for these sizes is the one it began with.
+    const short = chain(&stages, 0x2000, .out, true, 512, 0x10000, 20_000).?;
+    try testing.expectEqual(@as(usize, 2), short);
+    try testing.expectEqual(@as(u15, 16 * 1024), stages[0].token.bytes);
+    try testing.expectEqual(@as(u15, 20_000 - 16 * 1024), stages[1].token.bytes);
+    try testing.expect(stages[0].token.toggle and stages[1].token.toggle);
+    try testing.expect(!stages[0].token.interrupt and stages[1].token.interrupt);
+
+    // An odd run of packets flips the toggle of the descriptor after it.
+    var two: [2]Transfer = undefined;
+    _ = chain(&two, 0x2000, .out, false, 5, 0x10000, 16 * 1024 + 5).?;
+    try testing.expect(!two[0].token.toggle);
+    try testing.expect(two[1].token.toggle);
+
+    // More than the chain holds is refused; nothing to move is one
+    // descriptor carrying the interrupt.
+    try testing.expect(chain(&stages, 0x2000, .in, false, 512, 0x10000, 64 * 1024 + 1) == null);
+    try testing.expectEqual(@as(usize, 1), chain(&stages, 0x2000, .out, false, 512, 0x10000, 0).?);
+    try testing.expect(stages[0].token.interrupt);
+}
+
+test "a chain's bytes are counted over every stage" {
+    try testing.expectEqual(Result{ .moved = 1000 }, result(Plain, &.{ left(done, 0), left(done, 24) }, .{ .asked = 1024 }));
+    try testing.expectEqual(Result{ .moved = 512 }, result(Plain, &.{ left(done, 0), left(done, 512) }, .{ .asked = 1024 }));
 }
 
 test "a chain has settled once its last stage is done or failed" {
@@ -406,7 +493,7 @@ fn runChain(from: Choices) anyerror!void {
         .moved => |bytes| {
             if (controller.state == .halted) return fail("a chain with a failed stage was counted");
             if (controller.at != count) return fail("a chain was counted before the controller finished it");
-            const expected = if (counted) |which| controller.moved[which.stage].? else 0;
+            const expected = if (counted) |which| controller.moved[which.stage.?].? else 0;
             if (bytes != expected) return fail("a chain was counted at bytes the controller did not move");
         },
         .failed => if (controller.state != .halted) return fail("a chain with no failed stage was called failed"),
