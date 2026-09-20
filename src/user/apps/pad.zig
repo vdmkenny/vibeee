@@ -14,6 +14,7 @@ const eui = @import("eui");
 const proto = @import("proto");
 const sys = @import("sys");
 const str = @import("ulib").str;
+const file = @import("ulib").file;
 
 const theme = eui.theme;
 const Rect = eui.Rect;
@@ -30,6 +31,8 @@ const ctx = &proto.app.ctx;
 const connection = &proto.app.connection;
 
 var storage: [CAPACITY]u8 = undefined;
+/// What a file is read in: the size one request to a volume carries.
+var block: [file.BLOCK]u8 = undefined;
 var document: text.Buffer = undefined;
 var editor: text.Editor = .{};
 
@@ -266,10 +269,9 @@ fn open() void {
 
     document.clear();
     while (true) {
-        var chunk: [512]u8 = undefined;
-        const n = sys.read(handle, &chunk) catch break;
+        const n = sys.read(handle, &block) catch break;
         if (n == 0) break;
-        if (!document.insert(document.len, chunk[0..@intCast(n)])) {
+        if (!document.insert(document.len, block[0..@intCast(n)])) {
             status = "Only part of it fits.";
             break;
         }

@@ -12,12 +12,13 @@ const dir = @import("ulib").dir;
 const out = @import("ulib").out;
 const paths = @import("ulib").paths;
 const sys = @import("sys");
+const file = @import("ulib").file;
 const ustar = @import("ulib").ustar;
 const walk = @import("ulib").walk;
 
 /// How much is moved at once. A page, which is what the filesystem reads and
 /// writes in anyway. Beside the commands rather than on their frames.
-var block: [4096]u8 = undefined;
+var block: [file.BLOCK]u8 = undefined;
 
 /// One header, and the zeros an archive ends with.
 var header: ustar.Header = undefined;

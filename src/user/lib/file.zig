@@ -143,11 +143,13 @@ pub const CopyError = error{
     NoSpace,
 };
 
-/// How much is moved at once. A page, which is what the filesystem reads and
-/// writes in anyway, so a larger buffer would buy nothing but memory. Beside
-/// the function rather than on its frame: the user stack is thirty-two
+/// How much is read or written at once: what one request to a USB volume
+/// carries, so a copy is one mass-storage command per block rather than
+/// sixteen. The filesystem passes a run this long down whole. Beside the
+/// function rather than on its frame: the user stack is thirty-two
 /// kilobytes for everything.
-var block: [4096]u8 = undefined;
+pub const BLOCK = 64 * 1024;
+pub var block: [BLOCK]u8 = undefined;
 
 /// Copy the whole of one file onto another, creating it.
 ///
