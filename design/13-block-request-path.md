@@ -138,11 +138,24 @@ a reader that asks for small pieces of a large file is Pad alone.
 
 RAM, not image. Under half a megabyte with two volumes attached.
 
-## 5. Expected effect
+## 5. Effect
 
-Per MiB read through EHCI: commands 256 to 16, interrupts about 820 to about
-52, usbd wakes the same, kernel round trips 256 to 16, copies per byte 2 to
-1. Per 64 KiB written: 33 commands to 3. UHCI: 1,024 commands per MiB to 128.
+Measured in the emulator on a 4 MiB file and an EHCI stick: reading it took
+198 interrupts where it took 3,270, one command of 64 KiB per slot with its
+three transfers and nothing else; the copy back compared byte for byte.
+Per MiB read: commands 256 to 16, kernel round trips the same, copies per
+byte 2 to 1. UHCI: 1,024 commands per MiB to 128.
+
+A 64 KiB write is the data run, the table sector once per copy, and, on the
+call whose clusters cross a table sector boundary, that sector pair twice
+over: the table's cache holds one sector, and appending a cluster marks its
+end in the new sector and links it from the old, so at a boundary the cache
+moves twice per cluster and stores both copies at each move. With 4 KiB
+clusters a call touches 64 bytes of table and crosses a boundary once in
+eight calls. The stick the measurement used had one-sector clusters, a
+boundary on every call, and took 1,763 interrupts for the 4 MiB; a second
+cached sector would make the boundary cost one store per copy, and is the
+change to make if a card's clusters turn out that small.
 
 On the 701's reader, reads move from the command-bound 4 to 6 MB/s to the
 reader's own rate; writes from about 1 MB/s to what the card sustains.
