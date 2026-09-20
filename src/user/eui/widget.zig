@@ -773,8 +773,12 @@ pub const Context = struct {
         const activated = it.clicked or self.activatedByKey(entry);
 
         const visual: Visual = if (it.holding) .active else hotOr(it.over, .hot, .idle);
-        if (self.needsPaint(entry, visual)) {
+        // A label is part of the drawing, so a button repaints when its text
+        // changes and not only when the pointer state does.
+        const look = textMark(text);
+        if (self.needsPaint(entry, visual) or entry.detail != look) {
             entry.visual = visual;
+            entry.detail = look;
             paintButtonAs(self.surface, area, text, visual, it.focused, weight, .only);
             self.addDamage(area);
         }
@@ -2016,6 +2020,14 @@ pub const Fingerprint = struct {
         return @bitCast(self.value);
     }
 };
+
+/// The fingerprint of a piece of text, for a control that repaints on its own
+/// label changing.
+fn textMark(text: []const u8) i32 {
+    var mark = Fingerprint{};
+    mark.text(text);
+    return @bitCast(mark.value);
+}
 
 /// The fingerprint of one string, which is what a label needs.
 /// Everything a row draws, as one number. What is not here cannot make a row
