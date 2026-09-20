@@ -103,6 +103,7 @@ memory isolation, filesystems, interrupts and the capability boundary.
 | Pad | UTF-8 text editor with file dialogs |
 | Viewer | PNG, JPEG, BMP and GIF viewer with EXIF orientation and metadata |
 | Calc | Fixed-point calculator in a floating window |
+| Mines | Minesweeper on three grids, in a window sized to the grid |
 | Monitor | Process list, CPU and memory use, process termination |
 | Settings | Theme, display, input, audio, power and shortcut settings |
 

@@ -349,6 +349,7 @@ window, resizing, theme changes, draw pass and commit; a program supplies a draw
 | Files | [`user/efm/`](../src/user/efm/) | Two panes, a place button per mounted volume, F5 copy and F6 move (rename within a volume, copy and delete across volumes), new folder and delete with confirmation. F3 previews: thumbnail and EXIF for photos, head of text files, kind for anything else. Enter opens with the file's opener, or runs a program. |
 | Viewer | [`user/apps/eimg.zig`](../src/user/apps/eimg.zig) | One picture at a time at fit, actual or double size, rotated by hand in quarter turns on top of the EXIF orientation. EXIF sidebar, off by default. |
 | Calc | [`user/apps/calc.zig`](../src/user/apps/calc.zig) | Floating calculator. Arithmetic from `lib/calc.zig`. Every pad key has a keyboard key; Tab and Space work as on every control. |
+| Mines | [`user/apps/mines.zig`](../src/user/apps/mines.zig) | Minesweeper on three grids, in a floating window that asks to be the size of the grid chosen. The board is [`lib/mines.zig`](../src/lib/mines.zig), host-tested: mines laid around the first cell opened, the space opened out to its numbered edge, flags, and the two ends of a game. |
 | Screenshot | [`user/apps/screenshot.zig`](../src/user/apps/screenshot.zig) | PNG of the display or the focused window, into `/home`. A command, spawned by `Super+S` and `Super+Shift+S`. The manager copies pixels; encoding happens in this process. |
 
 ## Programs that are not the system
@@ -467,6 +468,8 @@ every build. Code used by one driver only stays with that driver, for example
     against a model of the controller stepping at every barrier, a chain is counted only
     once finished without a failure, at what the controller moved and never more than
     was asked.
+  - Minesweeper board, [`lib/mines.zig`](../src/lib/mines.zig): a game played at random
+    keeps its own account of what is opened, flagged and left.
   - Page table, [`arch/x86/pagetable.zig`](../src/arch/x86/pagetable.zig): agrees with a
     walk without shortcuts.
 - `make check-all` is the gate. It runs `zig fmt` check, `zig build check`,
@@ -559,7 +562,8 @@ syscalls, Ring 3, IPC, ramfs, VESA console, i8042 keyboard, `vsh`. Exercised eve
 | A/B updater | Not started. |
 | UVC webcam | Not started. |
 | Turbo mode | Not started. |
-| Mines, Draw | Not started. |
+| Mines | Done: three grids, keyboard and pointer, the window sized to the grid. |
+| Draw | Not started. |
 
 ### Not on the roadmap, done
 
@@ -567,7 +571,7 @@ syscalls, Ring 3, IPC, ramfs, VESA console, i8042 keyboard, `vsh`. Exercised eve
 |---|---|
 | Persistent settings and home | The boot medium carries the system, `/cfg` and `/home`. Settings read from `/etc` then `/cfg`. The loader records the medium's partition signature so the right disk is used. On the 701, `/cfg` and `/home` mount when `usbd` brings up the card reader. Verified in the emulator across shutdowns and reboots. |
 | Volume check, format, grow | Clean-unmount flag, check at mount, `check`, `format`, `grow`. Verified in the emulator by the gate. |
-| Fuzz targets | Fifteen targets with seeded counterparts in `make test`. See [Testing](#testing). |
+| Fuzz targets | Sixteen targets with seeded counterparts in `make test`. See [Testing](#testing). |
 | Bus rebuild | A disk behind a hub keeps its mount across `usb rebuild`. Verified in the emulator. |
 | Serial console | The log reaches a USB serial port. Verified in the emulator; not tried on the machine. |
 | Serial adapters | FTDI verified in the emulator: enumeration, `ser`, typed data both ways, settings, unplug. `acm` not run against a device. |

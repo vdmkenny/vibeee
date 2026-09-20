@@ -34,6 +34,7 @@ pub const join = @import("join.zig");
 pub const kind = @import("kind.zig");
 pub const mac = @import("mac.zig");
 pub const mounts = @import("mounts.zig");
+pub const mines = @import("mines.zig");
 pub const mlme = @import("mlme.zig");
 pub const mmio = @import("mmio.zig");
 pub const pci = @import("pci.zig");
@@ -88,6 +89,7 @@ test {
     _ = font;
     _ = logo;
     _ = mac;
+    _ = mines;
     _ = pci;
     _ = ring;
     _ = driver;

@@ -150,6 +150,11 @@ pub const Icon = enum {
     /// Three bars: the rest of what a window can be told, behind one key at
     /// the end of a strip that has no room for a menu bar.
     menu,
+    /// A ball with spikes, which is what a mine has been drawn as since the
+    /// first of these games.
+    mine,
+    /// A pennant on a pole: what a cell a player has called is marked with.
+    flag,
 };
 
 /// A picture and the name it belongs to.
@@ -921,6 +926,40 @@ const art = [_]Picture{
             "............",
             ".##########.",
             ".##########.",
+            "............",
+        },
+    },
+    .{
+        .icon = .mine,
+        .rows = .{
+            "............",
+            ".....##.....",
+            "..#.####.#..",
+            "...######...",
+            "..###..###..",
+            "#.###..###.#",
+            "#.########.#",
+            "..########..",
+            "...######...",
+            "..#.####.#..",
+            ".....##.....",
+            "............",
+        },
+    },
+    .{
+        .icon = .flag,
+        .rows = .{
+            "............",
+            "...#........",
+            "...#####....",
+            "...######...",
+            "...#####....",
+            "...#........",
+            "...#........",
+            "...#........",
+            "..####......",
+            ".######.....",
+            "............",
             "............",
         },
     },
