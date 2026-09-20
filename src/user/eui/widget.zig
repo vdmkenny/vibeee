@@ -736,6 +736,30 @@ pub const Context = struct {
         return activated;
     }
 
+    /// The same, saying which of a strip is in use: a rail of drawing tools
+    /// where one is chosen, rather than a row of separate keys.
+    pub fn toolChosen(self: *Context, area: Rect, which: icons.Icon, chosen: bool) bool {
+        const entry = self.slotFor(area) orelse return false;
+        const it = self.interact(entry, area);
+        const activated = it.clicked or self.activatedByKey(entry);
+
+        const visual: Visual = if (it.holding)
+            .active
+        else if (chosen)
+            hotOr(it.over, .checked_hot, .checked)
+        else
+            hotOr(it.over, .hot, .idle);
+
+        const look: i32 = @as(i32, @intFromEnum(which)) * 2 + @intFromBool(chosen);
+        if (self.needsPaint(entry, visual) or entry.detail != look) {
+            entry.visual = visual;
+            entry.detail = look;
+            paintTool(self.surface, area, which, visual, it.focused, true);
+            self.addDamage(area);
+        }
+        return activated;
+    }
+
     /// A button whose ground says what kind of thing it is.
     ///
     /// A keypad is the case that needs it: the digits are the ordinary
@@ -1742,13 +1766,14 @@ fn paintButtonAs(
 fn paintTool(surface: Surface, area: Rect, which: icons.Icon, visual: Visual, focused: bool, enabled: bool) void {
     const t = theme.current();
     const face = switch (visual) {
-        .active => t.surface_pressed,
-        .hot => t.surface_hot,
+        .active, .checked => t.surface_pressed,
+        .hot, .checked_hot => t.surface_hot,
         else => t.surface,
     };
+    const chosen = visual == .checked or visual == .checked_hot;
     surface.fillRounded(area, t.corner_radius, .all, face);
-    if (visual == .hot or visual == .active) {
-        surface.frameRounded(area, t.corner_radius, .all, t.line);
+    if (visual != .idle) {
+        surface.frameRounded(area, t.corner_radius, .all, if (chosen) t.accent else t.line);
     }
     surface.iconCentred(area, which, if (enabled) t.text else t.text_dim);
     if (focused) paintFocusRing(surface, area.inset(2), t.text_dim);
