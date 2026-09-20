@@ -120,17 +120,35 @@ var seeds: []raster.Seed = &.{};
 var undoable = false;
 
 var tool: Tool = .pencil;
+/// The colour the strip was last drawn with, so it is drawn again only when
+/// the choice has moved.
+var painted_ink: ?Colour = null;
 var fill: raster.Fill = .outline;
 var ink: Colour = PALETTE[0];
 var size_index: usize = 0;
 
-/// Where a stroke began, in the picture's own pixels, while the button is
-/// held down.
-var stroke: ?struct { x: i32, y: i32, last_x: i32, last_y: i32 } = null;
+/// A place on the picture, in its own pixels.
+const Point = struct { x: i32 = 0, y: i32 = 0 };
 
-/// Where the pointer was over the picture, in its own pixels, or nothing
-/// when it was somewhere else. What the bar along the bottom reports.
-var pointer_at: ?struct { x: i32, y: i32 } = null;
+/// A stroke while the button is held: where it began, and where it has
+/// reached.
+const Stroke = struct { from: Point, last: Point };
+
+var stroke: ?Stroke = null;
+
+/// The whole picture, for the marks that change all of it.
+const WHOLE = Rect{ .x = 0, .y = 0, .w = WIDE, .h = HIGH };
+
+/// What the screen is owed: the part of the picture changed since it was
+/// last put there, and the part the last shape shown over it covered. Kept
+/// so a mark costs the pixels it touched rather than the whole picture,
+/// which at this size is most of what the program would otherwise do.
+var dirty: ?Rect = null;
+var ghost: ?Rect = null;
+
+/// Where the pointer was over the picture, or nothing when it was somewhere
+/// else. What the bar along the bottom reports.
+var pointer_at: ?Point = null;
 
 var dialog: proto.FileDialog = .{};
 var asking: proto.dialog.Purpose = .open;
@@ -248,7 +266,6 @@ fn tools(area: Rect) void {
         };
         if (ctx.toolChosen(where, which.icon(), which == tool)) {
             tool = which;
-            ctx.damage();
         }
         index += 1;
     }
@@ -264,7 +281,6 @@ fn tools(area: Rect) void {
     };
     if (ctx.buttonAs(under, if (fill == .solid) "solid" else "hollow", .quiet)) {
         fill = if (fill == .solid) .outline else .solid;
-        ctx.damage();
     }
 
     under.y += side + @divTrunc(t.padding, 2);
@@ -272,14 +288,15 @@ fn tools(area: Rect) void {
     const written = std.fmt.bufPrint(&label, "{d} px", .{brush()}) catch "px";
     if (ctx.buttonAs(under, written, .quiet)) {
         size_index = (size_index + 1) % SIZES.len;
-        ctx.damage();
     }
 }
 
-/// The colours, and what is being drawn with.
+/// The colours, and what is being drawn with. Painted only when the choice
+/// has moved: the strip is the same sixteen squares on every other pass.
 fn palette(area: Rect) void {
     const t = theme.current();
     const side = @divTrunc(area.h - eui.Surface.textHeight(), 2);
+    const repaint = ctx.damaged or painted_ink == null or !painted_ink.?.eql(ink);
 
     for (PALETTE, 0..) |colour, index| {
         const column: i32 = @intCast(index % 8);
@@ -290,17 +307,24 @@ fn palette(area: Rect) void {
             .w = side,
             .h = side,
         };
+
+        if (ctx.pressedThisPass() and where.contains(ctx.pointer_x, ctx.pointer_y)) ink = colour;
+        if (!repaint) continue;
+
         ctx.surface.fill(where, colour);
-        if (raster.same(colour, ink)) {
-            const inside = Rect{ .x = where.x + 2, .y = where.y + 2, .w = where.w - 4, .h = where.h - 4 };
-            ctx.surface.fillAround(where, inside, t.accent);
-        } else {
-            ctx.surface.fillAround(where, .{ .x = where.x + 1, .y = where.y + 1, .w = where.w - 2, .h = where.h - 2 }, t.line);
-        }
-        if (ctx.pressedThisPass() and where.contains(ctx.pointer_x, ctx.pointer_y)) {
-            ink = colour;
-            ctx.damage();
-        }
+        const chosen = colour.eql(ink);
+        const edge: i32 = if (chosen) 2 else 1;
+        ctx.surface.fillAround(where, .{
+            .x = where.x + edge,
+            .y = where.y + edge,
+            .w = where.w - edge * 2,
+            .h = where.h - edge * 2,
+        }, if (chosen) t.accent else t.line);
+    }
+
+    if (repaint) {
+        painted_ink = ink;
+        if (!ctx.damaged) ctx.addDamage(area);
     }
 }
 
@@ -327,29 +351,79 @@ fn picture(room: Rect) void {
     const seen = room.intersect(at);
     if (seen.w <= 0 or seen.h <= 0) return;
 
-    // A sunken edge around what is shown, so the paper is plainly a thing
-    // on a desk.
-    ctx.surface.fillAround(
-        .{ .x = seen.x - 1, .y = seen.y - 1, .w = seen.w + 2, .h = seen.h + 2 },
-        seen,
-        t.line,
-    );
+    if (ctx.damaged) {
+        // A sunken edge around what is shown, so the paper is plainly a
+        // thing on a desk.
+        ctx.surface.bevel(
+            .{ .x = seen.x - 1, .y = seen.y - 1, .w = seen.w + 2, .h = seen.h + 2 },
+            1,
+            t.line,
+            t.surface_hot,
+        );
+        touched(WHOLE);
+    }
 
     hand(at, seen);
 
-    eui.thumb.paint(ctx.surface.clipped(seen), at, .{
-        .pixels = pixels,
-        .width = WIDE,
-        .height = HIGH,
-    }, .up);
-
-    // What the shape would be, over the picture rather than in it.
+    // Where the shape over the picture will be, which is ground the picture
+    // has to be put back on before it is drawn again.
+    var shown: ?Rect = null;
     if (stroke) |began| {
         if (tool.spans()) {
-            const now = pointerOn(at);
-            preview(seen, at, began.x, began.y, now.x, now.y);
+            const over = onScreen(covered(began.from, pointerOn(at)), at).intersect(seen);
+            // A shape aimed entirely off the part of the picture on screen
+            // covers nothing, and nothing is what is put back for it.
+            if (!over.isEmpty()) shown = over;
         }
     }
+
+    var owed: ?Rect = null;
+    if (dirty) |area| owed = joined(owed, onScreen(area, at).intersect(seen));
+    if (ghost) |area| owed = joined(owed, area.intersect(seen));
+    if (shown) |area| owed = joined(owed, area);
+    dirty = null;
+    ghost = shown;
+
+    if (owed) |area| {
+        eui.thumb.paint(ctx.surface.clipped(area), at, .{
+            .pixels = pixels,
+            .width = WIDE,
+            .height = HIGH,
+        }, .up);
+        ctx.addDamage(area);
+    }
+
+    if (shown) |area| {
+        if (stroke) |began| preview(area, at, began.from, pointerOn(at));
+    }
+}
+
+/// Mark a part of the picture as changed, in the picture's own pixels.
+fn touched(area: Rect) void {
+    dirty = joined(dirty, area);
+}
+
+/// The box a mark between two points covers, the brush's reach included.
+fn covered(from: Point, to: Point) Rect {
+    const edge: i32 = @max(brush(), 1);
+    const left = @min(from.x, to.x) - edge;
+    const top = @min(from.y, to.y) - edge;
+    return .{
+        .x = left,
+        .y = top,
+        .w = @max(from.x, to.x) + edge - left + 1,
+        .h = @max(from.y, to.y) + edge - top + 1,
+    };
+}
+
+/// A box on the picture, as a box in the window.
+fn onScreen(area: Rect, at: Rect) Rect {
+    return .{ .x = at.x + area.x, .y = at.y + area.y, .w = area.w, .h = area.h };
+}
+
+fn joined(area: ?Rect, with: Rect) ?Rect {
+    if (with.isEmpty()) return area;
+    return if (area) |had| had.unite(with) else with;
 }
 
 /// Where the picture sits: at its own size, centred in the room when there
@@ -364,29 +438,37 @@ fn placed(room: Rect) Rect {
 }
 
 /// Where the pointer is in the picture's own pixels.
-fn pointerOn(at: Rect) struct { x: i32, y: i32 } {
+fn pointerOn(at: Rect) Point {
     return .{ .x = ctx.pointer_x - at.x, .y = ctx.pointer_y - at.y };
 }
 
 /// The stroke being made: begun, carried on, and finished. A stroke starts
 /// only on the part of the picture that is shown, and goes on wherever the
 /// pointer takes it.
+///
+/// Nothing here asks for the window to be repainted: what it changed it
+/// says, and the picture puts back that much.
 fn hand(at: Rect, seen: Rect) void {
     const over = seen.contains(ctx.pointer_x, ctx.pointer_y);
     const now = pointerOn(at);
-    const told = pointer_at;
-    pointer_at = if (over or stroke != null) .{ .x = now.x, .y = now.y } else null;
-    if (!std.meta.eql(told, pointer_at)) ctx.damage();
+    pointer_at = if (over or stroke != null) now else null;
 
     if (stroke == null and ctx.pressedThisPass() and over) {
         keep();
-        stroke = .{ .x = now.x, .y = now.y, .last_x = now.x, .last_y = now.y };
+        stroke = .{ .from = now, .last = now };
         switch (tool) {
-            .pencil, .eraser => canvas().dot(now.x, now.y, brush(), colourOf(tool)),
-            .fill => _ = canvas().flood(now.x, now.y, ink, seeds),
+            .pencil, .eraser => {
+                canvas().dot(now.x, now.y, brush(), colourOf(tool));
+                touched(covered(now, now));
+            },
+            // A fill spreads as far as the colour under it reaches, which is
+            // anywhere at all.
+            .fill => {
+                _ = canvas().flood(now.x, now.y, ink, seeds);
+                touched(WHOLE);
+            },
             else => {},
         }
-        ctx.damage();
         return;
     }
 
@@ -394,23 +476,22 @@ fn hand(at: Rect, seen: Rect) void {
     if (ctx.buttons.left) {
         switch (tool) {
             .pencil, .eraser => {
-                canvas().line(began.last_x, began.last_y, now.x, now.y, brush(), colourOf(tool));
-                began.last_x = now.x;
-                began.last_y = now.y;
-                ctx.damage();
+                canvas().line(began.last.x, began.last.y, now.x, now.y, brush(), colourOf(tool));
+                touched(covered(began.last, now));
+                began.last = now;
             },
             // A shape follows the pointer until the button comes up.
-            else => if (ctx.pointer_moved) ctx.damage(),
+            else => {},
         }
         return;
     }
 
     // The button came up: a shape is put into the picture where it was shown.
     if (tool.spans()) {
-        shape(canvas(), began.x, began.y, now.x, now.y);
+        shape(canvas(), began.from, now);
+        touched(covered(began.from, now));
     }
     stroke = null;
-    ctx.damage();
 }
 
 fn colourOf(which: Tool) Colour {
@@ -419,35 +500,35 @@ fn colourOf(which: Tool) Colour {
 
 /// The tool's shape between two points, into whatever canvas is given: the
 /// picture when it is kept, and the window's own pixels while it is shown.
-fn shape(into: raster.Canvas, from_x: i32, from_y: i32, to_x: i32, to_y: i32) void {
+fn shape(into: raster.Canvas, from: Point, to: Point) void {
     switch (tool) {
-        .line => into.line(from_x, from_y, to_x, to_y, brush(), ink),
-        .box => into.box(from_x, from_y, to_x, to_y, brush(), ink, fill),
-        .oval => into.ellipse(from_x, from_y, to_x, to_y, brush(), ink, fill),
+        .line => into.line(from.x, from.y, to.x, to.y, brush(), ink),
+        .box => into.box(from.x, from.y, to.x, to.y, brush(), ink, fill),
+        .oval => into.ellipse(from.x, from.y, to.x, to.y, brush(), ink, fill),
         else => {},
     }
 }
 
 /// The shape as it would be, drawn into the window rather than the picture.
 /// The window's pixels are a canvas like any other, over rows wider than the
-/// part of the picture on show.
-fn preview(seen: Rect, at: Rect, from_x: i32, from_y: i32, to_x: i32, to_y: i32) void {
+/// part of the picture it covers.
+fn preview(area: Rect, at: Rect, from: Point, to: Point) void {
     const surface = ctx.surface;
     const span: usize = @intCast(surface.stride);
-    const start = @as(usize, @intCast(seen.y)) * span + @as(usize, @intCast(seen.x));
-    const rows: usize = @intCast(seen.h);
+    const start = @as(usize, @intCast(area.y)) * span + @as(usize, @intCast(area.x));
+    const rows: usize = @intCast(area.h);
     const window = raster.Canvas.over(
-        surface.pixels[start .. start + (rows - 1) * span + @as(usize, @intCast(seen.w))],
-        @intCast(seen.w),
-        @intCast(seen.h),
+        surface.pixels[start .. start + (rows - 1) * span + @as(usize, @intCast(area.w))],
+        @intCast(area.w),
+        @intCast(area.h),
         @intCast(span),
     );
 
-    // The view begins at the corner of the picture that is on show, so the
-    // shape is drawn in the picture's own coordinates less that corner.
-    const across = seen.x - at.x;
-    const down = seen.y - at.y;
-    shape(window, from_x - across, from_y - down, to_x - across, to_y - down);
+    // The view begins at the corner of the picture it covers, so the shape
+    // is drawn in the picture's own coordinates less that corner.
+    const across = area.x - at.x;
+    const down = area.y - at.y;
+    shape(window, .{ .x = from.x - across, .y = from.y - down }, .{ .x = to.x - across, .y = to.y - down });
 }
 
 // ---------------------------------------------------------------------------
@@ -480,7 +561,6 @@ fn key(code: KeyCode, mods: Modifiers) bool {
         .bracket_right => size_index = (size_index + 1) % SIZES.len,
         else => return false,
     }
-    ctx.damage();
     return true;
 }
 
@@ -606,12 +686,11 @@ fn load() void {
 
     keep();
     canvas().clear(PAPER);
-    var row: u16 = 0;
-    while (row < @min(opened.height, HIGH)) : (row += 1) {
-        var column: u16 = 0;
-        while (column < @min(opened.width, WIDE)) : (column += 1) {
-            pixels[@as(usize, row) * WIDE + column] = opened.pixels[@as(usize, row) * opened.width + column];
-        }
+    const across: usize = @min(opened.width, WIDE);
+    for (0..@min(opened.height, HIGH)) |row| {
+        const into = pixels[row * WIDE ..][0..across];
+        const from = opened.pixels[row * opened.width ..][0..across];
+        @memcpy(into, from);
     }
     status = "Opened.";
 }
