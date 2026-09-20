@@ -112,6 +112,7 @@ test {
     // The device table's row and name discipline: rows are reused as media
     // come and go, and a name has to stay with the row it names.
     _ = @import("kernel/block.zig");
+    _ = @import("kernel/bcache/lines.zig");
     // The line discipline's rules, apart from the keyboard and the screen:
     // what a keystroke echoes and what a reader gets, in both modes.
     _ = @import("kernel/tty.zig");

@@ -11,96 +11,23 @@
 //! those turns a chain walk from one transfer per link into one transfer per
 //! *sector of FAT*, which for a small file is usually one.
 //!
-//! Four-way set associative. A fully associative cache would need a scan of
-//! every entry per lookup, and a direct-mapped one thrashes badly when the FAT
-//! and the data area happen to collide, which they will, since both are walked
-//! in step. Four ways costs four comparisons and removes that failure mode.
-//!
-//! Write-through, deliberately. FAT has no journal, and the recovery strategy
-//! (design/00-vibeee.md §7) is atomic double-buffered writes at the application
-//! layer: write a copy, flush, flip a pointer. That only works if a completed
-//! write has actually reached the medium. Write-back would open a window where
-//! the application believes data landed and it has not, which is precisely the
-//! failure the strategy exists to prevent.
+//! What is held and how a run is served is `bcache/lines.zig`'s, pure and
+//! host-tested. Here is the lock around it and the device it presents.
 
 const std = @import("std");
 const block = @import("block.zig");
 const console = @import("console.zig");
 const lock_mod = @import("lock.zig");
+const lines = @import("bcache/lines.zig");
 
-/// 64 sets × 4 ways × 512 B = 128 KiB. Small against the 48 MiB idle-RAM
-/// budget, and comfortably larger than the working set of a FAT lookup.
-const SETS = 64;
-const WAYS = 4;
-pub const CAPACITY_SECTORS = SETS * WAYS;
-
-const Line = struct {
-    lba: u64 = 0,
-    valid: bool = false,
-    /// Monotonic counter, for LRU within a set.
-    used_at: u64 = 0,
-    data: [block.SECTOR_SIZE]u8 = undefined,
-};
-
-pub const Stats = struct {
-    hits: u64 = 0,
-    misses: u64 = 0,
-    writes: u64 = 0,
-    invalidations: u64 = 0,
-
-    pub fn hitRate(self: Stats) u64 {
-        const total = self.hits + self.misses;
-        if (total == 0) return 0;
-        return self.hits * 100 / total;
-    }
-};
+pub const CAPACITY_SECTORS = lines.CAPACITY_SECTORS;
+pub const Stats = lines.Stats;
 
 pub const Cache = struct {
     backing: block.Device,
-    lines: [SETS][WAYS]Line = @splat(@splat(.{})),
-    clock: u64 = 0,
-    stats: Stats = .{},
-    /// One operation at a time, cache-wide. Partitions of one disk share
-    /// this cache, so a lock scoped to a partition's own mount is not
-    /// enough: two mounts can pick the same line for two different LBAs
-    /// while each believes only its own volume is being touched, and the
-    /// backing read that decides which one wins is itself the thing that
-    /// blocks and lets the other in. See `lock.zig`.
+    table: lines.Lines = .{},
     lock: lock_mod.Lock = .{},
 
-    fn setOf(lba: u64) usize {
-        return @intCast(lba % SETS);
-    }
-
-    fn find(self: *Cache, lba: u64) ?*Line {
-        for (&self.lines[setOf(lba)]) |*line| {
-            if (line.valid and line.lba == lba) return line;
-        }
-        return null;
-    }
-
-    /// Pick a line to reuse: an invalid one if there is one, otherwise the
-    /// least recently used in the set.
-    fn victim(self: *Cache, lba: u64) *Line {
-        const set = &self.lines[setOf(lba)];
-        var oldest: *Line = &set[0];
-        for (set) |*line| {
-            if (!line.valid) return line;
-            if (line.used_at < oldest.used_at) oldest = line;
-        }
-        return oldest;
-    }
-
-    fn touch(self: *Cache, line: *Line) void {
-        self.clock += 1;
-        line.used_at = self.clock;
-    }
-
-    /// Read `count` sectors from `lba`, a run at a time. What the cache
-    /// holds is copied out; the sectors between hits are read from the
-    /// backing in one call per run rather than one per sector, which on a
-    /// card behind a USB reader is one round trip instead of many.
-    ///
     /// Held for the whole operation, backing reads included: picking a
     /// line and filling it are two steps around a wait for the medium, and
     /// a second caller let in between them can pick the very line the
@@ -108,69 +35,19 @@ pub const Cache = struct {
     fn readRun(self: *Cache, lba: u64, out: []u8) block.Error!void {
         self.lock.hold() catch return block.Error.IoError;
         defer self.lock.release();
-
-        const count = out.len / block.SECTOR_SIZE;
-        var i: usize = 0;
-        while (i < count) {
-            if (self.find(lba + i)) |line| {
-                self.stats.hits += 1;
-                self.touch(line);
-                @memcpy(out[i * block.SECTOR_SIZE ..][0..block.SECTOR_SIZE], &line.data);
-                i += 1;
-                continue;
-            }
-
-            // The misses from here to the next sector the cache holds.
-            var run: usize = 1;
-            while (i + run < count and self.find(lba + i + run) == null) : (run += 1) {}
-            self.stats.misses += run;
-
-            // The caller's buffer is filled first, then the lines from it:
-            // a read that fails leaves the lines as they were rather than
-            // holding stale data under new numbers.
-            const bytes = out[i * block.SECTOR_SIZE ..][0 .. run * block.SECTOR_SIZE];
-            try self.backing.ops.read(self.backing.ctx, lba + i, bytes);
-            for (0..run) |k| {
-                self.fill(lba + i + k, bytes[k * block.SECTOR_SIZE ..][0..block.SECTOR_SIZE]);
-            }
-            i += run;
-        }
+        return self.table.readRun(self.backing, lba, out);
     }
 
-    /// Write `count` sectors from `lba` through to the backing in one call,
-    /// and keep the cache coherent with what was written, so a read-back
-    /// sees the new contents.
     fn writeRun(self: *Cache, lba: u64, in: []const u8) block.Error!void {
         self.lock.hold() catch return block.Error.IoError;
         defer self.lock.release();
-
-        const w = self.backing.ops.write orelse return error.NotSupported;
-        try w(self.backing.ctx, lba, in);
-
-        const count = in.len / block.SECTOR_SIZE;
-        self.stats.writes += count;
-        for (0..count) |k| {
-            self.fill(lba + k, in[k * block.SECTOR_SIZE ..][0..block.SECTOR_SIZE]);
-        }
-    }
-
-    /// Put a sector's contents in the cache: over its own line if it has
-    /// one, otherwise over the line its set can best spare.
-    fn fill(self: *Cache, lba: u64, data: *const [block.SECTOR_SIZE]u8) void {
-        const line = self.find(lba) orelse self.victim(lba);
-        @memcpy(&line.data, data);
-        line.lba = lba;
-        line.valid = true;
-        self.touch(line);
+        return self.table.writeRun(self.backing, lba, in);
     }
 
     /// Drop everything. Called when removable media goes away: the sectors
     /// cached from the old medium describe nothing that is still there.
     pub fn invalidate(self: *Cache) void {
-        for (&self.lines) |*set| {
-            for (set) |*line| line.valid = false;
-        }
-        self.stats.invalidations += 1;
+        self.table.invalidate();
     }
 };
 
@@ -237,10 +114,7 @@ pub fn totalStats() Stats {
     var total = Stats{};
     for (&caches, taken) |*c, held| {
         if (!held) continue;
-        total.hits += c.stats.hits;
-        total.misses += c.stats.misses;
-        total.writes += c.stats.writes;
-        total.invalidations += c.stats.invalidations;
+        total.add(c.table.stats);
     }
     return total;
 }
@@ -248,10 +122,11 @@ pub fn totalStats() Stats {
 pub fn report() void {
     const s = totalStats();
     if (s.hits + s.misses == 0) return;
-    console.debug("cache", "{d}% hit ({d} hit, {d} miss), {d} KiB", .{
+    console.debug("cache", "{d}% hit ({d} hit, {d} miss, {d} bypassed), {d} KiB", .{
         s.hitRate(),
         s.hits,
         s.misses,
+        s.bypassed,
         CAPACITY_SECTORS * block.SECTOR_SIZE / 1024,
     });
 }
