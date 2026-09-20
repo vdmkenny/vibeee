@@ -76,8 +76,15 @@ const MENUS = [_]eui.menubar.Menu{
 
 var menus: eui.menubar.State = .{};
 var board = mines.Board.init(OPENS_ON);
-var cursor_column: u8 = 0;
-var cursor_row: u8 = 0;
+/// A square of the grid, by column and row. `mines.Cell` is what is on one.
+const Square = struct { column: u8 = 0, row: u8 = 0 };
+
+var cursor: Square = .{};
+
+/// Whether the grid has changed since it was last drawn. A pass runs on every
+/// event the window sees, pointer motion included, and an expert grid is 480
+/// squares.
+var stale = true;
 var prng: std.Random.DefaultPrng = undefined;
 
 // The icon the launcher shows for this program.
@@ -148,12 +155,12 @@ fn draw() void {
     // The grid sits in a sunken frame, as everything drawn in that era did:
     // dark above and left, light below and right.
     const cells = gridArea(parts.body);
-    bevel(.{
+    ctx.surface.bevel(.{
         .x = cells.x - FRAME,
         .y = cells.y - FRAME,
         .w = cells.w + FRAME * 2,
         .h = cells.h + FRAME * 2,
-    }, SHADOW, LIGHT);
+    }, FRAME, SHADOW, LIGHT);
     play(cells);
 
     // Last in the pass: an open menu hangs over the grid, and anything drawn
@@ -185,40 +192,9 @@ fn drawButton(body: Rect) void {
     const weight: eui.widget.Emphasis = if (board.state == .won) .strong else .plain;
     if (ctx.buttonAs(where, label, weight)) {
         board.restart();
-        aim(0, 0);
-        ctx.damage();
+        aim(.{});
+        stale = true;
     }
-}
-
-/// An edge around a rectangle: one colour above and left, another below and
-/// right. Raised or sunken is which way round they go.
-fn bevel(area: Rect, top_left: Color, bottom_right: Color) void {
-    const surface = ctx.surface;
-    surface.fill(.{ .x = area.x, .y = area.y, .w = area.w, .h = FRAME }, top_left);
-    surface.fill(.{ .x = area.x, .y = area.y, .w = FRAME, .h = area.h }, top_left);
-    surface.fill(.{ .x = area.x, .y = area.bottom() - FRAME, .w = area.w, .h = FRAME }, bottom_right);
-    surface.fill(.{ .x = area.right() - FRAME, .y = area.y, .w = FRAME, .h = area.h }, bottom_right);
-}
-
-/// How many mines are unaccounted for, and what the last move came to.
-fn drawStatus(area: Rect) void {
-    const t = theme.current();
-
-    var counted: [16]u8 = undefined;
-    const left = std.fmt.bufPrint(&counted, "{d} left", .{board.remaining()}) catch "";
-    ctx.surface.text(area.x, area.y, left, t.text);
-
-    const said = switch (board.state) {
-        .fresh, .playing => "1 2 3 grids, R again",
-        .won => "cleared",
-        .lost => "a mine, R again",
-    };
-    const ink = switch (board.state) {
-        .won => t.accent,
-        .lost => t.warning,
-        .fresh, .playing => t.text_dim,
-    };
-    ctx.surface.text(area.right() - eui.Surface.textWidth(said), area.y, said, ink);
 }
 
 /// Where the grid sits: square cells at the largest side that fits, centred
@@ -247,25 +223,28 @@ fn play(area: Rect) void {
 
     if (under(area, side)) |where| {
         if (ctx.pressedThisPass()) {
-            aim(where.column, where.row);
+            aim(where);
             _ = board.reveal(where.column, where.row, prng.random());
-            ctx.damage();
+            stale = true;
         } else if (ctx.takeRightPress()) {
-            aim(where.column, where.row);
+            aim(where);
             _ = board.flag(where.column, where.row);
-            ctx.damage();
+            stale = true;
         }
     }
 
+    if (!stale and !ctx.damaged) return;
     for (0..board.shape.rows) |row| {
         for (0..board.shape.columns) |column| {
             drawCell(area, side, @intCast(column), @intCast(row));
         }
     }
+    if (!ctx.damaged) ctx.addDamage(area);
+    stale = false;
 }
 
-/// The cell the pointer is over, or none when it is elsewhere.
-fn under(area: Rect, side: i32) ?struct { column: u8, row: u8 } {
+/// The square the pointer is over, or none when it is elsewhere.
+fn under(area: Rect, side: i32) ?Square {
     if (!area.contains(ctx.pointer_x, ctx.pointer_y)) return null;
     const column = @divTrunc(ctx.pointer_x - area.x, side);
     const row = @divTrunc(ctx.pointer_y - area.y, side);
@@ -304,11 +283,11 @@ fn drawCell(area: Rect, side: i32, column: u8, row: u8) void {
         }
     } else {
         ctx.surface.fill(whole, FIELD);
-        bevel(whole, LIGHT, SHADOW);
+        ctx.surface.bevel(whole, FRAME, LIGHT, SHADOW);
         if (cell.flagged) ctx.surface.iconCentred(whole, .flag, FLAG_INK);
     }
 
-    if (column == cursor_column and row == cursor_row) {
+    if (column == cursor.column and row == cursor.row) {
         const t = theme.current();
         const inside = Rect{ .x = whole.x + 1, .y = whole.y + 1, .w = whole.w - 2, .h = whole.h - 2 };
         ctx.surface.fillAround(whole, inside, t.accent);
@@ -341,15 +320,20 @@ fn key(code: KeyCode, mods: Modifiers) bool {
         .right => step(1, 0),
         .up => step(0, -1),
         .down => step(0, 1),
-        .space, .enter => _ = board.reveal(cursor_column, cursor_row, prng.random()),
-        .f => _ = board.flag(cursor_column, cursor_row),
+        .space, .enter => {
+            _ = board.reveal(cursor.column, cursor.row, prng.random());
+            stale = true;
+        },
+        .f => {
+            _ = board.flag(cursor.column, cursor.row);
+            stale = true;
+        },
         .r => run(.new),
         .n1 => run(.beginner),
         .n2 => run(.intermediate),
         .n3 => run(.expert),
         else => return false,
     }
-    ctx.damage();
     return true;
 }
 
@@ -358,7 +342,8 @@ fn run(command: Command) void {
     switch (command) {
         .new => {
             board.restart();
-            aim(0, 0);
+            aim(.{});
+            stale = true;
         },
         .beginner => choose(.beginner),
         .intermediate => choose(.intermediate),
@@ -371,21 +356,23 @@ fn run(command: Command) void {
 /// Move the cursor, stopping at the edges. A wrap on a grid this size takes
 /// the eye further than the hand meant.
 fn step(across: i32, down: i32) void {
-    const column = std.math.clamp(@as(i32, cursor_column) + across, 0, @as(i32, board.shape.columns) - 1);
-    const row = std.math.clamp(@as(i32, cursor_row) + down, 0, @as(i32, board.shape.rows) - 1);
-    aim(@intCast(column), @intCast(row));
+    const column = std.math.clamp(@as(i32, cursor.column) + across, 0, @as(i32, board.shape.columns) - 1);
+    const row = std.math.clamp(@as(i32, cursor.row) + down, 0, @as(i32, board.shape.rows) - 1);
+    aim(.{ .column = @intCast(column), .row = @intCast(row) });
 }
 
-fn aim(column: u8, row: u8) void {
-    cursor_column = column;
-    cursor_row = row;
+fn aim(at: Square) void {
+    if (std.meta.eql(cursor, at)) return;
+    cursor = at;
+    stale = true;
 }
 
 /// Another grid, a fresh board on it, and a window the size that grid wants.
 /// A window the manager keeps at its own size draws smaller cells instead.
 fn choose(difficulty: mines.Difficulty) void {
     board = mines.Board.init(difficulty);
-    aim(0, 0);
+    aim(.{});
+    stale = true;
     const size = wanted(board.shape);
     proto.app.resizeTo(size.w, size.h);
 }
