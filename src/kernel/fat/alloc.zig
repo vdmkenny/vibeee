@@ -34,6 +34,10 @@ pub const Table = struct {
     /// exactly when something needs reading.
     cache: [SECTOR]u8 = @splat(0),
     cache_sector: u32 = INVALID_SECTOR,
+    /// The cached sector holds entries the medium does not have yet. Stored
+    /// when another sector takes its place, and by `flush`, which every call
+    /// that changes the table ends with.
+    dirty: bool = false,
     /// Where the search for a free cluster starts. Carried between calls so
     /// filling a volume stays roughly linear instead of rescanning from the
     /// beginning for every cluster.
@@ -128,6 +132,7 @@ pub fn byteOffset(kind: Kind, cluster: u32) u32 {
 
 fn loadSector(t: *Table, sector: u32) Error!void {
     if (t.cache_sector == sector) return;
+    try flush(t);
     // The cache names no sector while a read is in flight: a read that fails
     // part way leaves the bytes of neither sector, and a cache still naming
     // the old one would hand those bytes out as its entries and write them
@@ -135,6 +140,26 @@ fn loadSector(t: *Table, sector: u32) Error!void {
     t.cache_sector = INVALID_SECTOR;
     t.dev.read(sector, &t.cache) catch return error.Io;
     t.cache_sector = sector;
+}
+
+/// Drop the cached sector, for a table whose sectors have moved on the
+/// medium under it. Anything it held that the medium did not is lost, so
+/// it is flushed first by whoever moves them.
+pub fn forget(t: *Table) void {
+    t.cache_sector = INVALID_SECTOR;
+    t.dirty = false;
+}
+
+/// Write the cached sector to every copy of the table, when it holds
+/// anything the medium does not.
+pub fn flush(t: *Table) Error!void {
+    if (!t.dirty) return;
+    if (t.cache_sector == INVALID_SECTOR) {
+        t.dirty = false;
+        return;
+    }
+    try storeSector(t, t.cache_sector);
+    t.dirty = false;
 }
 
 /// Write the cached sector back to every FAT copy.
@@ -194,7 +219,7 @@ fn store(t: *Table, cluster: u32, value: u32) Error!void {
     switch (t.kind) {
         .fat16 => {
             std.mem.writeInt(u16, t.cache[within..][0..2], @truncate(value), .little);
-            try storeSector(t, sector);
+            t.dirty = true;
         },
         .fat32 => {
             // The reserved bits are read back and written out again
@@ -202,7 +227,7 @@ fn store(t: *Table, cluster: u32, value: u32) Error!void {
             var entry: Wide = @bitCast(std.mem.readInt(u32, t.cache[within..][0..4], .little));
             entry.value = @truncate(value);
             std.mem.writeInt(u32, t.cache[within..][0..4], @bitCast(entry), .little);
-            try storeSector(t, sector);
+            t.dirty = true;
         },
         .fat12 => {
             // Twelve bits spanning two bytes that may be in different sectors,
@@ -223,11 +248,11 @@ fn store(t: *Table, cluster: u32, value: u32) Error!void {
 
             try loadSector(t, sector);
             t.cache[within] = @truncate(raw);
-            try storeSector(t, sector);
+            t.dirty = true;
 
             try loadSector(t, second_sector);
             t.cache[second_within] = @truncate(raw >> 8);
-            try storeSector(t, second_sector);
+            t.dirty = true;
         },
     }
 }
@@ -256,6 +281,9 @@ pub fn reserved(t: *Table, which: Reserved) Error!u32 {
 /// tells a caller the volume is full.
 pub fn setReserved(t: *Table, which: Reserved, value: u32) Error!void {
     try store(t, @intFromEnum(which), value);
+    // A reserved entry is the volume's own state, the clean flag above all,
+    // and is wanted on the medium the moment it is set.
+    try flush(t);
 }
 
 /// The next cluster in a chain, or null at the end.
@@ -344,6 +372,8 @@ pub fn freeCount(t: *Table) Error!u32 {
 /// in runs of sectors and counted in place; twelve-bit ones straddle sectors
 /// and belong to volumes so small that one entry at a time is fine.
 fn countFree(t: *Table) Error!u32 {
+    // The walk reads the medium, so what the cache holds goes there first.
+    try flush(t);
     var free: u32 = 0;
     const past_last = t.cluster_count + 2;
 
@@ -384,6 +414,7 @@ const testing = std.testing;
 /// A volume in memory, for proving the table without a medium.
 const Memory = struct {
     sectors: [64][SECTOR]u8 = @splat(@splat(0)),
+    writes: usize = 0,
 
     fn read(ctx: *anyopaque, lba: u64, buf: []u8) block.Error!void {
         const self: *Memory = @ptrCast(@alignCast(ctx));
@@ -392,6 +423,7 @@ const Memory = struct {
 
     fn write(ctx: *anyopaque, lba: u64, buf: []const u8) block.Error!void {
         const self: *Memory = @ptrCast(@alignCast(ctx));
+        self.writes += 1;
         for (0..buf.len / SECTOR) |i| @memcpy(&self.sectors[@intCast(lba + i)], buf[i * SECTOR ..][0..SECTOR]);
     }
 
@@ -546,4 +578,40 @@ test "a thirty-two bit entry leaves the four bits that are not its own" {
     var changed = found;
     changed.value = 9;
     try testing.expectEqual(@as(u32, 0xA000_0009), @as(u32, @bitCast(changed)));
+}
+
+test "a run of appends stores the table sector once, when the call is done" {
+    var memory = Memory{};
+    const dev = block.Device{ .name = "t", .ctx = &memory, .ops = &Memory.ops, .sectors = 64 };
+    var t = tableOver(&memory, &dev, .fat32, 4, 200);
+
+    var last = try alloc(&t);
+    for (0..15) |_| last = try append(&t, last);
+    try testing.expectEqual(@as(usize, 0), memory.writes);
+
+    try flush(&t);
+    try testing.expectEqual(@as(usize, 1), memory.writes);
+    try flush(&t);
+    try testing.expectEqual(@as(usize, 1), memory.writes);
+
+    // What reached the medium is the chain, read by a table that never
+    // saw it being made.
+    var fresh = tableOver(&memory, &dev, .fat32, 4, 200);
+    var cluster: u32 = 2;
+    var length: usize = 1;
+    while (try next(&fresh, cluster)) |following| : (length += 1) cluster = following;
+    try testing.expectEqual(@as(usize, 16), length);
+}
+
+test "the cached sector is stored before another takes its place" {
+    var memory = Memory{};
+    const dev = block.Device{ .name = "t", .ctx = &memory, .ops = &Memory.ops, .sectors = 64 };
+    var t = tableOver(&memory, &dev, .fat32, 4, 400);
+
+    // Cluster 2 is in the table's first sector; cluster 300 in its third.
+    try set(&t, 2, sentinels(.fat32).terminator);
+    try testing.expectEqual(@as(usize, 0), memory.writes);
+    _ = try get(&t, 300);
+    try testing.expectEqual(@as(usize, 1), memory.writes);
+    try testing.expectEqual(sentinels(.fat32).terminator, try get(&t, 2));
 }

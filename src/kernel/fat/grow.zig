@@ -62,8 +62,12 @@ pub fn apply(vol: *fat.Volume, want: Plan) Error!void {
     const dev = vol.dev;
     if (dev.read_only) return error.ReadOnly;
 
+    // The table is moved on the medium, so what its cache holds goes there
+    // first, and the cache is dropped once the sectors it named have moved.
+    try table.flush(&vol.fat);
     if (want.shift != 0) try moveEverything(vol, want);
     try growTables(dev, want);
+    table.forget(&vol.fat);
     try writeBootSectors(dev, want.to);
     dev.flush() catch return error.Io;
 }

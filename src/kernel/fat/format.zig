@@ -97,6 +97,7 @@ fn writeFirstEntries(dev: *const block.Device, geometry: Geometry) Error!void {
     try table.setReserved(&entries, .media, (ends & ~@as(u32, 0xFF)) | MEDIA_FIXED);
     try table.setReserved(&entries, .flags, ends);
     if (geometry.kind == .fat32) try table.set(&entries, geometry.root_cluster, ends);
+    try table.flush(&entries);
 }
 
 fn clearRoot(dev: *const block.Device, geometry: Geometry) Error!void {

@@ -386,6 +386,9 @@ pub fn unmount(path: []const u8) Error!void {
     defer m.lock.release();
     if (m.open_files > 0) return error.Busy;
 
+    fat.flush(&m.volume) catch |err| {
+        console.warn("vfs: the table was not stored unmounting {s}: {s}", .{ path, @errorName(err) });
+    };
     m.device.flush() catch |err| {
         // Report, but still detach: refusing to unmount a device that is
         // already gone would leave a permanently stuck mount point.
@@ -776,8 +779,10 @@ pub fn commit(lease: Lease, entry: fat.Entry, mtime: i64) Error!void {
 pub fn flush(lease: Lease) Error!void {
     const m = try lease.hold();
     defer lease.release();
-    // A drive answers about itself; above here the only thing that matters
-    // is that what was written is not known to have landed.
+    // The table first, then the drive: a drive answers about itself, and
+    // above here the only thing that matters is that what was written is
+    // not known to have landed.
+    fat.flush(&m.volume) catch return error.Io;
     m.device.flush() catch return error.Io;
 }
 

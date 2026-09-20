@@ -979,6 +979,13 @@ pub fn readFile(vol: *Volume, entry: Entry, buf: []u8) Error!usize {
 /// directory sector rewritten on every call would dominate the cost of writing
 /// a file and wear the SSD for nothing.
 pub fn writeAt(vol: *Volume, entry: *Entry, offset: u64, data: []const u8) Error!usize {
+    errdefer table.flush(&vol.fat) catch {};
+    const done = try writeAtUnflushed(vol, entry, offset, data);
+    try table.flush(&vol.fat);
+    return done;
+}
+
+fn writeAtUnflushed(vol: *Volume, entry: *Entry, offset: u64, data: []const u8) Error!usize {
     if (entry.is_dir) return error.IsDirectory;
     if (data.len == 0) return 0;
 
@@ -1094,6 +1101,12 @@ pub fn commit(vol: *Volume, entry: Entry, mtime: i64) Error!void {
 /// before the record says they exist: a file made longer must not show what
 /// was on the medium before.
 pub fn resize(vol: *Volume, entry: *Entry, size: u32, mtime: i64) Error!void {
+    errdefer table.flush(&vol.fat) catch {};
+    try resizeUnflushed(vol, entry, size, mtime);
+    try table.flush(&vol.fat);
+}
+
+fn resizeUnflushed(vol: *Volume, entry: *Entry, size: u32, mtime: i64) Error!void {
     if (entry.is_dir) return error.IsDirectory;
 
     if (size > entry.size) {
@@ -1653,6 +1666,13 @@ fn buildLongRecord(spelled: []const u16, index: usize, last: bool, checksum: u8)
 /// directory record and nothing else, and `writeAt` allocates the first
 /// cluster when there is finally something to put in it.
 pub fn createFile(vol: *Volume, dir: Iterator, name: []const u8, mtime: i64) Error!Entry {
+    errdefer table.flush(&vol.fat) catch {};
+    const made = try createFileUnflushed(vol, dir, name, mtime);
+    try table.flush(&vol.fat);
+    return made;
+}
+
+fn createFileUnflushed(vol: *Volume, dir: Iterator, name: []const u8, mtime: i64) Error!Entry {
     return create(vol, dir, name, mtime, false);
 }
 
@@ -1662,6 +1682,13 @@ pub fn createFile(vol: *Volume, dir: Iterator, name: []const u8, mtime: i64) Err
 /// exists must already hold its own `.` and `..`: a system reading one with no
 /// cluster would see a directory it cannot enter.
 pub fn createDirectory(vol: *Volume, dir: Iterator, name: []const u8, mtime: i64) Error!Entry {
+    errdefer table.flush(&vol.fat) catch {};
+    const made = try createDirectoryUnflushed(vol, dir, name, mtime);
+    try table.flush(&vol.fat);
+    return made;
+}
+
+fn createDirectoryUnflushed(vol: *Volume, dir: Iterator, name: []const u8, mtime: i64) Error!Entry {
     return create(vol, dir, name, mtime, true);
 }
 
@@ -1831,6 +1858,12 @@ fn writeDotEntries(vol: *Volume, cluster: u32, parent: u32, mtime: i64) Error!vo
 /// order, so a failure between the two leaves clusters nobody names, which
 /// a checker reclaims, and never a record naming clusters given away.
 pub fn unlink(vol: *Volume, entry: Entry) Error!void {
+    errdefer table.flush(&vol.fat) catch {};
+    try unlinkUnflushed(vol, entry);
+    try table.flush(&vol.fat);
+}
+
+fn unlinkUnflushed(vol: *Volume, entry: Entry) Error!void {
     if (entry.is_dir) return error.IsDirectory;
     if (entry.dir_sector == 0) return error.NotFound;
 
@@ -1871,6 +1904,13 @@ fn forget(vol: *Volume, entry: Entry) Error!void {
 /// this is a directory operation and costs nothing proportional to the size of
 /// the file.
 pub fn rename(vol: *Volume, source: Entry, dir: Iterator, name: []const u8, mtime: i64) Error!Entry {
+    errdefer table.flush(&vol.fat) catch {};
+    const made = try renameUnflushed(vol, source, dir, name, mtime);
+    try table.flush(&vol.fat);
+    return made;
+}
+
+fn renameUnflushed(vol: *Volume, source: Entry, dir: Iterator, name: []const u8, mtime: i64) Error!Entry {
     if (source.dir_sector == 0) return error.NotFound;
     if (name.len == 0 or name.len > MAX_NAME) return error.NameTooLong;
 
@@ -1936,6 +1976,13 @@ fn setParent(vol: *Volume, cluster: u32, parent: u32) Error!void {
 }
 
 /// Free clusters on the volume, for `df`.
+/// Store whatever the table holds that the medium does not. Every call that
+/// changes the table ends with this; unmounting and syncing ask for it as
+/// well, before the device is told to flush its own cache.
+pub fn flush(vol: *Volume) Error!void {
+    try table.flush(&vol.fat);
+}
+
 pub fn freeClusters(vol: *Volume) Error!u32 {
     return table.freeCount(&vol.fat);
 }

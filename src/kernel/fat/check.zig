@@ -57,6 +57,10 @@ pub const Options = struct {
 pub fn run(vol: *Volume, gpa: std.mem.Allocator, options: Options) Error!Findings {
     var found = Findings{};
 
+    // The copies are compared on the medium, so what the table's cache holds
+    // goes there first.
+    try table.flush(&vol.fat);
+
     // First, because everything below reads the first copy and trusts it.
     // Power lost between the two writes of one entry is what leaves the
     // copies differing.
@@ -75,6 +79,8 @@ pub fn run(vol: *Volume, gpa: std.mem.Allocator, options: Options) Error!Finding
     var walk = Walk{ .vol = vol, .reached = &reached, .found = &found, .repair = options.repair };
     try walk.tree(stack);
     try walk.sweep();
+    // Every repair is wanted on the medium before the check reports.
+    try table.flush(&vol.fat);
 
     // Every free above kept the count in step, but after a repair it is
     // safer to recount than to trust the running total.
@@ -562,6 +568,8 @@ test "a chain longer than its record is cut back to it" {
     const further = try table.alloc(&vol.fat);
     try table.set(&vol.fat, first, tail);
     try table.set(&vol.fat, tail, further);
+    // On the medium, where a fresh mount finds it.
+    try table.flush(&vol.fat);
     vol = try image.volume();
 
     const found = try run(&vol, testing.allocator, .{});
