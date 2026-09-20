@@ -74,7 +74,7 @@ No counts: they go stale. Git records when this was last true.
 | Component | File | State |
 |---|---|---|
 | Block layer | [`block.zig`](../src/kernel/block.zig) | Device registry and MBR partition parsing. Extends the last partition on a disk over free space after it (`grow`). `block.Memory` is a memory-backed device for tests. |
-| Block cache | [`bcache.zig`](../src/kernel/bcache.zig) | Read cache with hit reporting. |
+| Block cache | [`bcache.zig`](../src/kernel/bcache.zig), [`bcache/lines.zig`](../src/kernel/bcache/lines.zig) | 128 KiB, four-way, write-through, with hit reporting. A run longer than sixteen sectors goes straight to the medium and leaves the lines to the table and the directories. The lines are host-tested. |
 | FAT | [`fat.zig`](../src/kernel/fat.zig), [`fat/alloc.zig`](../src/kernel/fat/alloc.zig) | FAT12/16/32, VFAT long names, timestamps. Cluster allocation across all FAT copies, chain extension, create, append, truncate, unlink, rename. Rename moves the directory record, never the data. |
 | Volume geometry | [`fat/layout.zig`](../src/kernel/fat/layout.zig) | Where tables, root and data area sit. `read` parses a boot sector (used by mount); `toBpb` writes one (used by format); `plan` chooses a geometry for a size; `grown` chooses one for the same filesystem on a larger volume. Round-trip tested. Computed in 64 bits. |
 | Clean unmount | [`fat/clean.zig`](../src/kernel/fat/clean.zig) | Clean flag cleared before a mount's first write, set after its last write reaches the medium. Written in both places systems read: the top bits of the second FAT entry and the boot-sector byte. Either clear means dirty. FAT12 has neither and is checked on every mount. |
@@ -250,8 +250,9 @@ driven. Modesetting belongs to the kernel; `firmware-set` keeps the firmware's m
 - `core.zig` enumerates: port reset, packet size, address, descriptors, configuration,
   driver lookup through `devmgd`. A device silent through two requests gets one more
   reset. A failed transfer logs each stage.
-- Class drivers: `umass.zig` (bulk-only disks; a request longer than one bulk transfer
-  goes as several commands), `hid.zig` (boot-protocol keyboards and
+- Class drivers: `umass.zig` (bulk-only disks; a request is a 64 KiB slot of the volume
+  bridge, moved by one command whose descriptors point at the slot itself, and one
+  longer than a controller carries goes as several), `hid.zig` (boot-protocol keyboards and
   mice), `hub.zig`, `acm.zig` (CDC-ACM serial), `ftdi.zig` (FTDI serial; values in
   [`ftdi/regs.zig`](../src/user/usbd/ftdi/regs.zig), host-tested against documented
   divisors).
