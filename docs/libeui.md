@@ -157,6 +157,7 @@ another control.
 | `clipped` | `fn (draw.Surface, draw.Rect) draw.Surface` |
 | `set` | `fn (draw.Surface, i32, i32, rgb.Colour) void` |
 | `get` | `fn (draw.Surface, i32, i32) rgb.Colour` |
+| `bevel` | `fn (draw.Surface, draw.Rect, i32, rgb.Colour, rgb.Colour) void` |
 | `fillRounded` | `fn (draw.Surface, draw.Rect, i32, draw.Corners, rgb.Colour) void` |
 | `frameRounded` | `fn (draw.Surface, draw.Rect, i32, draw.Corners, rgb.Colour) void` |
 | `fillAround` | `fn (draw.Surface, draw.Rect, draw.Rect, rgb.Colour) void` |

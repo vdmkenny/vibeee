@@ -279,6 +279,17 @@ pub const Surface = struct {
         return self.pixels[@intCast(y * self.stride + x)];
     }
 
+    /// A raised or sunken edge `thickness` wide: `top_left` along the top and
+    /// left sides, `bottom_right` along the other two. Swapping the two
+    /// colours turns a raised edge into a sunken one.
+    pub fn bevel(self: Surface, area: Rect, thickness: i32, top_left: Color, bottom_right: Color) void {
+        if (thickness <= 0 or area.w <= 0 or area.h <= 0) return;
+        self.fill(.{ .x = area.x, .y = area.y, .w = area.w, .h = thickness }, top_left);
+        self.fill(.{ .x = area.x, .y = area.y, .w = thickness, .h = area.h }, top_left);
+        self.fill(.{ .x = area.x, .y = area.bottom() - thickness, .w = area.w, .h = thickness }, bottom_right);
+        self.fill(.{ .x = area.right() - thickness, .y = area.y, .w = thickness, .h = area.h }, bottom_right);
+    }
+
     /// Fill `area`, rounding the corners `corners` names.
     pub fn fillRounded(self: Surface, area: Rect, radius: i32, corners: Corners, color: Color) void {
         const r = roundingFor(area, radius, corners);
