@@ -267,6 +267,14 @@ pub const Editor = struct {
     /// the next pass shows it without the whole window being repainted.
     repaint: bool = false,
     bar: scroll.State = .{},
+    /// What each row showed when it was last painted, hashed, so a pass that
+    /// changed one line paints one line.
+    row_marks: [ROWS_MAX]i32 = @splat(0),
+    /// What the rows were painted under: where they sit, how wide they wrap
+    /// and whether the control has the keyboard. A row is compared with its
+    /// mark only while this holds; a change to any of it moves or recolours
+    /// every row.
+    ground_mark: i32 = 0,
 
     pub fn selection(self: *const Editor) ?struct { from: usize, to: usize } {
         const anchor = self.anchor orelse return null;
@@ -354,6 +362,9 @@ pub fn rowsIn(area: Rect) usize {
 /// The most a masked field shows: a secret is a line, never a document.
 pub const MASK_MAX = 128;
 
+/// The most rows painted one by one. A taller control paints whole.
+const ROWS_MAX = 64;
+
 /// What is measured and painted: the text, or a star per byte of it when the
 /// editor hides what it holds. The mask is one byte per byte so every offset
 /// in the text is the same offset in the mask.
@@ -383,15 +394,18 @@ fn editAs(ctx: *widget.Context, area: Rect, state: *Editor, buffer: *Buffer, sha
     var mask: [MASK_MAX]u8 = undefined;
     const visible = shown(state, buffer, &mask);
 
+    // Asked for by the caller: a text replaced after the last pass, a
+    // command from the menu, a drag of the bar. Painted whole.
+    const whole = state.repaint;
+    state.repaint = false;
+    var changed = whole;
+
     // Whether there is a scrollbar changes how wide the text may be, which
     // changes how many lines there are. Measured against the narrower width so
     // the answer cannot flip back and forth between the two.
     const wrapped = count(visible, face(), writable(area, true).w);
     const scrollable = wrapped > rows;
     const box = writable(area, scrollable);
-
-    var changed = state.repaint;
-    state.repaint = false;
 
     // Where the pointer is, in the text. One conversion, used by the click
     // that puts the cursor somewhere and by the drag that selects.
@@ -479,10 +493,18 @@ fn editAs(ctx: *widget.Context, area: Rect, state: *Editor, buffer: *Buffer, sha
         changed = true;
     }
 
-    if (changed or ctx.needsPaint(entry, .idle)) {
+    // Whole when the frame or every row has to be painted: the control is
+    // newly placed or damaged, focus moved, the text scrolled or wraps at
+    // another width. Otherwise only the rows that would show something
+    // else, which on a keystroke is the row the caret is on.
+    const ground = groundMark(box, state.scroll, act.focused);
+    if (whole or ctx.needsPaint(entry, .idle) or state.ground_mark != ground or rows > ROWS_MAX) {
         entry.visual = .idle;
-        paint(ctx.surface, area, box, state, buffer, rows, act.focused);
+        state.ground_mark = ground;
+        paint(ctx.surface, area, box, state, buffer, rows, act.focused, here);
         ctx.addDamage(area);
+    } else if (changed) {
+        paintChanged(ctx, box, state, buffer, rows, act.focused, here);
     }
 
     // Last, so it stands over the text it belongs to.
@@ -801,14 +823,169 @@ fn vertical(state: *Editor, text: []const u8, width: i32, by: i32, extend: bool)
     state.goal = goal;
 }
 
+/// What one row of the control shows: a line of the text or nothing past
+/// the last one, the part of it that is selected, and the caret when it
+/// stands on this row.
+const Row = struct {
+    line: ?Line = null,
+    /// The selected part of the line, as offsets from its start. Empty when
+    /// `from` and `to` meet.
+    from: usize = 0,
+    to: usize = 0,
+    /// The line's newline is inside the selection, shown as a marked space
+    /// after it.
+    newline_selected: bool = false,
+    /// Where the caret stands on this row, or null when it stands elsewhere.
+    caret_x: ?i32 = null,
+    /// Shown dimly on the first row while the text is empty.
+    hint: []const u8 = "",
+};
+
+/// The rows of the control in order, from the first shown to the last the
+/// box has room for, past the end of the text included.
+const RowWalk = struct {
+    it: Lines,
+    /// Which visual line the walker takes next.
+    line_index: usize = 0,
+    scroll: usize,
+    rows: usize,
+    row: usize = 0,
+    span: ?struct { from: usize, to: usize },
+    /// Where the caret is drawn, or null when it is not drawn at all.
+    caret: ?Position,
+    hint: []const u8,
+
+    fn init(text: []const u8, width: i32, state: *const Editor, rows: usize, focused: bool, here: Position) RowWalk {
+        const span = state.selection();
+        return .{
+            .it = lines(text, face(), width),
+            .scroll = state.scroll,
+            .rows = rows,
+            .span = if (span) |sp| .{ .from = sp.from, .to = sp.to } else null,
+            .caret = if (focused and span == null) here else null,
+            .hint = if (text.len == 0) state.hint else "",
+        };
+    }
+
+    fn next(self: *RowWalk) ?Row {
+        if (self.row == self.rows) return null;
+        const wanted = self.scroll + self.row;
+
+        // The visual line this row shows, if the text reaches it.
+        var line: ?Line = null;
+        while (self.line_index <= wanted) {
+            const got = self.it.next() orelse break;
+            if (self.line_index == wanted) line = got;
+            self.line_index += 1;
+        }
+
+        var out = Row{ .line = line };
+        if (self.row == 0) out.hint = self.hint;
+        if (line) |l| {
+            if (self.span) |sp| {
+                const from = @max(sp.from, l.start);
+                const to = @min(sp.to, l.end);
+                if (from < to) {
+                    out.from = from - l.start;
+                    out.to = to - l.start;
+                }
+                out.newline_selected = l.next > l.end and l.end >= sp.from and l.end < sp.to;
+            }
+        }
+        if (self.caret) |at| {
+            if (at.line == wanted) out.caret_x = at.x;
+        }
+        self.row += 1;
+        return out;
+    }
+};
+
+/// A row hashed: its letters, the part of them selected, and the caret
+/// where it is on it.
+fn rowMark(text: []const u8, row: Row) i32 {
+    var h = widget.Fingerprint{};
+    if (row.line) |line| {
+        h.text(text[line.start..line.end]);
+        h.number(row.from);
+        h.number(row.to);
+        h.flag(row.newline_selected);
+    }
+    h.flag(row.line != null);
+    h.number(if (row.caret_x) |x| @as(usize, @intCast(x)) + 1 else 0);
+    h.text(row.hint);
+    return h.done();
+}
+
+/// What every row is painted under, hashed: the box the lines wrap into and
+/// sit in, how far the text is scrolled, and whether the caret is drawn.
+fn groundMark(box: Rect, scroll_at: usize, focused: bool) i32 {
+    var h = widget.Fingerprint{};
+    h.number(@as(u32, @bitCast(box.x)));
+    h.number(@as(u32, @bitCast(box.y)));
+    h.number(@as(u32, @bitCast(box.w)));
+    h.number(@as(u32, @bitCast(box.h)));
+    h.number(scroll_at);
+    h.flag(focused);
+    return h.done();
+}
+
+/// One row: its ground when asked for, the hint, the letters with the
+/// selected ones on the accent, the mark for a selected newline, and the
+/// caret.
+fn paintRow(surface: Surface, box: Rect, y: i32, text: []const u8, row: Row, ground: ?draw.Color) void {
+    const t = theme.current();
+    const line_height: i32 = @intCast(face().height);
+    if (ground) |colour| surface.fill(.{ .x = box.x, .y = y, .w = box.w, .h = line_height }, colour);
+
+    // Clear of the caret, which sits at the start of an empty field and
+    // would otherwise be drawn down the first letter of the hint: a caret
+    // through an eight makes it a B.
+    if (row.hint.len > 0) surface.text(box.x + CARET_WIDTH + 1, y, row.hint, t.text_dim);
+
+    if (row.line) |line| {
+        var x = box.x;
+        var i = line.start;
+        while (i < line.end) {
+            const n = text_mod.charWidth(text, i);
+            const piece = text[i..][0..n];
+            const advance: i32 = @intCast(face().measure(piece));
+            const at = i - line.start;
+            const selected = at >= row.from and at < row.to;
+
+            if (selected) {
+                surface.fill(.{ .x = x, .y = y, .w = advance, .h = line_height }, t.accent);
+            }
+            surface.text(x, y, piece, if (selected) t.accent_text else t.text);
+
+            x += advance;
+            i += n;
+        }
+
+        // A newline inside the selection shows as a marked space, so a
+        // multi-line selection does not look like it stops at each line end.
+        if (row.newline_selected) {
+            const space: i32 = @intCast(face().advance(' '));
+            surface.fill(.{ .x = x, .y = y, .w = space, .h = line_height }, t.accent);
+        }
+    }
+
+    // A bar between characters rather than a block over one: this is an
+    // insertion point, and a block says the character under it is selected.
+    if (row.caret_x) |cx| {
+        surface.fill(.{ .x = box.x + cx, .y = y, .w = CARET_WIDTH, .h = line_height }, t.text);
+    }
+}
+
+/// The frame and every row, and a mark of each row for the passes after.
 fn paint(
     surface: Surface,
     area: Rect,
     box: Rect,
-    state: *const Editor,
+    state: *Editor,
     buffer: *const Buffer,
     rows: usize,
     focused: bool,
+    here: Position,
 ) void {
     const t = theme.current();
     var mask: [MASK_MAX]u8 = undefined;
@@ -818,72 +995,42 @@ fn paint(
     surface.fillRounded(area, t.corner_radius, draw.Corners.all, t.surface_hot);
     surface.frameRounded(area, t.corner_radius, draw.Corners.all, if (focused) t.accent else t.line);
 
-    const span = state.selection();
     const clipped = surface.clipped(box);
-    // Clear of the caret, which sits at the start of an empty field and
-    // would otherwise be drawn down the first letter of the hint: a caret
-    // through an eight makes it a B.
-    if (text.len == 0 and state.hint.len > 0) {
-        clipped.text(box.x + CARET_WIDTH + 1, box.y, state.hint, t.text_dim);
-    }
-
-    var it = lines(text, face(), box.w);
+    var walk = RowWalk.init(text, box.w, state, rows, focused, here);
     var index: usize = 0;
-    var drawn: usize = 0;
-
-    while (it.next()) |line| : (index += 1) {
-        if (index < state.scroll) continue;
-        if (drawn >= rows) break;
-
-        const y = box.y + @as(i32, @intCast(drawn)) * line_height;
-        var x = box.x;
-        var i = line.start;
-
-        while (i < line.end) {
-            const n = text_mod.charWidth(text, i);
-            const piece = text[i..][0..n];
-            const advance: i32 = @intCast(face().measure(piece));
-            const selected = if (span) |sp| i >= sp.from and i < sp.to else false;
-
-            if (selected) {
-                clipped.fill(.{ .x = x, .y = y, .w = advance, .h = line_height }, t.accent);
-            }
-            clipped.text(x, y, piece, if (selected) t.accent_text else t.text);
-
-            x += advance;
-            i += n;
-        }
-
-        // A newline inside the selection shows as a marked space, so a
-        // multi-line selection does not look like it stops at each line end.
-        if (span) |sp| {
-            if (line.next > line.end and line.end >= sp.from and line.end < sp.to) {
-                const space: i32 = @intCast(face().advance(' '));
-                clipped.fill(.{ .x = x, .y = y, .w = space, .h = line_height }, t.accent);
-            }
-        }
-
-        drawn += 1;
+    while (walk.next()) |row| : (index += 1) {
+        paintRow(clipped, box, box.y + @as(i32, @intCast(index)) * line_height, text, row, null);
+        if (index < ROWS_MAX) state.row_marks[index] = rowMark(text, row);
     }
-
-    if (focused and span == null) paintCursor(clipped, box, state, text, line_height);
 }
 
-fn paintCursor(
-    surface: Surface,
+/// The rows that would show something else than they did, and only those.
+fn paintChanged(
+    ctx: *widget.Context,
     box: Rect,
-    state: *const Editor,
-    text: []const u8,
-    line_height: i32,
+    state: *Editor,
+    buffer: *const Buffer,
+    rows: usize,
+    focused: bool,
+    here: Position,
 ) void {
-    const here = positionOf(text, face(), box.w, state.cursor);
-    if (here.line < state.scroll) return;
+    const t = theme.current();
+    var mask: [MASK_MAX]u8 = undefined;
+    const text = shown(state, buffer, &mask);
+    const line_height: i32 = @intCast(face().height);
 
-    const x = box.x + here.x;
-    const y = box.y + @as(i32, @intCast(here.line - state.scroll)) * line_height;
-    // A bar between characters rather than a block over one: this is an
-    // insertion point, and a block says the character under it is selected.
-    surface.fill(.{ .x = x, .y = y, .w = CARET_WIDTH, .h = line_height }, theme.current().text);
+    const clipped = ctx.surface.clipped(box);
+    var walk = RowWalk.init(text, box.w, state, rows, focused, here);
+    var index: usize = 0;
+    while (walk.next()) |row| : (index += 1) {
+        const mark = rowMark(text, row);
+        if (mark == state.row_marks[index]) continue;
+        state.row_marks[index] = mark;
+
+        const y = box.y + @as(i32, @intCast(index)) * line_height;
+        paintRow(clipped, box, y, text, row, t.surface_hot);
+        ctx.addDamage(.{ .x = box.x, .y = y, .w = box.w, .h = line_height });
+    }
 }
 
 /// What a field starts as, and what it says while empty.
@@ -1046,4 +1193,60 @@ test "a second press on a line takes all of it, and the drag after leaves it so"
     pass(&ctx, &line, area, 40, true);
     try testing.expectEqual(@as(usize, 5), line.editor.selection().?.to);
     try testing.expectEqual(@as(usize, 0), line.editor.selection().?.from);
+}
+
+test "a keystroke paints the row it changed and no other" {
+    draw.ui_font = &@import("lib").font.spleen_8x16;
+    const W = 200;
+    const H = 40;
+    var pixels: [W * H]draw.Color = @splat(.{});
+    var ctx = widget.Context.init(Surface.init(&pixels, W, H, W));
+    var storage: [32]u8 = undefined;
+    var buffer = Buffer{ .bytes = &storage };
+    buffer.clear();
+    _ = buffer.insert(0, "ab\ncd");
+    var state = Editor{ .cursor = 5 };
+    // Two rows: the area less its frame and padding holds two lines of the face.
+    const area = Rect{ .x = 0, .y = 0, .w = W, .h = 36 };
+
+    const pass = struct {
+        fn quiet(c: *widget.Context, a: Rect, s: *Editor, b: *Buffer) usize {
+            c.begin(10, 10, .{});
+            edit(c, a, s, b);
+            c.end();
+            return c.damageList().len;
+        }
+    }.quiet;
+
+    // A press puts the caret on the first row and gives the control the
+    // keyboard, and the passes after it paint nothing.
+    ctx.postPress(10, 10, 1_000_000);
+    ctx.begin(10, 10, .{ .left = true });
+    edit(&ctx, area, &state, &buffer);
+    ctx.end();
+    var settled = false;
+    for (0..3) |_| {
+        if (pass(&ctx, area, &state, &buffer) == 0) {
+            settled = true;
+            break;
+        }
+    }
+    try testing.expect(settled);
+
+    // A pixel of the second row's ground, set to something no paint uses.
+    const sentinel = draw.Color.hex(0x123456);
+    const second_row_y = inner(area).y + @as(i32, @intCast(face().height)) + 4;
+    const watched = @as(usize, @intCast(second_row_y)) * W + 150;
+    pixels[watched] = sentinel;
+
+    ctx.postText('x');
+    ctx.begin(10, 10, .{});
+    edit(&ctx, area, &state, &buffer);
+    ctx.end();
+
+    try testing.expectEqualStrings("axb\ncd", buffer.slice());
+    try testing.expectEqual(sentinel, pixels[watched]);
+    const damage = ctx.damageList();
+    try testing.expectEqual(@as(usize, 1), damage.len);
+    try testing.expect(damage[0].bottom() <= second_row_y);
 }
