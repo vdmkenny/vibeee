@@ -46,9 +46,19 @@ pub const Canvas = struct {
     pixels: []Colour,
     width: u16,
     height: u16,
+    /// Pixels from the start of one row to the start of the next: the width
+    /// for a picture that is its own, and more for one that is part of
+    /// something wider, such as a window.
+    stride: u16,
 
     pub fn of(pixels: []Colour, width: u16, height: u16) Canvas {
-        return .{ .pixels = pixels, .width = width, .height = height };
+        return .{ .pixels = pixels, .width = width, .height = height, .stride = width };
+    }
+
+    /// A canvas over part of something wider. Marks are clipped to the
+    /// width and height given, so nothing reaches the rows on either side.
+    pub fn over(pixels: []Colour, width: u16, height: u16, stride: u16) Canvas {
+        return .{ .pixels = pixels, .width = width, .height = height, .stride = stride };
     }
 
     pub fn count(self: Canvas) usize {
@@ -71,12 +81,18 @@ pub const Canvas = struct {
     }
 
     fn at(self: Canvas, x: i32, y: i32) usize {
-        return @as(usize, @intCast(y)) * self.width + @as(usize, @intCast(x));
+        return @as(usize, @intCast(y)) * self.stride + @as(usize, @intCast(x));
     }
 
-    /// The whole picture in one colour, which is what a new one is.
+    /// The whole picture in one colour, which is what a new one is. A row at
+    /// a time, since the rows of a canvas over something wider are not one
+    /// run of pixels.
     pub fn clear(self: Canvas, colour: Colour) void {
-        @memset(self.pixels[0..self.count()], colour);
+        var row: u16 = 0;
+        while (row < self.height) : (row += 1) {
+            const start = @as(usize, row) * self.stride;
+            @memset(self.pixels[start .. start + self.width], colour);
+        }
     }
 
     /// The brush: a square of `size` pixels about the point. What a pencil
@@ -290,6 +306,27 @@ fn tally(canvas: Canvas, colour: Colour) usize {
         if (same(pixel, colour)) found += 1;
     }
     return found;
+}
+
+test "a canvas over something wider leaves the rows on either side alone" {
+    // Three rows of ten, with a canvas over the middle four of each row.
+    var wide: [30]Colour = @splat(WHITE);
+    const view = Canvas.over(wide[3..], 4, 3, 10);
+
+    view.clear(BLACK);
+    view.set(4, 0, RED);
+    view.line(-5, 1, 20, 1, 1, RED);
+
+    for (wide, 0..) |pixel, index| {
+        const column = index % 10;
+        const inside = column >= 3 and column < 7;
+        if (!inside) try testing.expectEqual(WHITE, pixel);
+    }
+    // The mark past the canvas's own width did not reach the next row.
+    try testing.expectEqual(BLACK, wide[3]);
+    try testing.expectEqual(RED, wide[13]);
+    try testing.expectEqual(RED, wide[16]);
+    try testing.expectEqual(WHITE, wide[17]);
 }
 
 test "a pixel off the canvas is not written, and one on it is" {
