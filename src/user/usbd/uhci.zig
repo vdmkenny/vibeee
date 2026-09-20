@@ -619,9 +619,11 @@ pub fn serviceIrq(self: *Unit) hc.Service {
     self.controller.service_due = false;
     if (!self.controller.opened) return if (reborn) .reborn else .quiet;
 
+    var worked = false;
     for (0..causes.ROUNDS) |_| {
         const taken = causes.intersect(self.controller.window.read(Status, .status), Status.ACK);
         if (taken == Status{}) break;
+        worked = true;
         // Write-one-to-clear, the causes read only: one latched after the
         // read stays for the next round.
         self.controller.window.write(.status, taken);
@@ -642,7 +644,8 @@ pub fn serviceIrq(self: *Unit) hc.Service {
         moved = true;
     }
     if (reborn) return .reborn;
-    return if (moved) .ports_changed else .quiet;
+    if (moved) return .ports_changed;
+    return if (worked) .serviced else .quiet;
 }
 
 // ---------------------------------------------------------------------------
@@ -904,24 +907,26 @@ fn rest(self: *Unit) hc.Rest {
 
     sys.eventWait(self.controller.irq, REST_US) catch {};
     const outcome = takeTransferCauses(self);
-    sys.irqAck(self.controller.irq, outcome == .reborn);
+    sys.irqAck(self.controller.irq, outcome != .waited);
     return outcome;
 }
 
 /// Acknowledge status causes until none is latched. The ports are not
 /// read: their change bits stay latched for `serviceIrq`.
 fn takeTransferCauses(self: *Unit) hc.Rest {
+    var worked = false;
     for (0..causes.ROUNDS) |_| {
         const taken = causes.intersect(self.controller.window.read(Status, .status), Status.ACK);
-        if (taken == Status{}) return .waited;
+        if (taken == Status{}) return if (worked) .worked else .waited;
         self.controller.window.write(.status, taken);
+        worked = true;
         if (taken.failed()) {
             stopped(self, taken);
             self.controller.reborn = true;
             return .reborn;
         }
     }
-    return .waited;
+    return .worked;
 }
 
 /// After a transfer: mark `serviceIrq` due if a port change is latched or

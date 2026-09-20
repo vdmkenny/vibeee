@@ -37,6 +37,10 @@ pub const Error = error{
 /// What one pass over a controller's interrupt amounted to.
 pub const Service = enum {
     quiet,
+    /// Causes were acknowledged, and nothing above the controller has to
+    /// act on them. On a shared edge line, saying so at the
+    /// acknowledgement wakes the line's other owners.
+    serviced,
     ports_changed,
     /// The controller was reset and rebuilt, or closed for good: every
     /// device the bus knew on it describes a conversation that no longer
@@ -52,6 +56,9 @@ pub const Service = enum {
 /// with no interrupt for them, `serviceDue` says so.
 pub const Rest = enum {
     waited,
+    /// Causes were acknowledged. On a shared edge line, saying so at the
+    /// acknowledgement wakes the line's other owners.
+    worked,
     /// The controller failed and was rebuilt or closed. The transfer's
     /// schedule no longer exists.
     reborn,

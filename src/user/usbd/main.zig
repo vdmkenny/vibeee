@@ -302,7 +302,7 @@ fn serviceController(which: usize) void {
     const controller = &controllers[which];
     const outcome = controller.ops.serviceIrq();
     switch (outcome) {
-        .quiet => {},
+        .quiet, .serviced => {},
         .ports_changed => {
             if (core.scan(@intCast(which), controller.ops) > 0) scanAll();
         },

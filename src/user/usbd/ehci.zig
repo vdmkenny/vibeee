@@ -978,9 +978,11 @@ fn serviceIrq() hc.Service {
     if (!controller.opened) return if (reborn) .reborn else .quiet;
 
     var ports_changed = false;
+    var worked = false;
     for (0..causes.ROUNDS) |_| {
         const taken = causes.intersect(@as(Status, @bitCast(opRead(.status))), Interrupts.TAKEN);
         if (taken == Status{}) break;
+        worked = true;
         // Write-one-to-clear, the causes read only: one latched after the
         // read stays for the next round.
         opWrite(.status, @bitCast(taken));
@@ -991,7 +993,8 @@ fn serviceIrq() hc.Service {
         if (taken.port_change) ports_changed = true;
     }
     if (reborn) return .reborn;
-    return if (ports_changed) .ports_changed else .quiet;
+    if (ports_changed) return .ports_changed;
+    return if (worked) .serviced else .quiet;
 }
 
 /// A host system error is the controller saying the bus refused one of its
@@ -1233,7 +1236,7 @@ fn rest() hc.Rest {
 
     sys.eventWait(controller.irq, REST_US) catch {};
     const outcome = takeTransferCauses();
-    sys.irqAck(controller.irq, outcome == .reborn);
+    sys.irqAck(controller.irq, outcome != .waited);
     return outcome;
 }
 
@@ -1241,6 +1244,7 @@ fn rest() hc.Rest {
 /// change stays latched, with its interrupt disabled until the transfer
 /// ends.
 fn takeTransferCauses() hc.Rest {
+    var worked = false;
     for (0..causes.ROUNDS) |_| {
         const latched: Status = @bitCast(opRead(.status));
         if (latched.port_change and !controller.ports_held) {
@@ -1248,15 +1252,16 @@ fn takeTransferCauses() hc.Rest {
             controller.ports_held = true;
         }
         const taken = causes.intersect(latched, Interrupts.HOLDING);
-        if (taken == Status{}) return .waited;
+        if (taken == Status{}) return if (worked) .worked else .waited;
         opWrite(.status, @bitCast(taken));
+        worked = true;
         if (taken.host_error) {
             hostError();
             controller.reborn = true;
             return .reborn;
         }
     }
-    return .waited;
+    return .worked;
 }
 
 /// After a transfer: enable a held port change interrupt again. The change

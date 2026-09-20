@@ -320,11 +320,13 @@ pub fn serviceIrq(self: *Unit) hc.Service {
     if (!self.opened) return if (reborn) .reborn else .quiet;
 
     var moved = false;
+    var worked = false;
     for (0..causes.ROUNDS) |_| {
         const latched: ohci.Interrupts = @bitCast(self.regs.read(.interrupt_status));
         if (latched == ohci.Interrupts.ALL) return gone(self);
         const taken = causes.intersect(latched, TAKEN);
         if (taken == ohci.Interrupts{}) break;
+        worked = true;
         if (taken.done) self.arena.at.hcca.done_head = 0;
         // The ports before the status: on some controllers the hub change
         // stays asserted while any port's change is set.
@@ -333,7 +335,8 @@ pub fn serviceIrq(self: *Unit) hc.Service {
         if (taken.unrecoverable) return stopped(self);
     }
     if (reborn) return .reborn;
-    return if (moved) .ports_changed else .quiet;
+    if (moved) return .ports_changed;
+    return if (worked) .serviced else .quiet;
 }
 
 /// Acknowledge every port's changes. Returns whether any port had one.
@@ -358,7 +361,7 @@ fn rest(self: *Unit) hc.Rest {
 
     sys.eventWait(self.irq, REST_US) catch {};
     const outcome = takeTransferCauses(self);
-    sys.irqAck(self.irq, true);
+    sys.irqAck(self.irq, outcome != .waited);
     return outcome;
 }
 
@@ -366,6 +369,7 @@ fn rest(self: *Unit) hc.Rest {
 /// hub change stays latched, with its interrupt disabled until the transfer
 /// ends.
 fn takeTransferCauses(self: *Unit) hc.Rest {
+    var worked = false;
     for (0..causes.ROUNDS) |_| {
         const latched: ohci.Interrupts = @bitCast(self.regs.read(.interrupt_status));
         if (latched == ohci.Interrupts.ALL) {
@@ -378,16 +382,17 @@ fn takeTransferCauses(self: *Unit) hc.Rest {
             self.hub_held = true;
         }
         const taken = causes.intersect(latched, WAIT_TAKES);
-        if (taken == ohci.Interrupts{}) return .waited;
+        if (taken == ohci.Interrupts{}) return if (worked) .worked else .waited;
         if (taken.done) self.arena.at.hcca.done_head = 0;
         self.regs.write(.interrupt_status, @bitCast(taken));
+        worked = true;
         if (taken.unrecoverable) {
             _ = stopped(self);
             self.reborn = true;
             return .reborn;
         }
     }
-    return .waited;
+    return .worked;
 }
 
 /// Let a held hub change through: its status is still latched, so the
