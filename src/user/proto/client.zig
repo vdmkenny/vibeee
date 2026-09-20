@@ -346,6 +346,14 @@ pub const Connection = struct {
         _ = try self.request(&req, &.{});
     }
 
+    /// Ask for a different drawable size. What comes of it arrives as a
+    /// `configure` event, if anything does.
+    pub fn resize(self: *Connection, id: u8, w: u16, h: u16) Error!void {
+        var req = wm.Req{ .tag = .resize_win, .win = id };
+        req.body = .{ .resize = .{ .w = w, .h = h } };
+        _ = try self.request(&req, &.{});
+    }
+
     pub fn map(self: *Connection, id: u8) Error!void {
         var req = wm.Req{ .tag = .map, .win = id };
         _ = try self.request(&req, &.{});

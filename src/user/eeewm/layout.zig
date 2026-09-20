@@ -204,6 +204,24 @@ pub const Desktop = struct {
         return null;
     }
 
+    /// Give a window outside the tiling the drawable size it asked for. Its
+    /// top left stays where the user put it, and the frame is cut to the
+    /// display: there is nowhere else for it to go.
+    pub fn resizeFloating(self: *Desktop, index: usize, frame_w: i32, frame_h: i32) void {
+        const w = &self.windows[index];
+        if (!w.used or w.layer != .floating) return;
+
+        const width = @min(@max(frame_w, 1), self.bounds.w);
+        const height = @min(@max(frame_h, 1), self.bounds.h);
+        w.area = .{
+            .x = @min(w.area.x, self.bounds.x + self.bounds.w - width),
+            .y = @min(w.area.y, self.bounds.y + self.bounds.h - height),
+            .w = width,
+            .h = height,
+        };
+        self.arrange();
+    }
+
     pub fn close(self: *Desktop, index: usize) void {
         if (index >= MAX_WINDOWS or !self.windows[index].used) return;
         self.windows[index] = .{};

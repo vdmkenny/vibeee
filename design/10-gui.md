@@ -200,7 +200,7 @@ accept semantics].
 pub const Rect = extern struct { x: i16, y: i16, w: u16, h: u16 };
 
 pub const ReqTag = enum(u8) { hello, create_win, attach, commit, set_title, map, unmap,
-                              destroy_win, close_ack, set_cmds, bye };
+                              destroy_win, resize_win, close_ack, set_cmds, bye };
 pub const WinFlags = packed struct(u8) { floating: bool, dialog: bool, no_close: bool, _pad: u5 };
 
 pub const Req = extern struct {
@@ -247,6 +247,9 @@ pub const Ev = extern struct { // 24 bytes fixed
 4. resize (layout change): server emits `configure` → client reallocs if size differs, `attach`es
    the new shm (server swaps atomically at next composite, old shm released), full commit.
    Tile sizes change only on layout/tag operations, so realloc churn is rare.
+   A window with a natural size asks with `resize_win{w,h}`, the drawable size without its
+   frame: a tile keeps the tiling's size, and a floating window is given what it asked for,
+   cut to the display. The answer is a `configure` like any other.
 5. close: server sends `close_req` → well-behaved client saves + `destroy_win` (or `close_ack` to
    veto with a dialog). `Mod+Shift+k` / 2 s timeout → server drops window, asks supervisor to kill
    the pid from `hello`.

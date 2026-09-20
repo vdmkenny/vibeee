@@ -95,6 +95,13 @@ pub fn retick(period_us: usize) void {
 
 /// Change what the wait sleeps on, for a program whose connections come and
 /// go. The slice stays the program's, so it must outlive the change.
+/// Ask the manager for a different drawable size, for a window with a
+/// natural one: a grid, a picture at its own size. A tiled window keeps the
+/// tiling's size. The answer arrives as a fresh surface and a draw.
+pub fn resizeTo(w: u16, h: u16) void {
+    connection.resize(window, w, h) catch {};
+}
+
 pub fn wakeOn(handles: []const u32) void {
     hooks.wakes = handles;
 }

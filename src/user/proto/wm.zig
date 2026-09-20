@@ -81,6 +81,10 @@ pub const ReqTag = enum(u8) {
     map,
     unmap,
     destroy_win,
+    /// Ask for a different drawable size, for a program whose window has a
+    /// natural one. The manager decides: a tile keeps the tiling's size. What
+    /// comes of it arrives as `configure`, like every other size.
+    resize_win,
     /// Map the one clipboard every window shares. The reply carries its
     /// segment; reading it afterwards costs no syscall at all.
     clipboard,
@@ -146,6 +150,11 @@ pub const Req = extern struct {
         },
         snapshot: extern struct {
             of: Snapshot,
+        },
+        resize: extern struct {
+            /// What the program wants to draw into, without its frame.
+            w: u16,
+            h: u16,
         },
         raw: [56]u8,
     } = .{ .raw = @splat(0) },

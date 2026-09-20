@@ -1050,6 +1050,7 @@ fn dispatch(pid: u32, req: *const wire.Req, message: *const sys.Message) Answer 
         .snapshot => onSnapshot(req, message),
         .clipboard_put => onClipboardPut(req),
         .map => onMap(pid, req),
+        .resize_win => onResize(pid, req),
         .unmap, .destroy_win => onDestroy(pid, req),
         .bye => blk: {
             forgetClient(pid);
@@ -1266,6 +1267,19 @@ fn onCreate(pid: u32, req: *const wire.Req) Answer {
         .gen = table.generation,
         .body = .{ .create = .{ .win = w.client_win } },
     } };
+}
+
+/// A program asking for a size. Only a window outside the tiling has one of
+/// its own, and the frame is the drawable size with the border around it.
+fn onResize(pid: u32, req: *const wire.Req) Answer {
+    const index = desktop.byClient(pid, req.win) orelse return refuse(.no_window);
+
+    const border = borderWidth() * 2;
+    desktop.resizeFloating(index, req.body.resize.w + border, req.body.resize.h + border);
+    dirty = true;
+    tellSize(index);
+
+    return .{ .rep = .{ .gen = table.generation } };
 }
 
 fn onAttach(pid: u32, req: *const wire.Req, message: *const sys.Message) Answer {
