@@ -49,6 +49,7 @@ pub const ntp = @import("ntp.zig");
 pub const ohci = @import("ohci.zig");
 pub const openers = @import("openers.zig");
 pub const palette = @import("palette.zig");
+pub const raster = @import("raster.zig");
 pub const rgb = @import("rgb.zig");
 pub const ring = @import("ring.zig");
 pub const driver = @import("driver.zig");
@@ -90,6 +91,7 @@ test {
     _ = logo;
     _ = mac;
     _ = mines;
+    _ = raster;
     _ = pci;
     _ = ring;
     _ = driver;
