@@ -275,6 +275,8 @@ pub const Editor = struct {
     /// mark only while this holds; a change to any of it moves or recolours
     /// every row.
     ground_mark: i32 = 0,
+    /// What the last pass worked out by walking the whole text.
+    layout: Layout = .{},
 
     pub fn selection(self: *const Editor) ?struct { from: usize, to: usize } {
         const anchor = self.anchor orelse return null;
@@ -308,6 +310,29 @@ pub const Editor = struct {
         self.cursor = buffer.len;
         self.goal = null;
         return true;
+    }
+};
+
+/// What a pass works out by walking the whole text, kept for the passes
+/// after. Counting the lines measures every letter of the text, and a pass
+/// the pointer alone brought about has nothing to walk it for.
+const Layout = struct {
+    /// What the count and the place were worked out from.
+    width: i32 = 0,
+    len: usize = 0,
+    cursor: usize = 0,
+    /// How many visual lines the text wraps into at `width`.
+    wrapped: usize = 0,
+    /// The width the caret's place was worked out at, which is `width` or
+    /// that and the scrollbar's when there is none.
+    box_width: i32 = 0,
+    /// Which line the caret is on and how far along it, or null until the
+    /// width it is placed at is known.
+    here: ?Position = null,
+
+    /// Whether the count still describes the text.
+    fn holds(self: Layout, width: i32, len: usize, cursor: usize) bool {
+        return self.here != null and self.width == width and self.len == len and self.cursor == cursor;
     }
 };
 
@@ -403,7 +428,20 @@ fn editAs(ctx: *widget.Context, area: Rect, state: *Editor, buffer: *Buffer, sha
     // Whether there is a scrollbar changes how wide the text may be, which
     // changes how many lines there are. Measured against the narrower width so
     // the answer cannot flip back and forth between the two.
-    const wrapped = count(visible, face(), writable(area, true).w);
+    //
+    // Counted again only when the text or the width could differ from what
+    // was counted: a text the caller replaced, or one that is not the length
+    // it was.
+    const wrap_width = writable(area, true).w;
+    if (whole or !state.layout.holds(wrap_width, visible.len, state.cursor)) {
+        state.layout = .{
+            .width = wrap_width,
+            .len = visible.len,
+            .cursor = state.cursor,
+            .wrapped = count(visible, face(), wrap_width),
+        };
+    }
+    const wrapped = state.layout.wrapped;
     const scrollable = wrapped > rows;
     const box = writable(area, scrollable);
 
@@ -482,8 +520,22 @@ fn editAs(ctx: *widget.Context, area: Rect, state: *Editor, buffer: *Buffer, sha
 
     // Follow the cursor. Done after every input rather than in each branch, so
     // a caller that moved the cursor itself gets it too. The text may have
-    // changed above, so what is shown is taken again.
-    const here = positionOf(shown(state, buffer, &mask), face(), box.w, state.cursor);
+    // changed above, so what is shown is taken again, and the count and the
+    // caret's place with it; a pass that changed nothing keeps both.
+    const now = shown(state, buffer, &mask);
+    if (changed) {
+        state.layout = .{
+            .width = wrap_width,
+            .len = now.len,
+            .cursor = state.cursor,
+            .wrapped = count(now, face(), wrap_width),
+        };
+    }
+    if (state.layout.here == null or state.layout.box_width != box.w) {
+        state.layout.box_width = box.w;
+        state.layout.here = positionOf(now, face(), box.w, state.cursor);
+    }
+    const here = state.layout.here.?;
     if (here.line < state.scroll) {
         state.scroll = here.line;
         changed = true;
@@ -1249,4 +1301,49 @@ test "a keystroke paints the row it changed and no other" {
     const damage = ctx.damageList();
     try testing.expectEqual(@as(usize, 1), damage.len);
     try testing.expect(damage[0].bottom() <= second_row_y);
+}
+
+test "the text is walked again only when it could have changed" {
+    draw.ui_font = &@import("lib").font.spleen_8x16;
+    const W = 200;
+    const H = 40;
+    var pixels: [W * H]draw.Color = @splat(.{});
+    var ctx = widget.Context.init(Surface.init(&pixels, W, H, W));
+    var storage: [32]u8 = undefined;
+    var buffer = Buffer{ .bytes = &storage };
+    buffer.clear();
+    _ = buffer.insert(0, "ab\ncd");
+    var state = Editor{ .cursor = 5 };
+    const area = Rect{ .x = 0, .y = 0, .w = W, .h = 36 };
+
+    const pass = struct {
+        fn run(c: *widget.Context, a: Rect, s: *Editor, b: *Buffer, down: bool) void {
+            c.begin(10, 10, .{ .left = down });
+            edit(c, a, s, b);
+            c.end();
+        }
+    }.run;
+
+    ctx.postPress(10, 10, 1_000_000);
+    pass(&ctx, area, &state, &buffer, true);
+    pass(&ctx, area, &state, &buffer, false);
+    try testing.expectEqual(@as(usize, 2), state.layout.wrapped);
+
+    // A newline typed is a line more, seen by the pass that typed it.
+    ctx.postKey(.enter, .{});
+    pass(&ctx, area, &state, &buffer, false);
+    try testing.expectEqual(@as(usize, 3), state.layout.wrapped);
+    try testing.expectEqual(buffer.len, state.layout.len);
+
+    // A pass with nothing typed keeps the count.
+    pass(&ctx, area, &state, &buffer, false);
+    try testing.expectEqual(@as(usize, 3), state.layout.wrapped);
+
+    // A text the caller replaced, of the same length, is counted afresh.
+    buffer.clear();
+    _ = buffer.insert(0, "abcdef");
+    state.cursor = 6;
+    state.repaint = true;
+    pass(&ctx, area, &state, &buffer, false);
+    try testing.expectEqual(@as(usize, 1), state.layout.wrapped);
 }
